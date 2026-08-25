@@ -12,9 +12,11 @@
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab_rl.rsl_rl import RslRlSymmetryCfg
 
 import legged_lab.mdp as mdp
 from legged_lab.assets.unitree import G1_CFG
+from legged_lab.envs.g1.g1_symmetry import compute_symmetric_states
 from legged_lab.envs.base.base_env_config import (  # noqa:F401
     BaseAgentCfg,
     BaseEnvCfg,
@@ -112,6 +114,27 @@ class G1RewardCfg(RewardCfg):
 
 
 @configclass
+class G1SymmetricRewardCfg(G1RewardCfg):
+    """Additional terms that discourage asymmetric straight-line walking."""
+
+    feet_air_time_symmetry = RewTerm(
+        func=mdp.feet_air_time_symmetry_l2,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle_roll.*")},
+    )
+    feet_contact_time_symmetry = RewTerm(
+        func=mdp.feet_contact_time_symmetry_l2,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle_roll.*")},
+    )
+    feet_sagittal_symmetry = RewTerm(
+        func=mdp.feet_sagittal_symmetry_l2,
+        weight=-2.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll.*")},
+    )
+
+
+@configclass
 class G1FlatEnvCfg(BaseEnvCfg):
 
     reward = G1RewardCfg()
@@ -131,6 +154,26 @@ class G1FlatEnvCfg(BaseEnvCfg):
 class G1FlatAgentCfg(BaseAgentCfg):
     experiment_name: str = "g1_flat"
     wandb_project: str = "g1_flat"
+
+
+@configclass
+class G1FlatSymmetricEnvCfg(G1FlatEnvCfg):
+    reward = G1SymmetricRewardCfg()
+
+
+@configclass
+class G1FlatSymmetricAgentCfg(G1FlatAgentCfg):
+    experiment_name: str = "g1_flat_symmetric"
+    wandb_project: str = "g1_flat_symmetric"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
+            use_data_augmentation=True,
+            use_mirror_loss=True,
+            data_augmentation_func=compute_symmetric_states,
+            mirror_loss_coeff=0.1,
+        )
 
 
 @configclass

@@ -197,6 +197,79 @@ def feet_too_near_humanoid(
     return (threshold - distance).clamp(min=0)
 
 
+def feet_air_time_symmetry_l2(
+    env: BaseEnv | TienKungEnv, sensor_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Penalize unequal completed swing durations during near-straight walking."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    if last_air_time.shape[1] != 2:
+        raise ValueError("feet_air_time_symmetry_l2 requires exactly two feet.")
+
+    command = env.command_generator.command
+    straight_walking = (
+        (torch.abs(command[:, 0]) > 0.1)
+        & (torch.abs(command[:, 1]) < 0.1)
+        & (torch.abs(command[:, 2]) < 0.1)
+    )
+    both_feet_have_swung = torch.all(last_air_time > 0.0, dim=1)
+    difference = last_air_time[:, 0] - last_air_time[:, 1]
+    return torch.square(difference) * straight_walking * both_feet_have_swung
+
+
+def feet_contact_time_symmetry_l2(
+    env: BaseEnv | TienKungEnv, sensor_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Penalize unequal completed stance durations during near-straight walking."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
+    if last_contact_time.shape[1] != 2:
+        raise ValueError("feet_contact_time_symmetry_l2 requires exactly two feet.")
+
+    command = env.command_generator.command
+    straight_walking = (
+        (torch.abs(command[:, 0]) > 0.1)
+        & (torch.abs(command[:, 1]) < 0.1)
+        & (torch.abs(command[:, 2]) < 0.1)
+    )
+    both_feet_have_stood = torch.all(last_contact_time > 0.0, dim=1)
+    difference = last_contact_time[:, 0] - last_contact_time[:, 1]
+    return torch.square(difference) * straight_walking * both_feet_have_stood
+
+
+def feet_sagittal_symmetry_l2(
+    env: BaseEnv | TienKungEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize unequal fore/aft foot placement around the pelvis when walking straight.
+
+    For a symmetric gait, one foot's forward displacement in the yaw-aligned body
+    frame should approximately balance the other foot's backward displacement.
+    The term is disabled for lateral and turning commands where unequal strides
+    are expected.
+    """
+    if len(asset_cfg.body_ids) != 2:
+        raise ValueError("feet_sagittal_symmetry_l2 requires exactly two feet.")
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    feet_position_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
+    feet_relative_w = feet_position_w - asset.data.root_link_pos_w.unsqueeze(1)
+    yaw_quat = math_utils.yaw_quat(asset.data.root_link_quat_w)
+    feet_relative_b = math_utils.quat_apply_inverse(
+        yaw_quat.unsqueeze(1).expand(-1, 2, -1).reshape(-1, 4),
+        feet_relative_w.reshape(-1, 3),
+    ).reshape(-1, 2, 3)
+
+    command = env.command_generator.command
+    straight_walking = (
+        (torch.abs(command[:, 0]) > 0.1)
+        & (torch.abs(command[:, 1]) < 0.1)
+        & (torch.abs(command[:, 2]) < 0.1)
+    )
+    sagittal_midpoint = feet_relative_b[:, 0, 0] + feet_relative_b[:, 1, 0]
+    return torch.square(sagittal_midpoint) * straight_walking
+
+
 # Regularization Reward
 def ankle_torque(env: TienKungEnv) -> torch.Tensor:
     """Penalize large torques on the ankle joints."""
@@ -533,4 +606,3 @@ def idle_when_commanded(
     is_idle = vel_magnitude < vel_threshold       # But not moving
     
     return (is_commanded & is_idle).float()
-

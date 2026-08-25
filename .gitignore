@@ -135,6 +135,7 @@ IsaacLab/
 runs/
 checkpoints/
 experiments/
+TienKung-Lab/logs/*
 
 # Temporary files
 *.tmp

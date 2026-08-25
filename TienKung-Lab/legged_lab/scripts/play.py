@@ -34,7 +34,7 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-parser.add_argument("--terrain", type=str, default="stairs", 
+parser.add_argument("--terrain", type=str, default="flat",
                     choices=["stairs", "stairs_slope", "flat", "rough"],
                     help="Terrain type for play: stairs (纯台阶最难), stairs_slope (台阶+斜坡), flat (平地), rough (训练地形)")
 parser.add_argument("--difficulty", type=float, default=0.2,
@@ -88,6 +88,13 @@ def play():
     env_cfg.commands.rel_standing_envs = 0.0
     env_cfg.commands.ranges.lin_vel_x = (1.0, 1.0)
     env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
+    # Use a deterministic straight-line command when evaluating gait symmetry.
+    # Otherwise the sampled heading target can make the robot turn, which
+    # naturally produces different left/right stride lengths.
+    env_cfg.commands.heading_command = False
+    env_cfg.commands.rel_heading_envs = 0.0
+    env_cfg.commands.ranges.ang_vel_z = (0.0, 0.0)
+    env_cfg.commands.ranges.heading = None
     env_cfg.commands.debug_vis = False  # Disable velocity command arrows
     env_cfg.scene.height_scanner.drift_range = (0.0, 0.0)
 

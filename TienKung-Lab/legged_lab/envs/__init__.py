@@ -37,6 +37,8 @@ from legged_lab.envs.g1.g1_env import G1Env
 from legged_lab.envs.g1.g1_config import (
     G1FlatAgentCfg,
     G1FlatEnvCfg,
+    G1FlatSymmetricAgentCfg,
+    G1FlatSymmetricEnvCfg,
     G1RoughAgentCfg,
     G1RoughEnvCfg,
 )
@@ -69,6 +71,8 @@ task_registry.register("h1_rough", BaseEnv, H1RoughEnvCfg(), H1RoughAgentCfg())
 
 
 task_registry.register("g1_flat", BaseEnv, G1FlatEnvCfg(), G1FlatAgentCfg())
+task_registry.register(
+    "g1_flat_symmetric", BaseEnv, G1FlatSymmetricEnvCfg(), G1FlatSymmetricAgentCfg()
+)
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())
-
