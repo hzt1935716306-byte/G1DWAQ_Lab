@@ -160,6 +160,12 @@ class G1FlatAgentCfg(BaseAgentCfg):
 class G1FlatSymmetricEnvCfg(G1FlatEnvCfg):
     reward = G1SymmetricRewardCfg()
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain_type = "plane"
+        self.scene.terrain_generator = None
+        self.domain_rand.events.push_robot = None
+
 
 @configclass
 class G1FlatSymmetricAgentCfg(G1FlatAgentCfg):
