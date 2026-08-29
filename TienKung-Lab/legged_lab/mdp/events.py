@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from isaaclab.assets import AssetBase
+from isaaclab.envs.mdp.events import push_by_setting_velocity as _isaac_push_by_setting_velocity
 from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
@@ -283,3 +284,60 @@ def randomize_terrain_material(
     # For now, material randomization should be done at environment creation time
     # by randomly selecting from MDL_TERRAIN_MATERIALS in the config
     pass
+
+
+def curriculum_push_by_setting_velocity(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Apply the current Stage2 velocity-jump level with 20% easy exposure.
+
+    The physical operation is delegated to Isaac Lab's existing
+    :func:`push_by_setting_velocity`.  This wrapper only chooses a curriculum
+    level for each triggered environment and reports the measured velocity
+    increment back to the thin recovery environment.
+    """
+
+    if not hasattr(env, "push_curriculum"):
+        raise RuntimeError("curriculum push event requires env.push_curriculum")
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    if hasattr(env, "eligible_recovery_push_env_ids"):
+        env_ids = env.eligible_recovery_push_env_ids(env_ids)
+    if env_ids.numel() == 0:
+        return
+
+    controller = env.push_curriculum
+    sampled_level_indices = controller.sample_level_indices(len(env_ids), env.device)
+    if not hasattr(env, "last_push_delta_v_xy"):
+        env.last_push_delta_v_xy = torch.zeros((env.num_envs, 2), device=env.device)
+
+    for level_index in torch.unique(sampled_level_indices).tolist():
+        group_mask = sampled_level_indices == level_index
+        group_ids = env_ids[group_mask]
+        max_x, max_y = controller.bounds_for_level_index(level_index)
+        velocity_range = {"x": (-max_x, max_x), "y": (-max_y, max_y)}
+        velocity_before = env.scene[asset_cfg.name].data.root_vel_w[group_ids, :2].clone()
+        _isaac_push_by_setting_velocity(
+            env=env,
+            env_ids=group_ids,
+            velocity_range=velocity_range,
+            asset_cfg=asset_cfg,
+        )
+        velocity_after = env.scene[asset_cfg.name].data.root_vel_w[group_ids, :2]
+        delta_v_xy = velocity_after - velocity_before
+        env.last_push_delta_v_xy[group_ids] = delta_v_xy
+        env._on_curriculum_push(
+            group_ids,
+            delta_v_xy,
+            sampled_level_indices[group_mask],
+        )
+
+    env.push_curriculum_level = controller.level
+    env.push_curriculum_level_ratio = controller.level_ratio
+    env.push_curriculum_max_xy = torch.tensor(
+        controller.current_abs_delta_v_xy,
+        dtype=torch.float32,
+        device=env.device,
+    )

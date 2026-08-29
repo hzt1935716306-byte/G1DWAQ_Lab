@@ -83,6 +83,8 @@ def train():
         agent_cfg.seed = seed
 
     env = env_class(env_cfg, args_cli.headless)
+    if hasattr(env, "set_num_steps_per_learning_iteration"):
+        env.set_num_steps_per_learning_iteration(agent_cfg.num_steps_per_env)
 
     log_root_path = os.path.join("logs", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
@@ -92,7 +94,8 @@ def train():
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
-    
+    if hasattr(env, "configure_curriculum_logging"):
+        env.configure_curriculum_logging(log_dir)
 
     runner_class = eval(agent_cfg.runner_class_name)
     runner = runner_class(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)

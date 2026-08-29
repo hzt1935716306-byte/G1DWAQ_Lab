@@ -42,6 +42,15 @@ from legged_lab.envs.g1.g1_config import (
     G1RoughAgentCfg,
     G1RoughEnvCfg,
 )
+from legged_lab.envs.g1.g1_recovery_config import (
+    G1FlatSymmetricRecoveryAgentCfg,
+    G1FlatSymmetricRecoveryEnvCfg,
+    G1FlatSymmetricStage2BaselineAgentCfg,
+    G1FlatSymmetricStage2BaselineEnvCfg,
+    G1FlatSymmetricStage2OursAgentCfg,
+    G1FlatSymmetricStage2OursEnvCfg,
+)
+from legged_lab.envs.g1.g1_recovery_env import G1RecoveryEnv
 
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
 from legged_lab.envs.g1.g1_dwaq_config import (
@@ -73,6 +82,24 @@ task_registry.register("h1_rough", BaseEnv, H1RoughEnvCfg(), H1RoughAgentCfg())
 task_registry.register("g1_flat", BaseEnv, G1FlatEnvCfg(), G1FlatAgentCfg())
 task_registry.register(
     "g1_flat_symmetric", BaseEnv, G1FlatSymmetricEnvCfg(), G1FlatSymmetricAgentCfg()
+)
+task_registry.register(
+    "g1_flat_symmetric_recovery",
+    G1RecoveryEnv,
+    G1FlatSymmetricRecoveryEnvCfg(),
+    G1FlatSymmetricRecoveryAgentCfg(),
+)
+task_registry.register(
+    "g1_flat_symmetric_stage2_baseline",
+    G1RecoveryEnv,
+    G1FlatSymmetricStage2BaselineEnvCfg(),
+    G1FlatSymmetricStage2BaselineAgentCfg(),
+)
+task_registry.register(
+    "g1_flat_symmetric_stage2_ours",
+    G1RecoveryEnv,
+    G1FlatSymmetricStage2OursEnvCfg(),
+    G1FlatSymmetricStage2OursAgentCfg(),
 )
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())

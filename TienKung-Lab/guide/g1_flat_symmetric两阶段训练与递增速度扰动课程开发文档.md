@@ -1,9 +1,9 @@
 # G1 Flat Symmetric 两阶段训练与递增速度扰动课程开发文档
 
-> 文档用途：在修改代码前锁定本轮开发边界、继承关系、速度扰动课程、训练方式和最小验收标准。  
-> 状态：待审核；本文档通过后再逐项实现。  
-> 仓库：`hzt1935716306-byte/G1DWAQ_Lab`  
-> 基础分支：`feat/g1-symmetric-gait`  
+> 文档用途：在修改代码前锁定本轮开发边界、继承关系、速度扰动课程、训练方式和最小验收标准。
+> 状态：待审核；本文档通过后再逐项实现。
+> 仓库：`hzt1935716306-byte/G1DWAQ_Lab`
+> 基础分支：`feat/g1-symmetric-gait`
 > 基础任务：`g1_flat_symmetric`
 
 ---
@@ -130,21 +130,21 @@ BaseAgentCfg
 
 ## 5. 计划修改的文件
 
-| 文件 | 计划 | 作用 |
-|---|---|---|
-| `legged_lab/envs/g1/g1_config.py` | 修改 | 将 `g1_flat_symmetric` 锁定为 plane 并禁用 push |
+| 文件                                         | 计划 | 作用                                                    |
+| -------------------------------------------- | ---- | ------------------------------------------------------- |
+| `legged_lab/envs/g1/g1_config.py`          | 修改 | 将`g1_flat_symmetric` 锁定为 plane 并禁用 push        |
 | `legged_lab/envs/g1/g1_recovery_config.py` | 新增 | 定义小扰动 robust 和递增扰动 recovery 的环境/Agent 配置 |
-| `legged_lab/mdp/events.py` | 修改 | 增加递增 root 速度扰动 event |
-| `legged_lab/envs/__init__.py` | 修改 | 导入配置并注册新任务 |
-| `tools/recovery/check_push_curriculum.py` | 新增 | 检查课程 0%/50%/100% 的扰动上限 |
+| `legged_lab/mdp/events.py`                 | 修改 | 增加递增 root 速度扰动 event                            |
+| `legged_lab/envs/__init__.py`              | 修改 | 导入配置并注册新任务                                    |
+| `tools/recovery/check_push_curriculum.py`  | 新增 | 检查课程 0%/50%/100% 的扰动上限                         |
 
 以下文件需要核对，但预期不修改：
 
-| 文件 | 不修改原因 |
-|---|---|
-| `legged_lab/envs/g1/g1_symmetry.py` | 观测、动作和 history 不变，镜像映射应原样保留 |
+| 文件                                        | 不修改原因                                                   |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| `legged_lab/envs/g1/g1_symmetry.py`       | 观测、动作和 history 不变，镜像映射应原样保留                |
 | `legged_lab/envs/base/base_env_config.py` | 可在 G1 子类局部关闭/恢复 push，无需改变所有任务的基类默认值 |
-| `legged_lab/scripts/train.py` | 现有 experiment、run name 和 resume 逻辑已满足需求 |
+| `legged_lab/scripts/train.py`             | 现有 experiment、run name 和 resume 逻辑已满足需求           |
 
 如果实现时发现必须修改上述文件，应先报告具体原因，不自行扩大范围。
 
@@ -361,11 +361,11 @@ push_by_setting_velocity(
 
 event 只保存：
 
-| 属性 | 建议类型/形状 | 含义 |
-|---|---|---|
-| `env.push_curriculum_progress` | Python `float` | 全局课程进度 `[0, 1]` |
-| `env.push_curriculum_max_xy` | tensor `(2,)` | 当前 (x/y) 绝对扰动上限 |
-| `env.last_push_delta_v_xy` | tensor `(num_envs, 2)` | 各环境最近一次实际施加的增量 |
+| 属性                             | 建议类型/形状           | 含义                         |
+| -------------------------------- | ----------------------- | ---------------------------- |
+| `env.push_curriculum_progress` | Python`float`         | 全局课程进度`[0, 1]`       |
+| `env.push_curriculum_max_xy`   | tensor`(2,)`          | 当前 (x/y) 绝对扰动上限      |
+| `env.last_push_delta_v_xy`     | tensor`(num_envs, 2)` | 各环境最近一次实际施加的增量 |
 
 为保留实际增量且不复制 Isaac Lab 采样逻辑，包装函数在调用前复制目标环境 root (x/y) 速度，调用后以速度差更新本次 `env_ids` 对应的调试 buffer。
 
@@ -509,11 +509,11 @@ TienKung-Lab/tools/recovery/check_push_curriculum.py
 
 脚本使用与 event 相同的课程计算 helper，不复制插值公式。默认配置的期望值是：
 
-| 检查点 | `policy_step` | `progress` | `current_max_xy` |
-|---|---:|---:|---:|
-| 0% | `warmup_policy_steps` | `0.0` | `(0.15, 0.10)` |
-| 50% | `warmup_policy_steps + ramp_policy_steps // 2` | `0.5` | `(0.575, 0.45)` |
-| 100% | `warmup_policy_steps + ramp_policy_steps` | `1.0` | `(1.00, 0.80)` |
+| 检查点 |                                  `policy_step` | `progress` | `current_max_xy` |
+| ------ | -----------------------------------------------: | -----------: | -----------------: |
+| 0%     |                          `warmup_policy_steps` |      `0.0` |   `(0.15, 0.10)` |
+| 50%    | `warmup_policy_steps + ramp_policy_steps // 2` |      `0.5` |  `(0.575, 0.45)` |
+| 100%   |      `warmup_policy_steps + ramp_policy_steps` |      `1.0` |   `(1.00, 0.80)` |
 
 脚本用数值容差比较，断言失败时以非零状态退出。
 

@@ -1,0 +1,301 @@
+schema_version: 1
+T: 0.25999975204467773
+step_period:
+  type: linear
+  value: 0.25999975204467773
+  slope: 0.02000069618225101
+  intercept: 0.24399962425231939
+  relative_median_span: 0.07692491091389597
+  overall:
+    count: 200
+    mean: 0.25389999628067017
+    median: 0.25999975204467773
+    std: 0.012197948792319328
+    min: 0.2199993133544922
+    max: 0.2800006866455078
+  per_command:
+    '0.2':
+      count: 40
+      mean: 0.23500000238418578
+      median: 0.23999977111816406
+      std: 0.009746705556044297
+      min: 0.2199993133544922
+      max: 0.25999975204467773
+    '0.4':
+      count: 40
+      mean: 0.25249998569488524
+      median: 0.25999975204467773
+      std: 0.01066542419325011
+      min: 0.23999977111816406
+      max: 0.2799997329711914
+    '0.6':
+      count: 40
+      mean: 0.2600000023841858
+      median: 0.26000022888183594
+      std: 3.5343091679510104e-07
+      min: 0.25999927520751953
+      max: 0.26000022888183594
+    '0.8':
+      count: 40
+      mean: 0.2619999885559082
+      median: 0.26000022888183594
+      std: 0.006000034026568375
+      min: 0.25999927520751953
+      max: 0.2800006866455078
+    '1.0':
+      count: 40
+      mean: 0.2600000023841858
+      median: 0.26000022888183594
+      std: 3.534309167951011e-07
+      min: 0.25999927520751953
+      max: 0.26000022888183594
+h_eff: 0.6884990671277046
+omega: 3.7747033418135656
+w: 0.22294799983501434
+C_left:
+  x:
+  - -0.06534999999999999
+  - 0.13535000000000003
+  y:
+  - -0.045
+  - 0.045
+C_right:
+  x:
+  - -0.06534999999999999
+  - 0.13535000000000003
+  y:
+  - -0.045
+  - 0.045
+L_left:
+  x:
+  - -0.11318803554028273
+  - 0.39078900327533495
+  y:
+  - -0.49227417281130326
+  - -0.04639069146243855
+L_right:
+  x:
+  - -0.2042446251362562
+  - 0.34354466246068494
+  y:
+  - 0.03885958965495229
+  - 0.46614574309811
+v_max:
+  x: 2.181753004789352
+  y: 1.8412404119968375
+epsilon_b:
+  x: 0.02979998700459262
+  y: 0.029979350395705824
+epsilon_q:
+  x: 0.01929521560668951
+  y: 0.02328165620565414
+theoretical_nominal:
+  '0.2':
+    b_left:
+    - 0.03199827559153775
+    - -0.06280080194005715
+    b_right:
+    - 0.03199827559153775
+    - 0.06280080194005715
+    q_left:
+    - -0.04959995269775392
+    - -0.22294799983501434
+    q_right:
+    - -0.04959995269775392
+    - 0.22294799983501434
+    landing_left:
+    - 0.04959995269775392
+    - -0.22294799983501434
+    landing_right:
+    - 0.04959995269775392
+    - 0.22294799983501434
+  '0.4':
+    b_left:
+    - 0.06344093894542976
+    - -0.062121908839301014
+    b_right:
+    - 0.06344093894542976
+    - 0.062121908839301014
+    q_left:
+    - -0.10079996109008792
+    - -0.22294799983501434
+    q_right:
+    - -0.10079996109008792
+    - 0.22294799983501434
+    landing_left:
+    - 0.10079996109008792
+    - -0.22294799983501434
+    landing_right:
+    - 0.10079996109008792
+    - 0.22294799983501434
+  '0.6':
+    b_left:
+    - 0.09433351171532141
+    - -0.06144753881479565
+    b_right:
+    - 0.09433351171532141
+    - 0.06144753881479565
+    q_left:
+    - -0.15360002517700197
+    - -0.22294799983501434
+    q_right:
+    - -0.15360002517700197
+    - 0.22294799983501434
+    landing_left:
+    - 0.15360002517700197
+    - -0.22294799983501434
+    landing_right:
+    - 0.15360002517700197
+    - 0.22294799983501434
+  '0.8':
+    b_left:
+    - 0.12468149463338973
+    - -0.06077772291822404
+    b_right:
+    - 0.12468149463338973
+    - 0.06077772291822404
+    q_left:
+    - -0.20800014495849617
+    - -0.22294799983501434
+    q_right:
+    - -0.20800014495849617
+    - 0.22294799983501434
+    landing_left:
+    - 0.20800014495849617
+    - -0.22294799983501434
+    landing_right:
+    - 0.20800014495849617
+    - 0.22294799983501434
+  '1.0':
+    b_left:
+    - 0.15449036718885228
+    - -0.06011249075210028
+    b_right:
+    - 0.15449036718885228
+    - 0.06011249075210028
+    q_left:
+    - -0.2640003204345704
+    - -0.22294799983501434
+    q_right:
+    - -0.2640003204345704
+    - 0.22294799983501434
+    landing_left:
+    - 0.2640003204345704
+    - -0.22294799983501434
+    landing_right:
+    - 0.2640003204345704
+    - 0.22294799983501434
+nominal_theory_error:
+  b:
+    mean:
+    - 0.017842518137008795
+    - 0.00013503517955541615
+    median:
+    - 0.017423369487093665
+    - 0.002472448655419894
+    rmse:
+    - 0.018989447680651254
+    - 0.020152515577313183
+    p95_abs:
+    - 0.02979998700459262
+    - 0.029979350395705824
+    max_abs:
+    - 0.03281985162218287
+    - 0.032787643723395
+  q:
+    mean:
+    - 0.004337647557258659
+    - -0.0021094217896461486
+    median:
+    - 0.003406620025634813
+    - -0.00012398511171340942
+    rmse:
+    - 0.009269524719899457
+    - 0.011660398511538468
+    p95_abs:
+    - 0.01929521560668951
+    - 0.02328165620565414
+    max_abs:
+    - 0.027399444580078203
+    - 0.027238816022872925
+  model_mismatch: false
+  mismatch_ratio_by_axis:
+  - 0.19938919065303617
+  - 0.1344679047037475
+  criterion: max(epsilon_b, epsilon_q) exceeds 50% of the nominal landing scale on
+    an axis
+provenance:
+  task: g1_flat_symmetric_recovery
+  checkpoint: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-08-27_22-50-24_push_original/model_9998.pt
+  commands_vx:
+  - 0.2
+  - 0.4
+  - 0.6
+  - 0.8
+  - 1.0
+  commands_vy: 0.0
+  commands_yaw_rate: 0.0
+  nominal_touchdown_samples: 200
+  nominal_transition_samples: 200
+  successful_disturbed_transition_samples: 240
+  successful_disturbed_trials_by_speed:
+  - 12
+  - 12
+  - 12
+  - 12
+  - 12
+  failed_disturbed_trials_by_speed:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  push_trials_recorded: 60
+  disturbed_delta_v_world_xy_bounds:
+  - - -1.0
+    - 1.0
+  - - -1.0
+    - 1.0
+  disturbed_push_interval_s:
+  - 10.0
+  - 15.0
+  simulated_total_mass:
+    count: 5
+    mean: 35.339141845703125
+    median: 35.339141845703125
+    std: 0.0
+    min: 35.339141845703125
+    max: 35.339141845703125
+initialization:
+  h_eff:
+    temporary: true
+    source: mean_full_body_com_height_above_flat_support_plane
+    reason: reliable CoP/contact-point truth is not enabled by the current ContactSensor
+    measured_height:
+      count: 200
+      mean: 0.6884990671277046
+      median: 0.6888867020606995
+      std: 0.0023737015130314617
+      min: 0.6832514405250549
+      max: 0.6920987367630005
+  C_sigma:
+    temporary: false
+    source: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/legged_lab/assets/unitree/g1/mjcf/g1_29dof.urdf
+    method: foot_collision_box_in_ankle_frame
+    safety_shrink_fraction: 0.1
+    nominal_cop_containment_checked: false
+    note: CoP samples were unavailable; geometry is the requested first initialization.
+  L_sigma:
+    temporary: false
+    source: successful_stage1b_disturbed_touchdowns
+    outlier_trim_each_tail: 0.005
+    safety_shrink_fraction: 0.05
+    sample_counts:
+      left: 120
+      right: 120
+    meaning: conservative policy-achieved dynamic landing region, not a mechanical
+      limit
+  v_max:
+    temporary: false
+    source: successful_stage1b_disturbed_touchdowns
+    method: 0.9 * 95th percentile of abs(landing-q_start)/swing_time

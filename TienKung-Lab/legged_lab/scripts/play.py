@@ -48,6 +48,18 @@ parser.add_argument("--terrain_color", type=str, default="mdl_shingles",
                     help="Terrain color: concrete/grass/sand/dirt/rock/white/dark (简单颜色), mdl_* (真实MDL材质)")
 parser.add_argument("--no_gait", action="store_true",
                     help="Disable gait phase mechanism (for testing models trained without gait)")
+parser.add_argument("--keyboard_control", action="store_true",
+                    help="Use discrete keyboard velocity control: one key press changes one speed step")
+parser.add_argument("--keyboard_linear_step", type=float, default=0.1,
+                    help="Linear velocity change per key press in m/s (default: 0.1)")
+parser.add_argument("--keyboard_yaw_step", type=float, default=0.1,
+                    help="Yaw velocity change per key press in rad/s (default: 0.1)")
+parser.add_argument("--keyboard_push", action="store_true",
+                    help="Enable one-shot keyboard velocity impulses for robustness testing")
+parser.add_argument("--keyboard_push_step", type=float, default=0.2,
+                    help="Directional velocity impulse per key press in m/s (default: 0.2)")
+parser.add_argument("--keyboard_random_push_max", type=float, default=1.0,
+                    help="Maximum absolute x/y random velocity impulse for the M key (default: 1.0)")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -86,8 +98,20 @@ def play():
     env_cfg.scene.num_envs = 1
     env_cfg.scene.env_spacing = 6.0
     env_cfg.commands.rel_standing_envs = 0.0
-    env_cfg.commands.ranges.lin_vel_x = (1.0, 1.0)
-    env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
+    keyboard_command_limits = (
+        tuple(env_cfg.commands.ranges.lin_vel_x),
+        tuple(env_cfg.commands.ranges.lin_vel_y),
+        tuple(env_cfg.commands.ranges.ang_vel_z),
+    )
+    if args_cli.keyboard_control:
+        # Start stopped. Keyboard commands are kept inside the velocity ranges
+        # used by this task and are re-applied by the controller every step.
+        env_cfg.commands.ranges.lin_vel_x = (0.0, 0.0)
+        env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
+        env_cfg.commands.resampling_time_range = (1.0e9, 1.0e9)
+    else:
+        env_cfg.commands.ranges.lin_vel_x = (1.0, 1.0)
+        env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
     # Use a deterministic straight-line command when evaluating gait symmetry.
     # Otherwise the sampled heading target can make the robot turn, which
     # naturally produces different left/right stride lengths.
@@ -363,10 +387,38 @@ def play():
             runner.alg.policy, normalizer=runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
         )
 
+    keyboard = None
     if not args_cli.headless:
         from legged_lab.utils.keyboard import Keyboard
 
-        keyboard = Keyboard(env)  # noqa:F841
+        keyboard = Keyboard(
+            env,
+            enable_velocity_control=args_cli.keyboard_control,
+            linear_step=args_cli.keyboard_linear_step,
+            angular_step=args_cli.keyboard_yaw_step,
+            command_limits=keyboard_command_limits,
+            enable_push_control=args_cli.keyboard_push,
+            push_step=args_cli.keyboard_push_step,
+            random_push_max=args_cli.keyboard_random_push_max,
+        )
+        if args_cli.keyboard_control:
+            print("[INFO] 键盘离散调速已启用（每按一次只改变一个档位）")
+            print("[INFO] W/S: 前后速度  A/D: 左右速度  Q/E: 转向速度  Space: 速度归零")
+            print(
+                "[INFO] 速度范围: "
+                f"vx={keyboard_command_limits[0]}, "
+                f"vy={keyboard_command_limits[1]}, "
+                f"yaw={keyboard_command_limits[2]}"
+            )
+        if args_cli.keyboard_push:
+            print("[INFO] 键盘手动扰动已启用（每按一次只施加一次速度突变）")
+            print("[INFO] I/K: 前后扰动  J/L: 左右扰动  M: 训练范围内随机扰动")
+            print(
+                f"[INFO] 定向扰动档位: {args_cli.keyboard_push_step:.2f} m/s, "
+                f"随机扰动范围: ±{args_cli.keyboard_random_push_max:.2f} m/s"
+            )
+    elif args_cli.keyboard_control or args_cli.keyboard_push:
+        print("[WARN] 键盘控制需要图形窗口，不能与 --headless 一起使用")
 
     obs, _ = env.get_observations()
     extras = env.extras  # Get initial extras
@@ -379,6 +431,9 @@ def play():
     while simulation_app.is_running():
 
         with torch.inference_mode():
+            if keyboard is not None:
+                keyboard.advance()
+
             # DWAQ policy needs extras for obs_hist
             if use_dwaq_policy:
                 actions = policy(obs, extras)
