@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay the two Stage2 reward channels on the saved 200 recovery trials."""
+"""Replay the clean original-vs-certificate Stage2 rewards on saved trials."""
 
 from __future__ import annotations
 
@@ -135,18 +135,16 @@ def _synthetic_checks() -> dict:
     no_orbit_bonus.on_touchdown(0, 0.8, practical_entered=False)
     n1_to_n0_certificate = no_orbit_bonus.consume().certificate
 
-    success_values = {
-        str(step): 3.0 * (6 - step) / 5.0 for step in range(1, 6)
-    }
+    no_certificate = Stage2RecoveryRewardChannel(enable_certificate_reward=False)
+    no_certificate.on_push(6, -1.0)
+    no_certificate.consume()
+    no_certificate.on_touchdown(5, 0.2, practical_entered=True)
+    disabled_shared_event = no_certificate.consume()
     return {
         "oscillation_round_trip_certificate": oscillation_certificate_sum,
         "over_horizon_margin_improvement_certificate": over_horizon_improvement,
         "n1_to_n0_certificate": n1_to_n0_certificate,
-        "success_values": success_values,
-        "success_values_strictly_decrease": all(
-            success_values[str(left)] > success_values[str(left + 1)]
-            for left in range(1, 5)
-        ),
+        "shared_event_reward_disabled": disabled_shared_event.shared_total == 0.0,
     }
 
 
@@ -163,26 +161,20 @@ def main() -> None:
         raise AssertionError(f"expected exactly 200 saved trajectories, got {len(trials)}")
     if any(item["certificate"] != 0.0 for item in baseline):
         raise AssertionError("Baseline produced certificate reward")
-    if any(
-        not math.isclose(left["shared"], right["shared"], abs_tol=1.0e-12)
-        for left, right in zip(baseline, ours)
-    ):
-        raise AssertionError("Baseline and Ours did not share the same generic reward")
+    if any(item["shared"] != 0.0 for item in baseline + ours):
+        raise AssertionError("touchdown/success/timeout reward was not disabled")
+    if any(item["total"] != 0.0 for item in baseline):
+        raise AssertionError("Baseline produced a non-original recovery reward")
 
-    timeout_shared = [item["shared"] for item in baseline if item["outcome"] == "TIMEOUT"]
     timeout_ours = [item for item in ours if item["outcome"] == "TIMEOUT"]
-    if not timeout_shared or any(value >= 0.0 for value in timeout_shared):
-        raise AssertionError("TIMEOUT shared reward was not negative")
-    if any(item["total"] >= 0.0 for item in timeout_ours):
-        raise AssertionError("Ours TIMEOUT total reward was not negative")
     telescoping_errors = [abs(item["telescoping_error"]) for item in ours]
     synthetic = _synthetic_checks()
     if synthetic["over_horizon_margin_improvement_certificate"] <= 0.0:
         raise AssertionError("N>5 margin improvement did not produce positive certificate reward")
     if synthetic["n1_to_n0_certificate"] != 0.0:
         raise AssertionError("N=1 -> N=0 produced an orbit bonus")
-    if not synthetic["success_values_strictly_decrease"]:
-        raise AssertionError("success reward does not decrease with touchdown count")
+    if not synthetic["shared_event_reward_disabled"]:
+        raise AssertionError("shared event reward is still active")
 
     report = {
         "schema_version": 1,
@@ -202,7 +194,6 @@ def main() -> None:
             "certificate_reward": _distribution([item["certificate"] for item in ours]),
             "episode_total_reward": _distribution([item["total"] for item in ours]),
         },
-        "timeout_shared_reward": _distribution(timeout_shared),
         "timeout_ours_certificate_reward": _distribution(
             [item["certificate"] for item in timeout_ours]
         ),
@@ -215,9 +206,8 @@ def main() -> None:
             "push_reward_zero": True,
             "event_reward_one_shot": True,
             "baseline_certificate_always_zero": True,
-            "shared_channels_identical": True,
-            "timeout_shared_reward_strictly_negative": True,
-            "timeout_ours_total_reward_strictly_negative": True,
+            "shared_touchdown_success_timeout_always_zero": True,
+            "baseline_original_recovery_reward_unchanged": True,
             "all_values_finite": all(
                 math.isfinite(item[key])
                 for item in baseline + ours

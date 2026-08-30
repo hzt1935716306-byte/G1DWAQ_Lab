@@ -50,10 +50,13 @@ class G1PushCurriculumCfg:
 
 @configclass
 class G1Stage2RewardCfg:
-    """Shared Stage2 reward and recovery-only soft-constraint settings."""
+    """Optional Stage2 reward channels; the clean A/B uses certificate only."""
 
     enabled: bool = False
+    enable_shared_event_reward: bool = False
     enable_certificate_reward: bool = False
+    enable_soft_reward_scaling: bool = False
+    defer_certificate_reward_to_rollout_end: bool = False
     event_scale: float = DEFAULT_EVENT_SCALE
     certificate_parameters_path: str = _DEFAULT_CERTIFICATE_PARAMETERS
     certificate_workers: int = 16
@@ -108,11 +111,14 @@ class G1FlatSymmetricRecoveryAgentCfg(G1FlatSymmetricAgentCfg):
 
 @configclass
 class G1FlatSymmetricStage2BaselineEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
-    """Shared Stage2 task with generic event rewards and no certificate progress."""
+    """Original locomotion reward under the shared Stage2 physical curriculum."""
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
-        enabled=True,
+        enabled=False,
+        enable_shared_event_reward=False,
         enable_certificate_reward=False,
+        enable_soft_reward_scaling=False,
+        defer_certificate_reward_to_rollout_end=False,
     )
 
 
@@ -122,7 +128,11 @@ class G1FlatSymmetricStage2OursEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
         enabled=True,
+        enable_shared_event_reward=False,
         enable_certificate_reward=True,
+        enable_soft_reward_scaling=False,
+        defer_certificate_reward_to_rollout_end=False,
+        event_scale=0.50,
     )
 
 

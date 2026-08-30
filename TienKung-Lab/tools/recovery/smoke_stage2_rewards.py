@@ -67,8 +67,7 @@ def main() -> None:
     one_shot_buffers_clear = True
     push_event_reward_zero = True
     completion_closes_recovery = True
-    active_soft_multiplier_below_one = False
-    inactive_soft_multiplier_is_one = True
+    soft_reward_scaling_observed = False
     observed_levels = [env.push_curriculum.level]
 
     for _ in range(args.steps):
@@ -104,16 +103,11 @@ def main() -> None:
         soft_mask = env._last_soft_scaling_recovery_mask
         for multipliers in env._last_soft_reward_multipliers.values():
             if torch.any(soft_mask):
-                active_soft_multiplier_below_one |= bool(
+                soft_reward_scaling_observed |= bool(
                     torch.any(multipliers[soft_mask] < 1.0).item()
-                )
-            if torch.any(~soft_mask):
-                inactive_soft_multiplier_is_one &= bool(
-                    torch.all(multipliers[~soft_mask] == 1.0).item()
                 )
 
         for episode in extras.get("recovery_episode_rewards", []):
-            outcome_counts[episode["outcome"]] += 1
             episode_ratios.append(episode["recovery_to_locomotion_abs_ratio"])
             absolute_episode_ratios.append(
                 episode["absolute_recovery_to_locomotion_ratio"]
@@ -123,6 +117,18 @@ def main() -> None:
             )
 
     is_ours = args.task.endswith("_ours")
+    curriculum_snapshot = env.push_curriculum.snapshot()
+    outcome_counts = {
+        outcome: sum(
+            int(level_stats[field])
+            for level_stats in curriculum_snapshot["all_level_statistics"]
+        )
+        for outcome, field in (
+            ("SUCCESS", "success"),
+            ("TIMEOUT", "timeout"),
+            ("FALL", "fall"),
+        )
+    }
     baseline_solver_disabled = env._certificate_evaluator is None if not is_ours else None
     ours_solver_enabled = env._certificate_evaluator is not None if is_ours else None
     certificate_always_zero = len(certificate_event_values) == 0
@@ -130,11 +136,8 @@ def main() -> None:
     absolute_ratio_median = (
         float(np.median(absolute_episode_ratios)) if absolute_episode_ratios else None
     )
-    absolute_ratio_near_target = (
-        absolute_ratio_median is not None and 0.25 <= absolute_ratio_median <= 0.50
-    )
-    if float(env_cfg.stage2_reward.event_scale) != 0.2:
-        raise RuntimeError("the shared Stage2 event_scale must be exactly 0.2")
+    if float(env_cfg.stage2_reward.event_scale) != 0.50:
+        raise RuntimeError("the certificate event_scale must be exactly 0.50")
     if env.push_curriculum.push_sample_count <= 0:
         raise RuntimeError("curriculum produced no physical push")
     if sum(outcome_counts.values()) <= 0:
@@ -143,8 +146,8 @@ def main() -> None:
         raise RuntimeError("policy reward was non-finite or exploded")
     if not one_shot_buffers_clear or not push_event_reward_zero:
         raise RuntimeError("one-shot event buffer or push-zero invariant failed")
-    if not active_soft_multiplier_below_one or not inactive_soft_multiplier_is_one:
-        raise RuntimeError("dynamic soft reward scaling invariant failed")
+    if soft_reward_scaling_observed or env._soft_reward_term_indices:
+        raise RuntimeError("the clean A/B must use the original locomotion reward")
     if not completion_closes_recovery:
         raise RuntimeError("SUCCESS/TIMEOUT/FALL did not close recovery immediately")
     if is_ours and not certificate_nonzero:
@@ -155,18 +158,29 @@ def main() -> None:
         raise RuntimeError("Ours certificate evaluator is disabled")
     if not is_ours and not baseline_solver_disabled:
         raise RuntimeError("Baseline must not construct or call a certificate evaluator")
-    if not absolute_ratio_near_target:
-        raise RuntimeError(
-            f"absolute recovery/locomotion ratio median is outside [0.25, 0.50]: "
-            f"{absolute_ratio_median}"
-        )
+    if shared_event_values:
+        raise RuntimeError("touchdown/success/timeout rewards must be zero for both tasks")
+    if is_ours and (
+        not env._stage2_reward_enabled
+        or env._shared_event_reward_enabled
+        or not env._certificate_reward_enabled
+        or env._soft_reward_scaling_enabled
+    ):
+        raise RuntimeError("Ours is not configured as original reward plus certificate only")
+    if not is_ours and (
+        env._stage2_reward_enabled
+        or env._shared_event_reward_enabled
+        or env._certificate_reward_enabled
+        or env._soft_reward_scaling_enabled
+    ):
+        raise RuntimeError("Baseline is not using the untouched original reward")
 
     report = {
         "task": args.task,
         "checkpoint_loaded": str(checkpoint),
         "num_envs": args.num_envs,
         "steps": args.steps,
-        "event_scale": float(env_cfg.stage2_reward.event_scale),
+        "certificate_event_scale": float(env_cfg.stage2_reward.event_scale),
         "actor_observation_shape": actor_shape,
         "critic_observation_shape": critic_shape,
         "action_size": env.num_actions,
@@ -218,8 +232,9 @@ def main() -> None:
             "checkpoint_loaded": True,
             "curriculum_operational": env.push_curriculum.push_sample_count > 0,
             "state_machine_completed_episode": sum(outcome_counts.values()) > 0,
-            "soft_reward_scaling_active": active_soft_multiplier_below_one,
-            "normal_soft_multiplier_is_one": inactive_soft_multiplier_is_one,
+            "original_locomotion_reward_unchanged": not soft_reward_scaling_observed
+            and not env._soft_reward_term_indices,
+            "shared_touchdown_success_timeout_always_zero": not shared_event_values,
             "event_buffers_one_shot": one_shot_buffers_clear,
             "push_event_reward_zero": push_event_reward_zero,
             "completion_closes_recovery": completion_closes_recovery,
@@ -229,7 +244,6 @@ def main() -> None:
             "ours_certificate_solver_enabled": ours_solver_enabled,
             "policy_rewards_finite": reward_finite,
             "reward_magnitude_not_exploded": max_abs_policy_reward <= 250.0,
-            "absolute_ratio_median_near_target": absolute_ratio_near_target,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

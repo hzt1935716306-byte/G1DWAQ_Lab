@@ -1,4 +1,4 @@
-"""Thin Stage2 recovery environment with shared A/B reward plumbing."""
+"""Thin Stage2 recovery environment with a certificate-only A/B reward path."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ class G1RecoveryEnv(BaseEnv):
     """Keep the Stage1A task intact while adding Stage2-only bookkeeping.
 
     Recovery state is simulator-privileged and is never appended to actor or
-    critic observations.  Baseline and Ours share this class and differ only by
-    ``cfg.stage2_reward.enable_certificate_reward``.
+    critic observations.  Baseline keeps the original RewardManager output;
+    Ours enables the Stage2 recovery-event and certificate reward channel.
     """
 
     def __init__(self, cfg, headless):
@@ -39,7 +39,24 @@ class G1RecoveryEnv(BaseEnv):
 
         self.push_curriculum = PushCurriculumController(cfg.push_curriculum)
         self._stage2_reward_enabled = bool(cfg.stage2_reward.enabled)
+        self._shared_event_reward_enabled = bool(
+            cfg.stage2_reward.enable_shared_event_reward
+        )
         self._certificate_reward_enabled = bool(cfg.stage2_reward.enable_certificate_reward)
+        self._soft_reward_scaling_enabled = bool(
+            cfg.stage2_reward.enable_soft_reward_scaling
+        )
+        self._deferred_certificate_configured = bool(
+            cfg.stage2_reward.defer_certificate_reward_to_rollout_end
+        )
+        if not self._stage2_reward_enabled and (
+            self._shared_event_reward_enabled
+            or self._certificate_reward_enabled
+            or self._soft_reward_scaling_enabled
+        ):
+            raise ValueError("Stage2 subchannels require stage2_reward.enabled=True")
+        if self._deferred_certificate_configured and not self._certificate_reward_enabled:
+            raise ValueError("deferred certificate rewards require the certificate channel")
         self._steps_per_learning_iteration = int(cfg.push_curriculum.num_steps_per_iteration)
         self._state_extractor = G1PrivilegedStateExtractor(
             self,
@@ -100,6 +117,21 @@ class G1RecoveryEnv(BaseEnv):
         )
         self._last_push_started_mask = torch.zeros(count, dtype=torch.bool, device=device)
 
+        # The runner activates this only for complete PPO rollouts.  Play and
+        # standalone smoke paths keep using the synchronous evaluator.
+        self._deferred_rollout_active = False
+        self._deferred_rollout_length = 0
+        self._deferred_rollout_step = 0
+        self._deferred_certificate_batches: list[dict] = []
+        self._deferred_closed_tokens: set[tuple[int, int]] = set()
+        self._deferred_phi_by_token: dict[tuple[int, int], float] = {}
+        self._deferred_episode_certificate_sum: dict[tuple[int, int], float] = {}
+        self._deferred_episode_certificate_abs_sum: dict[tuple[int, int], float] = {}
+        self._deferred_pending_episode_metrics: dict[tuple[int, int], dict] = {}
+        self._recovery_episode_generation = torch.zeros(
+            count, dtype=torch.long, device=device
+        )
+
         self.last_push_delta_v_xy = torch.zeros((count, 2), device=device)
         self.push_curriculum_level = self.push_curriculum.level
         self.push_curriculum_level_ratio = self.push_curriculum.level_ratio
@@ -112,7 +144,7 @@ class G1RecoveryEnv(BaseEnv):
     def _initialize_soft_reward_terms(self) -> None:
         self._soft_reward_term_indices: dict[str, tuple[int, float]] = {}
         self._last_soft_reward_multipliers: dict[str, torch.Tensor] = {}
-        if not self._stage2_reward_enabled:
+        if not self._stage2_reward_enabled or not self._soft_reward_scaling_enabled:
             return
         active_terms = list(self.reward_manager.active_terms)
         for term_name, alpha_min in self.cfg.stage2_reward.soft_reward_min_multipliers.items():
@@ -148,6 +180,191 @@ class G1RecoveryEnv(BaseEnv):
         if self._certificate_evaluator is not None:
             self._certificate_evaluator.configure_diagnostics(log_dir)
 
+    def begin_deferred_reward_rollout(self, num_steps: int) -> bool:
+        """Enable asynchronous certificate jobs for one complete PPO rollout."""
+
+        if not self._deferred_certificate_configured:
+            return False
+        if self._deferred_rollout_active:
+            raise RuntimeError("a deferred certificate rollout is already active")
+        if num_steps <= 0:
+            raise ValueError("deferred rollout length must be positive")
+        self._deferred_rollout_active = True
+        self._deferred_rollout_length = int(num_steps)
+        self._deferred_rollout_step = 0
+        self._deferred_certificate_batches = []
+        self._deferred_closed_tokens = set()
+        return True
+
+    def _tokens_for(self, env_ids: torch.Tensor) -> tuple[tuple[int, int], ...]:
+        ids = env_ids.detach().cpu().tolist()
+        generations = self._recovery_episode_generation[env_ids].detach().cpu().tolist()
+        return tuple((int(env_id), int(generation)) for env_id, generation in zip(ids, generations))
+
+    def _submit_deferred_certificate_batch(
+        self,
+        state,
+        env_ids: torch.Tensor,
+        *,
+        kind: str,
+    ) -> None:
+        if not self._deferred_rollout_active:
+            raise RuntimeError("deferred certificate submission occurred outside a PPO rollout")
+        if kind not in ("push", "touchdown"):
+            raise ValueError(f"unknown deferred certificate event kind: {kind}")
+        assert self._certificate_evaluator is not None
+        self._deferred_certificate_batches.append(
+            {
+                "kind": kind,
+                "rollout_step": self._deferred_rollout_step,
+                "env_ids": env_ids.detach().clone(),
+                "tokens": self._tokens_for(env_ids),
+                "pending": self._certificate_evaluator.submit(state, env_ids),
+            }
+        )
+
+    @staticmethod
+    def _episode_reward_metric(
+        base: dict,
+        certificate: float,
+        certificate_abs_sum: float,
+    ) -> dict:
+        locomotion = float(base["episode_locomotion_reward_during_recovery"])
+        locomotion_abs_sum = float(
+            base["episode_locomotion_reward_abs_sum_during_recovery"]
+        )
+        shared = float(base["episode_shared_recovery_reward"])
+        total = shared + certificate
+        event_abs_sum = float(base["episode_shared_reward_abs_sum"]) + certificate_abs_sum
+        return {
+            "env_id": int(base["env_id"]),
+            "outcome": base["outcome"],
+            "episode_locomotion_reward_during_recovery": locomotion,
+            "episode_shared_recovery_reward": shared,
+            "episode_certificate_reward": certificate,
+            "episode_total_recovery_reward": total,
+            "recovery_to_locomotion_abs_ratio": abs(total) / (abs(locomotion) + 1.0e-8),
+            "episode_recovery_event_reward_abs_sum": event_abs_sum,
+            "episode_locomotion_reward_abs_sum_during_recovery": locomotion_abs_sum,
+            "absolute_recovery_to_locomotion_ratio": event_abs_sum
+            / (locomotion_abs_sum + 1.0e-8),
+        }
+
+    def resolve_deferred_reward_rollout(self) -> dict:
+        """Wait for LP jobs and return rewards indexed by their original steps."""
+
+        if not self._deferred_rollout_active:
+            raise RuntimeError("no deferred certificate rollout is active")
+        if self._deferred_rollout_step != self._deferred_rollout_length:
+            raise RuntimeError(
+                "deferred rollout resolved before every environment step was collected"
+            )
+        assert self._certificate_evaluator is not None
+        corrections = torch.zeros(
+            (self._deferred_rollout_length, self.num_envs),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        scale = float(self.cfg.stage2_reward.event_scale)
+        for event in self._deferred_certificate_batches:
+            n_min, margin = self._certificate_evaluator.resolve(event["pending"])
+            phi = certificate_potential_tensor(n_min, margin)
+            env_ids = event["env_ids"]
+            tokens = event["tokens"]
+            if event["kind"] == "push":
+                for token, value in zip(tokens, phi.detach().cpu().tolist()):
+                    self._deferred_phi_by_token[token] = float(value)
+                    self._deferred_episode_certificate_sum.setdefault(token, 0.0)
+                    self._deferred_episode_certificate_abs_sum.setdefault(token, 0.0)
+                continue
+
+            missing = [token for token in tokens if token not in self._deferred_phi_by_token]
+            if missing:
+                raise RuntimeError(
+                    f"touchdown certificate has no resolved push potential: {missing[:3]}"
+                )
+            previous = torch.tensor(
+                [self._deferred_phi_by_token[token] for token in tokens],
+                dtype=phi.dtype,
+                device=phi.device,
+            )
+            reward = scale * CERTIFICATE_PROGRESS_SCALE * (phi - previous)
+            corrections[event["rollout_step"], env_ids] += reward
+            self._certificate_nonzero_event_count += int(
+                torch.count_nonzero(torch.abs(reward) > 1.0e-8).item()
+            )
+            for token, phi_value, reward_value in zip(
+                tokens,
+                phi.detach().cpu().tolist(),
+                reward.detach().cpu().tolist(),
+            ):
+                reward_value = float(reward_value)
+                self._deferred_phi_by_token[token] = float(phi_value)
+                self._deferred_episode_certificate_sum[token] = (
+                    self._deferred_episode_certificate_sum.get(token, 0.0) + reward_value
+                )
+                self._deferred_episode_certificate_abs_sum[token] = (
+                    self._deferred_episode_certificate_abs_sum.get(token, 0.0)
+                    + abs(reward_value)
+                )
+
+            current_generations = self._recovery_episode_generation[env_ids]
+            token_generations = torch.tensor(
+                [token[1] for token in tokens],
+                dtype=current_generations.dtype,
+                device=self.device,
+            )
+            current = current_generations == token_generations
+            current_ids = env_ids[current]
+            self._certificate_n[current_ids] = n_min[current]
+            self._certificate_margin[current_ids] = margin[current]
+            self._certificate_phi_previous[current_ids] = phi[current]
+
+        completed_episode_rewards = []
+        for token in self._deferred_closed_tokens:
+            base = self._deferred_pending_episode_metrics.pop(token, None)
+            certificate = self._deferred_episode_certificate_sum.pop(token, 0.0)
+            certificate_abs_sum = self._deferred_episode_certificate_abs_sum.pop(token, 0.0)
+            self._deferred_phi_by_token.pop(token, None)
+            if base is not None:
+                completed_episode_rewards.append(
+                    self._episode_reward_metric(base, certificate, certificate_abs_sum)
+                )
+
+        log = {
+            "Reward/recovery_touchdown_cost": 0.0,
+            "Reward/recovery_success": 0.0,
+            "Reward/recovery_timeout": 0.0,
+            "Reward/recovery_certificate": float(corrections.mean().item()),
+            "Reward/recovery_shared_total": 0.0,
+            "Reward/recovery_total": float(corrections.mean().item()),
+            "Recovery/reward": float(corrections.mean().item()),
+        }
+        if completed_episode_rewards:
+            metric_keys = (
+                "episode_locomotion_reward_during_recovery",
+                "episode_shared_recovery_reward",
+                "episode_certificate_reward",
+                "episode_total_recovery_reward",
+                "recovery_to_locomotion_abs_ratio",
+                "episode_recovery_event_reward_abs_sum",
+                "episode_locomotion_reward_abs_sum_during_recovery",
+                "absolute_recovery_to_locomotion_ratio",
+            )
+            for key in metric_keys:
+                log[f"Recovery/{key}"] = sum(
+                    item[key] for item in completed_episode_rewards
+                ) / len(completed_episode_rewards)
+
+        self._deferred_rollout_active = False
+        self._deferred_certificate_batches = []
+        self._deferred_closed_tokens = set()
+        return {
+            "reward_corrections": corrections,
+            "episode_rewards": completed_episode_rewards,
+            "log": log,
+        }
+
     def eligible_recovery_push_env_ids(self, env_ids: torch.Tensor) -> torch.Tensor:
         """Do not start a second recovery episode before the first one exits."""
 
@@ -164,6 +381,7 @@ class G1RecoveryEnv(BaseEnv):
         if torch.any(self.recovery_active[env_ids]):
             raise RuntimeError("overlapping recovery episodes are not allowed")
         self.recovery_active[env_ids] = True
+        self._recovery_episode_generation[env_ids] += 1
         self._recovery_touchdowns[env_ids] = 0
         self._recovery_level_indices[env_ids] = sampled_level_indices
         self._last_touchdown_foot[env_ids] = -1
@@ -174,10 +392,10 @@ class G1RecoveryEnv(BaseEnv):
         self._practical_entered[env_ids] = False
         self._practical_enter_step[env_ids] = 0
         self.last_push_delta_v_xy[env_ids] = delta_v_xy
+        self._push_started_this_step[env_ids] = True
         if self._stage2_reward_enabled:
             self._clear_event_buffers(env_ids)
             self._pending_initial_certificate[env_ids] = self._certificate_reward_enabled
-            self._push_started_this_step[env_ids] = True
 
     def _clear_event_buffers(self, env_ids: torch.Tensor) -> None:
         self._event_touchdown_cost[env_ids] = 0.0
@@ -188,6 +406,9 @@ class G1RecoveryEnv(BaseEnv):
     def _clear_recovery(self, env_ids: torch.Tensor, *, clear_event_buffers: bool = False) -> None:
         if env_ids.numel() == 0:
             return
+        if self._deferred_rollout_active and self._certificate_reward_enabled:
+            active_ids = env_ids[self.recovery_active[env_ids]]
+            self._deferred_closed_tokens.update(self._tokens_for(active_ids))
         self.recovery_active[env_ids] = False
         self._recovery_touchdowns[env_ids] = 0
         self._last_touchdown_foot[env_ids] = -1
@@ -228,6 +449,26 @@ class G1RecoveryEnv(BaseEnv):
         event_abs_sum = (
             self._episode_recovery_event_reward_abs_sum[env_ids].detach().cpu().tolist()
         )
+        if self._deferred_rollout_active:
+            for token, env_id, locomotion_value, locomotion_abs_sum_value, shared_value, shared_abs in zip(
+                self._tokens_for(env_ids),
+                env_ids.detach().cpu().tolist(),
+                locomotion,
+                locomotion_abs_sum,
+                shared,
+                event_abs_sum,
+            ):
+                self._deferred_pending_episode_metrics[token] = {
+                    "env_id": int(env_id),
+                    "outcome": outcome.value,
+                    "episode_locomotion_reward_during_recovery": float(locomotion_value),
+                    "episode_locomotion_reward_abs_sum_during_recovery": float(
+                        locomotion_abs_sum_value
+                    ),
+                    "episode_shared_recovery_reward": float(shared_value),
+                    "episode_shared_reward_abs_sum": float(shared_abs),
+                }
+            return
         for (
             env_id,
             locomotion_value,
@@ -312,6 +553,10 @@ class G1RecoveryEnv(BaseEnv):
         if env_ids.numel() == 0:
             return
         assert self._certificate_evaluator is not None
+        if self._deferred_rollout_active:
+            self._submit_deferred_certificate_batch(state, env_ids, kind="push")
+            self._pending_initial_certificate[env_ids] = False
+            return
         n_min, margin = self._certificate_evaluator.evaluate(state, env_ids)
         self._certificate_n[env_ids] = n_min
         self._certificate_margin[env_ids] = margin
@@ -341,28 +586,32 @@ class G1RecoveryEnv(BaseEnv):
             raise RuntimeError("a recovery event buffer was not consumed exactly once")
 
         scale = float(self.cfg.stage2_reward.event_scale)
-        self._event_touchdown_cost[env_ids] = scale * TOUCHDOWN_COST
+        if self._shared_event_reward_enabled:
+            self._event_touchdown_cost[env_ids] = scale * TOUCHDOWN_COST
         if self._certificate_reward_enabled:
             assert self._certificate_evaluator is not None
-            n_min, margin = self._certificate_evaluator.evaluate(state, env_ids)
-            phi_current = certificate_potential_tensor(n_min, margin)
-            raw_certificate = CERTIFICATE_PROGRESS_SCALE * (
-                phi_current - self._certificate_phi_previous[env_ids]
-            )
-            self._certificate_phi_previous[env_ids] = phi_current
-            self._certificate_n[env_ids] = n_min
-            self._certificate_margin[env_ids] = margin
-            self._event_certificate[env_ids] = scale * raw_certificate
             self._certificate_event_count += int(env_ids.numel())
-            self._certificate_nonzero_event_count += int(
-                torch.count_nonzero(torch.abs(raw_certificate) > 1.0e-8).item()
-            )
-        if entered_ids.numel() > 0:
+            if self._deferred_rollout_active:
+                self._submit_deferred_certificate_batch(state, env_ids, kind="touchdown")
+            else:
+                n_min, margin = self._certificate_evaluator.evaluate(state, env_ids)
+                phi_current = certificate_potential_tensor(n_min, margin)
+                raw_certificate = CERTIFICATE_PROGRESS_SCALE * (
+                    phi_current - self._certificate_phi_previous[env_ids]
+                )
+                self._certificate_phi_previous[env_ids] = phi_current
+                self._certificate_n[env_ids] = n_min
+                self._certificate_margin[env_ids] = margin
+                self._event_certificate[env_ids] = scale * raw_certificate
+                self._certificate_nonzero_event_count += int(
+                    torch.count_nonzero(torch.abs(raw_certificate) > 1.0e-8).item()
+                )
+        if self._shared_event_reward_enabled and entered_ids.numel() > 0:
             touchdown_count = self._recovery_touchdowns[entered_ids].to(torch.float32)
             self._event_success[entered_ids] = (
                 scale * SUCCESS_MAX * (6.0 - touchdown_count) / 5.0
             )
-        if timeout_ids.numel() > 0:
+        if self._shared_event_reward_enabled and timeout_ids.numel() > 0:
             self._event_timeout[timeout_ids] = scale * TIMEOUT_PENALTY
 
         shared = (
@@ -438,7 +687,7 @@ class G1RecoveryEnv(BaseEnv):
         recovery_mask: torch.Tensor,
         dones: torch.Tensor,
     ) -> torch.Tensor:
-        if not self._stage2_reward_enabled:
+        if not self._stage2_reward_enabled or not self._soft_reward_scaling_enabled:
             return reward_buf
         self._last_soft_scaling_recovery_mask = recovery_mask.clone()
         progress = torch.clamp(
@@ -494,6 +743,9 @@ class G1RecoveryEnv(BaseEnv):
 
     def _update_reward_logs(self, event: dict[str, torch.Tensor]) -> None:
         self._last_event_rewards = event
+        if self._deferred_rollout_active:
+            self.extras["recovery_episode_rewards"] = []
+            return
         log = self.extras.setdefault("log", {})
         for name, values in event.items():
             log[f"Reward/{name}"] = float(values.mean().item())
@@ -580,8 +832,9 @@ class G1RecoveryEnv(BaseEnv):
                 else -1.0
             ),
             "Recovery/truncated_by_env_horizon": float(self._truncated_recovery_count),
-            "Recovery/reward": self._last_recovery_reward_mean,
         }
+        if not self._deferred_rollout_active:
+            log["Recovery/reward"] = self._last_recovery_reward_mean
         if self._certificate_evaluator is not None:
             certificate_stats = self._certificate_evaluator.statistics
             for name, value in certificate_stats.items():
@@ -606,6 +859,11 @@ class G1RecoveryEnv(BaseEnv):
         self.extras.setdefault("log", {}).update(log)
 
     def step(self, actions: torch.Tensor):
+        if (
+            self._deferred_rollout_active
+            and self._deferred_rollout_step >= self._deferred_rollout_length
+        ):
+            raise RuntimeError("deferred rollout received more steps than configured")
         recovery_at_step_start = self.recovery_active.clone()
         self._step_completed_reward_episodes = []
         self._defer_recovery_reset_cleanup = True
@@ -640,4 +898,6 @@ class G1RecoveryEnv(BaseEnv):
         self._last_push_started_mask = self._push_started_this_step.clone()
         self._push_started_this_step[:] = False
         self._update_curriculum_logs()
+        if self._deferred_rollout_active:
+            self._deferred_rollout_step += 1
         return actor_obs, reward_buf, dones, extras

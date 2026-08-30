@@ -155,6 +155,20 @@ class RolloutStorage:
     def clear(self):
         self.step = 0
 
+    def add_reward_corrections(self, corrections: torch.Tensor) -> None:
+        """Add delayed extrinsic rewards before returns are computed."""
+
+        expected_shape = (self.num_transitions_per_env, self.num_envs)
+        if tuple(corrections.shape) != expected_shape:
+            raise ValueError(
+                f"reward corrections must have shape {expected_shape}, got {tuple(corrections.shape)}"
+            )
+        if self.step != self.num_transitions_per_env:
+            raise RuntimeError("reward corrections require a complete rollout")
+        if not torch.all(torch.isfinite(corrections)):
+            raise ValueError("reward corrections must be finite")
+        self.rewards[..., 0] += corrections.to(self.device)
+
     def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):

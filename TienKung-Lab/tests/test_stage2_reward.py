@@ -35,6 +35,7 @@ def test_tensor_potential_matches_scalar() -> None:
 def test_generic_rewards_and_one_shot_consumption() -> None:
     channel = Stage2RecoveryRewardChannel(
         enable_certificate_reward=False,
+        enable_shared_event_reward=True,
         event_scale=1.0,
     )
     channel.on_push(5, 0.1)
@@ -51,6 +52,7 @@ def test_generic_rewards_and_one_shot_consumption() -> None:
 def test_timeout_total_shared_reward_is_negative() -> None:
     channel = Stage2RecoveryRewardChannel(
         enable_certificate_reward=False,
+        enable_shared_event_reward=True,
         event_scale=1.0,
     )
     channel.on_push(6, -1.0)
@@ -63,16 +65,16 @@ def test_timeout_total_shared_reward_is_negative() -> None:
     assert shared == pytest.approx(-3.5)
 
 
-def test_default_event_scale_applies_to_every_event_component() -> None:
+def test_shared_events_are_disabled_by_default_and_certificate_scale_is_050() -> None:
     success = Stage2RecoveryRewardChannel(enable_certificate_reward=True)
     success.on_push(6, -2.0)
     success.consume()
     success.on_touchdown(5, 0.0, practical_entered=True)
     event = success.consume()
-    assert event.touchdown_cost == pytest.approx(-0.02)
-    assert event.success == pytest.approx(0.60)
+    assert event.touchdown_cost == 0.0
+    assert event.success == 0.0
     assert event.certificate == pytest.approx(
-        0.2 * 0.5 * (certificate_potential(5, 0.0) - certificate_potential(6, -2.0))
+        0.50 * 0.5 * (certificate_potential(5, 0.0) - certificate_potential(6, -2.0))
     )
 
     timeout = Stage2RecoveryRewardChannel(enable_certificate_reward=False)
@@ -81,8 +83,7 @@ def test_default_event_scale_applies_to_every_event_component() -> None:
     for _ in range(5):
         timeout.on_touchdown(6, -1.0, practical_entered=False)
         event = timeout.consume()
-    assert event.touchdown_cost == pytest.approx(-0.02)
-    assert event.timeout == pytest.approx(-0.60)
+    assert event == RecoveryEventReward()
 
 
 def test_certificate_telescopes_and_has_no_orbit_bonus() -> None:

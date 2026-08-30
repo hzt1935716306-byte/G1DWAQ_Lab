@@ -17,6 +17,7 @@
 # and is distributed under the BSD-3-Clause license.
 
 import argparse
+import math
 
 from isaaclab.app import AppLauncher
 
@@ -31,6 +32,17 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument(
+    "--defer_certificate_reward",
+    action="store_true",
+    help="Overlap Ours certificate solves across a rollout and backfill rewards before GAE.",
+)
+parser.add_argument(
+    "--certificate_event_scale",
+    type=float,
+    default=None,
+    help="Override the certificate-only Stage2 event scale for the Ours task.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -69,6 +81,28 @@ def train():
 
     if args_cli.num_envs is not None:
         env_cfg.scene.num_envs = args_cli.num_envs
+    if args_cli.certificate_event_scale is not None:
+        if not math.isfinite(args_cli.certificate_event_scale) or args_cli.certificate_event_scale <= 0.0:
+            raise ValueError("--certificate_event_scale must be finite and positive")
+        if not hasattr(env_cfg, "stage2_reward"):
+            raise ValueError("--certificate_event_scale requires a Stage2 task")
+        reward_cfg = env_cfg.stage2_reward
+        if not reward_cfg.enabled or not reward_cfg.enable_certificate_reward:
+            raise ValueError("--certificate_event_scale requires the Ours certificate task")
+        if reward_cfg.enable_shared_event_reward or reward_cfg.enable_soft_reward_scaling:
+            raise ValueError(
+                "--certificate_event_scale requires certificate-only reward: "
+                "shared events and soft locomotion scaling must both be disabled"
+            )
+        reward_cfg.event_scale = float(args_cli.certificate_event_scale)
+        print(
+            "[INFO] Certificate-only Stage2 reward: "
+            f"event_scale={reward_cfg.event_scale}, shared_events=False, soft_scaling=False"
+        )
+    if args_cli.defer_certificate_reward and hasattr(env_cfg, "stage2_reward"):
+        if not env_cfg.stage2_reward.enable_certificate_reward:
+            raise ValueError("--defer_certificate_reward is only valid for the Ours task")
+        env_cfg.stage2_reward.defer_certificate_reward_to_rollout_end = True
 
     agent_cfg = update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.seed = agent_cfg.seed

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Sequence
@@ -25,6 +26,19 @@ from .state_extractor import G1PrivilegedRecoveryState, theoretical_periodic_sta
 
 def _bounds(region: dict) -> tuple[tuple[float, float], tuple[float, float]]:
     return tuple(region["x"]), tuple(region["y"])
+
+
+CertificateQuery = tuple[np.ndarray, np.ndarray, np.ndarray, str, float]
+
+
+@dataclass(frozen=True)
+class PendingCertificateBatch:
+    """Submitted certificate jobs whose ordered results can be resolved later."""
+
+    env_ids: tuple[int, ...]
+    queries: tuple[CertificateQuery, ...]
+    jobs: tuple[Future[CertificateResult] | CertificateResult, ...]
+    device: torch.device
 
 
 class CalibratedG1CertificateEvaluator:
@@ -123,7 +137,7 @@ class CalibratedG1CertificateEvaluator:
 
     def _solve(
         self,
-        query: tuple[np.ndarray, np.ndarray, np.ndarray, str, float],
+        query: CertificateQuery,
     ) -> CertificateResult:
         command, b, q, support_side, phase = query
         try:
@@ -186,7 +200,7 @@ class CalibratedG1CertificateEvaluator:
     def _failure_record(
         self,
         env_id: int,
-        query: tuple[np.ndarray, np.ndarray, np.ndarray, str, float],
+        query: CertificateQuery,
         result: CertificateResult,
     ) -> dict[str, object]:
         command, b, q, support_side, phase = query
@@ -244,25 +258,27 @@ class CalibratedG1CertificateEvaluator:
                 f"{self.failure_window_size} evaluations; diagnostics={self._diagnostics_path}"
             )
 
-    def evaluate(
+    def submit(
         self,
         state: G1PrivilegedRecoveryState,
         env_ids: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return N_min and margin tensors on the environment device."""
+    ) -> PendingCertificateBatch:
+        """Submit an ordered batch without waiting for its LP results."""
 
         if env_ids.numel() == 0:
-            return (
-                torch.empty(0, dtype=torch.long, device=env_ids.device),
-                torch.empty(0, dtype=torch.float32, device=env_ids.device),
+            return PendingCertificateBatch(
+                env_ids=(),
+                queries=(),
+                jobs=(),
+                device=env_ids.device,
             )
-        ids = env_ids.detach().cpu().tolist()
+        ids = tuple(int(value) for value in env_ids.detach().cpu().tolist())
         b_values = state.b[env_ids].detach().cpu().numpy()
         q_values = state.q[env_ids].detach().cpu().numpy()
         commands = state.command_velocity[env_ids].detach().cpu().numpy()
         phases = state.phase[env_ids].detach().cpu().tolist()
         support_left = state.support_is_left[env_ids].detach().cpu().tolist()
-        queries = [
+        queries = tuple(
             (
                 np.asarray(command, dtype=np.float64),
                 np.asarray(b, dtype=np.float64),
@@ -277,14 +293,32 @@ class CalibratedG1CertificateEvaluator:
                 support_left,
                 phases,
             )
-        ]
+        )
         if self._executor is None:
-            results: Sequence[CertificateResult] = [self._solve(query) for query in queries]
+            jobs: tuple[Future[CertificateResult] | CertificateResult, ...] = tuple(
+                self._solve(query) for query in queries
+            )
         else:
-            results = list(self._executor.map(self._solve, queries))
+            jobs = tuple(self._executor.submit(self._solve, query) for query in queries)
+        return PendingCertificateBatch(ids, queries, jobs, env_ids.device)
+
+    def resolve(
+        self,
+        pending: PendingCertificateBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Resolve a submitted batch and apply the normal fallback policy in order."""
+
+        if not pending.env_ids:
+            return (
+                torch.empty(0, dtype=torch.long, device=pending.device),
+                torch.empty(0, dtype=torch.float32, device=pending.device),
+            )
+        results: Sequence[CertificateResult] = [
+            job.result() if isinstance(job, Future) else job for job in pending.jobs
+        ]
 
         resolved_results: list[CertificateResult] = []
-        for env_id, query, result in zip(ids, queries, results):
+        for env_id, query, result in zip(pending.env_ids, pending.queries, results):
             if result.status == CertificateStatus.CONSTRAINT_BUILDER_MISMATCH:
                 record = self._failure_record(env_id, query, result)
                 self._save_failure_record(record)
@@ -314,14 +348,23 @@ class CalibratedG1CertificateEvaluator:
         n_min = torch.tensor(
             [result.n_min for result in resolved_results],
             dtype=torch.long,
-            device=env_ids.device,
+            device=pending.device,
         )
         margin = torch.tensor(
             [result.margin for result in resolved_results],
             dtype=torch.float32,
-            device=env_ids.device,
+            device=pending.device,
         )
         return n_min, margin
+
+    def evaluate(
+        self,
+        state: G1PrivilegedRecoveryState,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return N_min and margin tensors on the environment device."""
+
+        return self.resolve(self.submit(state, env_ids))
 
     def close(self) -> None:
         if self._executor is not None:

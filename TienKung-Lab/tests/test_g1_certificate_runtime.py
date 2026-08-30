@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import math
 from pathlib import Path
+import threading
 from types import ModuleType, SimpleNamespace
 import sys
 
@@ -63,6 +64,19 @@ def _state():
         command_velocity=torch.tensor([[0.6, 0.0, 0.1]], dtype=torch.float32),
         phase=torch.tensor([0.25], dtype=torch.float32),
         support_is_left=torch.tensor([True]),
+    )
+
+
+def _state_batch(seed: int, count: int = 8):
+    generator = torch.Generator().manual_seed(seed)
+    command_velocity = torch.zeros(count, 3, dtype=torch.float32)
+    command_velocity[:, 0] = 2.0 * torch.rand(count, generator=generator) - 1.0
+    return SimpleNamespace(
+        b=1.2 * torch.rand(count, 2, generator=generator) - 0.6,
+        q=0.8 * torch.rand(count, 2, generator=generator) - 0.4,
+        command_velocity=command_velocity,
+        phase=0.95 * torch.rand(count, generator=generator),
+        support_is_left=torch.rand(count, generator=generator) > 0.5,
     )
 
 
@@ -142,3 +156,89 @@ def test_global_error_requires_elevated_window_failure_rate(
         evaluator.evaluate(_state(), torch.tensor([0]))
     assert evaluator.statistics["fallbacks"] == 3
     evaluator.close()
+
+
+def test_submit_returns_before_worker_finishes_and_resolve_preserves_order(
+    runtime_module,
+    monkeypatch,
+) -> None:
+    module = runtime_module
+    evaluator = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=2,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_result(_query):
+        started.set()
+        if not release.wait(timeout=2.0):
+            raise RuntimeError("test did not release the certificate worker")
+        return module.CertificateResult(
+            module.CertificateStatus.FINITE,
+            3,
+            0.2,
+            None,
+            (False, False, True),
+        )
+
+    monkeypatch.setattr(evaluator, "_solve", blocked_result)
+    try:
+        pending = evaluator.submit(_state(), torch.tensor([0]))
+        assert started.wait(timeout=1.0)
+        assert not pending.jobs[0].done()
+        release.set()
+        n_min, margin = evaluator.resolve(pending)
+        assert n_min.tolist() == [3]
+        assert margin.tolist() == pytest.approx([0.2])
+        assert evaluator.statistics["evaluations"] == 1
+    finally:
+        release.set()
+        evaluator.close()
+
+
+def test_synchronous_evaluate_uses_submit_resolve_result(runtime_module) -> None:
+    module = runtime_module
+    direct = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=2,
+    )
+    deferred = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=2,
+    )
+    try:
+        expected_n, expected_margin = direct.evaluate(_state(), torch.tensor([0]))
+        pending = deferred.submit(_state(), torch.tensor([0]))
+        actual_n, actual_margin = deferred.resolve(pending)
+        assert torch.equal(actual_n, expected_n)
+        assert torch.equal(actual_margin, expected_margin)
+        assert deferred.statistics == direct.statistics
+    finally:
+        direct.close()
+        deferred.close()
+
+
+def test_many_submitted_batches_match_synchronous_results(runtime_module) -> None:
+    module = runtime_module
+    direct = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=4,
+    )
+    deferred = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=4,
+    )
+    states = [_state_batch(seed) for seed in range(6)]
+    env_ids = torch.arange(8)
+    try:
+        expected = [direct.evaluate(state, env_ids) for state in states]
+        pending = [deferred.submit(state, env_ids) for state in states]
+        actual = [deferred.resolve(batch) for batch in pending]
+        for (expected_n, expected_margin), (actual_n, actual_margin) in zip(expected, actual):
+            assert torch.equal(actual_n, expected_n)
+            assert torch.equal(actual_margin, expected_margin)
+        assert deferred.statistics == direct.statistics
+    finally:
+        direct.close()
+        deferred.close()

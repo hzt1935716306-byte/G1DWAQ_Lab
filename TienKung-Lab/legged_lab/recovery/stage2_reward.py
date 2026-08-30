@@ -13,7 +13,7 @@ import torch
 
 
 MAX_RECOVERY_TOUCHDOWNS = 5
-DEFAULT_EVENT_SCALE = 0.2
+DEFAULT_EVENT_SCALE = 0.50
 TOUCHDOWN_COST = -0.10
 SUCCESS_MAX = 3.0
 TIMEOUT_PENALTY = -3.0
@@ -113,6 +113,7 @@ class Stage2RecoveryRewardChannel:
         self,
         *,
         enable_certificate_reward: bool,
+        enable_shared_event_reward: bool = False,
         event_scale: float = DEFAULT_EVENT_SCALE,
         max_touchdowns: int = MAX_RECOVERY_TOUCHDOWNS,
     ) -> None:
@@ -121,6 +122,7 @@ class Stage2RecoveryRewardChannel:
         if max_touchdowns != MAX_RECOVERY_TOUCHDOWNS:
             raise ValueError("the Stage2 reward definition requires exactly five touchdowns")
         self.enable_certificate_reward = bool(enable_certificate_reward)
+        self.enable_shared_event_reward = bool(enable_shared_event_reward)
         self.event_scale = float(event_scale)
         self.max_touchdowns = int(max_touchdowns)
         self.active = False
@@ -171,10 +173,11 @@ class Stage2RecoveryRewardChannel:
             timeout = TIMEOUT_PENALTY
             outcome = "TIMEOUT"
 
+        shared_scale = self.event_scale if self.enable_shared_event_reward else 0.0
         self._pending = RecoveryEventReward(
-            touchdown_cost=self.event_scale * TOUCHDOWN_COST,
-            success=self.event_scale * success,
-            timeout=self.event_scale * timeout,
+            touchdown_cost=shared_scale * TOUCHDOWN_COST,
+            success=shared_scale * success,
+            timeout=shared_scale * timeout,
             certificate=self.event_scale * certificate,
         )
         if outcome is not None:

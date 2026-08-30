@@ -211,6 +211,13 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
+            begin_deferred = getattr(self.env, "begin_deferred_reward_rollout", None)
+            deferred_reward_rollout = bool(
+                begin_deferred(self.num_steps_per_env) if begin_deferred is not None else False
+            )
+            deferred_extrinsic_rewards = []
+            deferred_dones = []
+            deferred_intrinsic_rewards = []
             # Rollout
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
@@ -234,6 +241,11 @@ class OnPolicyRunner:
 
                     # Extract intrinsic rewards (only for logging)
                     intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
+                    if deferred_reward_rollout and self.log_dir is not None:
+                        deferred_extrinsic_rewards.append(rewards.clone())
+                        deferred_dones.append(dones.clone())
+                        if self.alg.rnd:
+                            deferred_intrinsic_rewards.append(intrinsic_rewards.clone())
 
                     # book keeping
                     if self.log_dir is not None:
@@ -241,28 +253,59 @@ class OnPolicyRunner:
                             ep_infos.append(infos["episode"])
                         elif "log" in infos:
                             ep_infos.append(infos["log"])
-                        # Update rewards
-                        if self.alg.rnd:
-                            cur_ereward_sum += rewards
-                            cur_ireward_sum += intrinsic_rewards  # type: ignore
-                            cur_reward_sum += rewards + intrinsic_rewards
-                        else:
-                            cur_reward_sum += rewards
-                        # Update episode length
-                        cur_episode_length += 1
-                        # Clear data for completed episodes
-                        # -- common
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
-                        # -- intrinsic and extrinsic rewards
-                        if self.alg.rnd:
-                            erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                            irewbuffer.extend(cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                            cur_ereward_sum[new_ids] = 0
-                            cur_ireward_sum[new_ids] = 0
+                        if not deferred_reward_rollout:
+                            # Update rewards
+                            if self.alg.rnd:
+                                cur_ereward_sum += rewards
+                                cur_ireward_sum += intrinsic_rewards  # type: ignore
+                                cur_reward_sum += rewards + intrinsic_rewards
+                            else:
+                                cur_reward_sum += rewards
+                            # Update episode length
+                            cur_episode_length += 1
+                            # Clear data for completed episodes
+                            # -- common
+                            new_ids = (dones > 0).nonzero(as_tuple=False)
+                            rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                            lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                            cur_reward_sum[new_ids] = 0
+                            cur_episode_length[new_ids] = 0
+                            # -- intrinsic and extrinsic rewards
+                            if self.alg.rnd:
+                                erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                                irewbuffer.extend(cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                                cur_ereward_sum[new_ids] = 0
+                                cur_ireward_sum[new_ids] = 0
+
+                if deferred_reward_rollout:
+                    deferred = self.env.resolve_deferred_reward_rollout()
+                    reward_corrections = deferred["reward_corrections"].to(self.device)
+                    self.alg.storage.add_reward_corrections(reward_corrections)
+                    if self.log_dir is not None:
+                        ep_infos.append(deferred["log"])
+                        corrected_rewards = torch.stack(deferred_extrinsic_rewards) + reward_corrections
+                        dones_by_step = torch.stack(deferred_dones)
+                        for step_index in range(self.num_steps_per_env):
+                            step_rewards = corrected_rewards[step_index]
+                            step_dones = dones_by_step[step_index]
+                            if self.alg.rnd:
+                                step_intrinsic = deferred_intrinsic_rewards[step_index]
+                                cur_ereward_sum += step_rewards
+                                cur_ireward_sum += step_intrinsic
+                                cur_reward_sum += step_rewards + step_intrinsic
+                            else:
+                                cur_reward_sum += step_rewards
+                            cur_episode_length += 1
+                            new_ids = (step_dones > 0).nonzero(as_tuple=False).flatten()
+                            rewbuffer.extend(cur_reward_sum[new_ids].cpu().numpy().tolist())
+                            lenbuffer.extend(cur_episode_length[new_ids].cpu().numpy().tolist())
+                            cur_reward_sum[new_ids] = 0
+                            cur_episode_length[new_ids] = 0
+                            if self.alg.rnd:
+                                erewbuffer.extend(cur_ereward_sum[new_ids].cpu().numpy().tolist())
+                                irewbuffer.extend(cur_ireward_sum[new_ids].cpu().numpy().tolist())
+                                cur_ereward_sum[new_ids] = 0
+                                cur_ireward_sum[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
@@ -312,7 +355,12 @@ class OnPolicyRunner:
         # -- Episode info
         ep_string = ""
         if locs["ep_infos"]:
-            for key in locs["ep_infos"][0]:
+            # Some environments emit rollout-level diagnostics only after deferred
+            # work has been resolved.  Preserve insertion order while considering
+            # keys from every info dictionary, rather than silently dropping keys
+            # that are absent from the first environment step.
+            info_keys = dict.fromkeys(key for ep_info in locs["ep_infos"] for key in ep_info)
+            for key in info_keys:
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in locs["ep_infos"]:
                     # handle scalar and zero dimensional tensor infos
