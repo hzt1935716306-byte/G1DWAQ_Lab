@@ -25,6 +25,8 @@ class G1PushCurriculumCfg:
 
     enable_push_curriculum: bool = True
     adaptive_upgrades_enabled: bool = True
+    initial_level: int = 1
+    initial_iterations_in_level: int = 0
     level_ratios: tuple[float, ...] = (0.25, 0.40, 0.55, 0.70, 0.85, 1.00)
     stage1b_abs_delta_v_xy: tuple[float, float] = (1.0, 1.0)
     k_min_iterations: int = 500

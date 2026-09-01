@@ -43,6 +43,23 @@ parser.add_argument(
     default=None,
     help="Override the certificate-only Stage2 event scale for the Ours task.",
 )
+parser.add_argument(
+    "--disable_push_curriculum",
+    action="store_true",
+    help="Disable Stage2 push progression and use the full random Stage1B push range.",
+)
+parser.add_argument(
+    "--resume_curriculum_level",
+    type=int,
+    default=None,
+    help="Resume a Stage2 checkpoint at this curriculum level (requires iterations-in-level).",
+)
+parser.add_argument(
+    "--resume_curriculum_iterations_in_level",
+    type=int,
+    default=None,
+    help="Number of completed iterations in the resumed Stage2 curriculum level.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -105,6 +122,48 @@ def train():
         env_cfg.stage2_reward.defer_certificate_reward_to_rollout_end = True
 
     agent_cfg = update_rsl_rl_cfg(agent_cfg, args_cli)
+    resume_level = args_cli.resume_curriculum_level
+    resume_iterations = args_cli.resume_curriculum_iterations_in_level
+    if args_cli.disable_push_curriculum:
+        if resume_level is not None or resume_iterations is not None:
+            raise ValueError("--disable_push_curriculum cannot be combined with explicit curriculum restoration")
+        if not hasattr(env_cfg, "push_curriculum"):
+            raise ValueError("--disable_push_curriculum requires a Stage2 push task")
+        curriculum_cfg = env_cfg.push_curriculum
+        curriculum_cfg.enable_push_curriculum = False
+        curriculum_cfg.adaptive_upgrades_enabled = False
+        curriculum_cfg.easy_sample_probability = 0.0
+        print(
+            "[INFO] Stage2 push curriculum disabled: "
+            f"fixed_level={len(curriculum_cfg.level_ratios)}, "
+            f"abs_delta_v_xy={curriculum_cfg.stage1b_abs_delta_v_xy}, "
+            "easy_sample_probability=0.0"
+        )
+    if (resume_level is None) != (resume_iterations is None):
+        raise ValueError(
+            "--resume_curriculum_level and --resume_curriculum_iterations_in_level must be provided together"
+        )
+    if resume_level is not None:
+        if not agent_cfg.resume:
+            raise ValueError("explicit curriculum restoration requires --resume True")
+        if not hasattr(env_cfg, "push_curriculum") or not env_cfg.push_curriculum.enable_push_curriculum:
+            raise ValueError("explicit curriculum restoration requires an enabled Stage2 push curriculum")
+        curriculum_cfg = env_cfg.push_curriculum
+        if not 1 <= resume_level <= len(curriculum_cfg.level_ratios):
+            raise ValueError("--resume_curriculum_level is outside the configured curriculum range")
+        if resume_iterations < 0:
+            raise ValueError("--resume_curriculum_iterations_in_level must be non-negative")
+        if resume_level < len(curriculum_cfg.level_ratios) and resume_iterations >= curriculum_cfg.k_max_iterations:
+            raise ValueError(
+                "--resume_curriculum_iterations_in_level must be below K_max before the final level"
+            )
+        curriculum_cfg.initial_level = int(resume_level)
+        curriculum_cfg.initial_iterations_in_level = int(resume_iterations)
+        print(
+            "[INFO] Restoring Stage2 curriculum: "
+            f"level={curriculum_cfg.initial_level}, "
+            f"iterations_in_level={curriculum_cfg.initial_iterations_in_level}"
+        )
     env_cfg.scene.seed = agent_cfg.seed
 
     if args_cli.distributed:

@@ -106,12 +106,14 @@ class PushCurriculumController:
         self.median_enter_step_threshold = float(cfg.median_enter_step_threshold)
         self.required_pass_windows = int(cfg.required_consecutive_pass_windows)
         self.easy_sample_probability = float(cfg.easy_sample_probability)
+        self.initial_level = int(getattr(cfg, "initial_level", 1))
+        self.initial_iterations_in_level = int(getattr(cfg, "initial_iterations_in_level", 0))
         self._validate()
 
         # Disabling the curriculum restores the fixed Stage1B maximum range.
-        self.level_index = 0 if self.enabled else len(self.level_ratios) - 1
-        self.level_start_iteration = 0
+        self.level_index = self.initial_level - 1 if self.enabled else len(self.level_ratios) - 1
         self.current_learning_iteration = 0
+        self.level_start_iteration = -self.initial_iterations_in_level if self.enabled else 0
         self.consecutive_pass_windows = 0
         self.last_window_p5: float | None = None
         self.last_window_median_enter_step: float | None = None
@@ -145,6 +147,16 @@ class PushCurriculumController:
             raise ValueError("median enter-step threshold must be in [1, 5]")
         if not 0.0 <= self.easy_sample_probability <= 1.0:
             raise ValueError("easy sample probability must be in [0, 1]")
+        if not 1 <= self.initial_level <= len(self.level_ratios):
+            raise ValueError("initial curriculum level is outside the configured level range")
+        if self.initial_iterations_in_level < 0:
+            raise ValueError("initial curriculum iterations in level must be non-negative")
+        if (
+            self.enabled
+            and self.initial_level < len(self.level_ratios)
+            and self.initial_iterations_in_level >= self.k_max
+        ):
+            raise ValueError("initial curriculum iterations must be below K_max before the final level")
 
     @property
     def level(self) -> int:
@@ -181,6 +193,8 @@ class PushCurriculumController:
         metadata = {
             "enabled": self.enabled,
             "adaptive_upgrades_enabled": self.adaptive_upgrades_enabled,
+            "initial_level": self.initial_level,
+            "initial_iterations_in_level": self.initial_iterations_in_level,
             "level_ratios": self.level_ratios,
             "stage1b_abs_delta_v_xy": self.stage1b_abs_delta_v_xy,
             "K_min": self.k_min,

@@ -22,9 +22,11 @@ from legged_lab.recovery.push_curriculum import (  # noqa: E402
 )
 
 
-def _cfg(*, enabled: bool = True):
+def _cfg(*, enabled: bool = True, initial_level: int = 1, initial_iterations_in_level: int = 0):
     return SimpleNamespace(
         enable_push_curriculum=enabled,
+        initial_level=initial_level,
+        initial_iterations_in_level=initial_iterations_in_level,
         level_ratios=(0.25, 0.40, 0.55, 0.70, 0.85, 1.00),
         stage1b_abs_delta_v_xy=(1.0, 1.0),
         k_min_iterations=2,
@@ -95,6 +97,18 @@ def main() -> None:
     fixed_sampled = fixed.sample_level_indices(100, "cpu")
     assert torch.all(fixed_sampled == 5)
 
+    resumed = PushCurriculumController(_cfg(initial_level=5, initial_iterations_in_level=3))
+    assert resumed.level == 5
+    assert resumed.current_learning_iteration == 0
+    assert resumed.iterations_in_current_level == 3
+    resumed.set_learning_iteration(1)
+    assert resumed.level == 5
+    assert resumed.iterations_in_current_level == 4
+    resumed.set_learning_iteration(2)
+    assert resumed.level == 6
+    assert resumed.upgrade_history[-1]["iterations_in_level"] == 5
+    assert resumed.upgrade_history[-1]["upgrade_reason"] == CurriculumUpgradeReason.MAX_ITERATIONS.value
+
     assert _cfg().recovery_reward_weight == 0.0
     report = {
         "level_ranges_abs_delta_v_xy": expected_ranges,
@@ -105,6 +119,8 @@ def main() -> None:
         "easy_sample_fraction": easy_fraction,
         "fixed_mode_level": fixed.level,
         "fixed_mode_abs_delta_v_xy": fixed.current_abs_delta_v_xy,
+        "resumed_level": resumed.level,
+        "resumed_initial_iterations_in_level": 3,
         "recovery_reward_weight": _cfg().recovery_reward_weight,
     }
     print(json.dumps(report, indent=2))
