@@ -7,9 +7,12 @@ import math
 from pathlib import Path
 
 import pytest
+import yaml
 
 from legged_lab.recovery.plane_certificate_runtime import plane_periodic_state
 from legged_lab.recovery.plane_nominal_params import (
+    PRACTICAL_METRIC_INTERVAL_MEAN_V1,
+    PRACTICAL_METRIC_LEGACY_V0,
     PlaneNominalParameterTable,
     command_direction,
     nominal_node_key,
@@ -114,3 +117,35 @@ def test_interpolation_does_not_cross_known_failed_slope(table) -> None:
     )
     assert filled.lookup(math.radians(-12.0), "+x", base.speed).valid
     assert filled.lookup(math.radians(-7.0), "+x", base.speed).valid
+
+
+def test_practical_metric_semantics_are_explicit_and_never_mixed(table) -> None:
+    path = Path("tools/recovery/generated/g1_plane_nominal_params.yaml")
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    yaml_nodes = document["nominal_plane_gait"]["nodes"]
+    assert yaml_nodes
+    assert all(
+        node["practical_metric_version"] == PRACTICAL_METRIC_LEGACY_V0
+        for node in yaml_nodes
+    )
+    assert all(
+        node.practical_metric_version == PRACTICAL_METRIC_LEGACY_V0
+        for node in table.nodes
+    )
+
+    base = next(
+        node
+        for node in table.nodes
+        if node.direction == "+x" and node.alpha == 0.0 and node.speed == 0.2
+    )
+    cycle_mean = replace(
+        base,
+        alpha=math.radians(5.0),
+        practical_metric_version=PRACTICAL_METRIC_INTERVAL_MEAN_V1,
+    )
+    mixed = PlaneNominalParameterTable((base, cycle_mean))
+    result = mixed.lookup(math.radians(2.5), "+x", base.speed)
+    assert not result.valid
+    assert result.reason == (
+        "cannot interpolate nominal nodes with different practical metric semantics"
+    )

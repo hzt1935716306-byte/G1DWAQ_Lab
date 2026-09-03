@@ -12,6 +12,12 @@ import yaml
 
 
 DIRECTIONS = ("+x", "-x", "+y", "-y")
+PRACTICAL_METRIC_LEGACY_V0 = "touchdown_instantaneous_legacy_v0"
+PRACTICAL_METRIC_INTERVAL_MEAN_V1 = "interval_mean_v1"
+PRACTICAL_METRIC_VERSIONS = (
+    PRACTICAL_METRIC_LEGACY_V0,
+    PRACTICAL_METRIC_INTERVAL_MEAN_V1,
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,7 @@ class PlaneNominalGait:
     mean_abs_pitch_error_threshold: float
     sample_count: int
     calibration_policy_id: str
+    practical_metric_version: str = PRACTICAL_METRIC_LEGACY_V0
 
     @property
     def omega(self) -> float:
@@ -99,6 +106,9 @@ def _node_from_mapping(node: Mapping[str, object]) -> PlaneNominalGait:
         mean_abs_pitch_error_threshold=float(node["mean_abs_pitch_error_threshold"]),
         sample_count=int(node["sample_count"]),
         calibration_policy_id=str(node["calibration_policy_id"]),
+        practical_metric_version=str(
+            node.get("practical_metric_version", PRACTICAL_METRIC_LEGACY_V0)
+        ),
     )
     positive = (
         value.speed,
@@ -113,6 +123,11 @@ def _node_from_mapping(node: Mapping[str, object]) -> PlaneNominalGait:
         raise ValueError("nominal speed, gait values, and practical thresholds must be positive")
     if value.sample_count <= 0:
         raise ValueError("nominal sample_count must be positive")
+    if value.practical_metric_version not in PRACTICAL_METRIC_VERSIONS:
+        raise ValueError(
+            "unsupported practical_metric_version "
+            f"{value.practical_metric_version!r}"
+        )
     return value
 
 
@@ -330,6 +345,16 @@ class PlaneNominalParameterTable:
             for low, high, _ in speed_corners.values()
             for node in (low, high)
         }
+        practical_metric_versions = {
+            node.practical_metric_version for node in source_nodes
+        }
+        if len(practical_metric_versions) != 1:
+            return PlaneNominalLookup(
+                None,
+                False,
+                "cannot interpolate nominal nodes with different practical metric semantics",
+            )
+        practical_metric_version = next(iter(practical_metric_versions))
         policy_ids = sorted({node.calibration_policy_id for node in source_nodes})
         # The immutable flat anchor and slope bootstrap nodes can come from
         # different policies.  Bounded geometric interpolation is still
@@ -356,12 +381,16 @@ class PlaneNominalParameterTable:
             mean_abs_pitch_error_threshold=interpolate_scalar("mean_abs_pitch_error_threshold"),
             sample_count=min(node.sample_count for node in source_nodes),
             calibration_policy_id=policy_id,
+            practical_metric_version=practical_metric_version,
         )
         return PlaneNominalLookup(value, True)
 
 
 __all__ = [
     "DIRECTIONS",
+    "PRACTICAL_METRIC_INTERVAL_MEAN_V1",
+    "PRACTICAL_METRIC_LEGACY_V0",
+    "PRACTICAL_METRIC_VERSIONS",
     "PlaneNominalGait",
     "PlaneNominalLookup",
     "PlaneNominalParameterTable",

@@ -110,6 +110,44 @@ def test_submit_does_not_project_heading_horizontal_measurements() -> None:
         evaluator.close()
 
 
+def test_plane_mirror_uses_exact_submit_query_instead_of_state_b() -> None:
+    evaluator = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=1, executor_type="sequential"
+    )
+    alpha = np.deg2rad(-10.0)
+    com = torch.tensor([[0.30, -0.10]])
+    velocity = torch.tensor([[0.20, 0.05]])
+    support = torch.tensor([[0.04, -0.12]])
+    state = SimpleNamespace(
+        command_velocity=torch.tensor([[0.40, 0.0, 0.0]]),
+        signed_slope=torch.tensor([alpha]),
+        terrain_plane_valid=torch.tensor([True]),
+        com_position=com,
+        com_velocity=velocity,
+        left_foot_position=support,
+        right_foot_position=torch.zeros_like(support),
+        q=torch.tensor([[-0.18, 0.22]]),
+        support_is_left=torch.tensor([True]),
+        b=torch.tensor([[99.0, 99.0]]),
+    )
+    try:
+        pending = evaluator.submit(state, torch.tensor([0]))
+        query = pending.queries[0]
+        nominal = evaluator.lookup_nominal((0.4, 0.0, 0.0), alpha).value
+        assert nominal is not None
+        expected_b = com.numpy()[0] + velocity.numpy()[0] / nominal.omega - support.numpy()[0]
+        mirrored = mirror_plane_certificate_query(query)
+    finally:
+        evaluator.close()
+
+    np.testing.assert_allclose(query.b, expected_b)
+    assert not np.array_equal(query.b, state.b.numpy()[0])
+    np.testing.assert_allclose(mirrored.b, (query.b[0], -query.b[1]))
+    np.testing.assert_allclose(mirrored.q, (query.q[0], -query.q[1]))
+    assert mirrored.support_side == "right"
+    assert mirrored.alpha == query.alpha
+
+
 def test_plane_config_failure_is_logged_without_secondary_exception(monkeypatch) -> None:
     evaluator = PlaneCalibratedG1CertificateEvaluator(
         FLAT, NOMINAL, workers=1, executor_type="sequential"

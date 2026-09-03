@@ -23,6 +23,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.042438490772619845
     sample_count: 40
     calibration_policy_id: flat_official_2026-08-27_model_9998
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - slope_degrees: 0.0
     direction: +x
     speed: 1.0
@@ -42,6 +43,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.042438490772619845
     sample_count: 40
     calibration_policy_id: flat_official_2026-08-27_model_9998
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id001
     slope_degrees: -15.0
     direction: +x
@@ -62,6 +64,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.07733446243219076
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id002
     slope_degrees: -15.0
     direction: +x
@@ -82,6 +85,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.008978972770273683
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id003
     slope_degrees: -15.0
     direction: -y
@@ -102,6 +106,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.002892481163144111
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id004
     slope_degrees: -10.0
     direction: +x
@@ -122,6 +127,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.06857517911121248
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id005
     slope_degrees: -10.0
     direction: +x
@@ -142,6 +148,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.0017652582377195357
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id006
     slope_degrees: -5.0
     direction: +x
@@ -162,6 +169,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.08395835971459746
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id007
     slope_degrees: -5.0
     direction: -x
@@ -182,6 +190,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.034373173614585535
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id008
     slope_degrees: 0.0
     direction: +y
@@ -202,6 +211,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.002118274755775928
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
   - &id009
     slope_degrees: 0.0
     direction: -y
@@ -222,6 +232,7 @@ nominal_plane_gait:
     mean_abs_pitch_error_threshold: 0.004725842946209013
     sample_count: 30
     calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+    practical_metric_version: touchdown_instantaneous_legacy_v0
 collection:
   checkpoint: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_dwaq/2026-01-16_00-46-00/model_9999.pt
   calibration_policy_id: dwaq:model_9999.pt:5042017a558b
@@ -833,6 +844,7 @@ collection:
         mean_abs_pitch_error_threshold: 0.015106473863124836
         sample_count: 30
         calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+        practical_metric_version: touchdown_instantaneous_legacy_v0
       diagnostic:
         sample_count: 30
         calibration_count: 24

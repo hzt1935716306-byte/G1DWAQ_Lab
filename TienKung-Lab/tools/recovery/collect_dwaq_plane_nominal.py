@@ -63,7 +63,10 @@ from isaaclab.utils.math import quat_apply_inverse  # noqa: E402
 from rsl_rl.runners import DWAQOnPolicyRunner  # noqa: E402
 
 from legged_lab.envs import *  # noqa: E402,F401,F403
-from legged_lab.recovery.plane_nominal_calibration import calibrate_nominal_node  # noqa: E402
+from legged_lab.recovery.plane_nominal_calibration import (  # noqa: E402
+    calibrate_nominal_node,
+    mark_collection_done,
+)
 from legged_lab.recovery.plane_nominal_params import upsert_nominal_nodes  # noqa: E402
 from legged_lab.recovery.practical_metrics import practical_frame_errors  # noqa: E402
 from legged_lab.recovery.state_extractor import (  # noqa: E402
@@ -234,6 +237,9 @@ def main() -> None:
         slopes, directions, tuple(args.speeds), args.envs_per_node
     )
     node_keys = sorted(set(_node_key(item) for item in assignments))
+    env_ids_by_node = {key: [] for key in node_keys}
+    for env_id, assignment in enumerate(assignments):
+        env_ids_by_node[_node_key(assignment)].append(env_id)
 
     env_cfg, agent_cfg = task_registry.get_cfgs("g1_dwaq")
     env_cfg.scene.num_envs = len(assignments)
@@ -305,6 +311,7 @@ def main() -> None:
     interval_velocity_errors = [[] for _ in range(env.num_envs)]
     interval_roll = [[] for _ in range(env.num_envs)]
     interval_pitch = [[] for _ in range(env.num_envs)]
+    collection_done = [False] * env.num_envs
 
     _set_commands(env, assignments)
     obs, obs_hist = env.get_observations()
@@ -339,6 +346,8 @@ def main() -> None:
 
         reset_ids = (dones | state.episode_reset).nonzero(as_tuple=False).flatten().tolist()
         for env_id in reset_ids:
+            if collection_done[env_id]:
+                continue
             key = _node_key(assignments[env_id])
             resets[key] += 1
             touchdown_count[env_id] = 0
@@ -352,7 +361,7 @@ def main() -> None:
         touchdown_ids = state.touchdown.nonzero(as_tuple=False).flatten().tolist()
         for env_id in touchdown_ids:
             key = _node_key(assignments[env_id])
-            if len(samples[key]) >= args.samples_per_node:
+            if collection_done[env_id] or len(samples[key]) >= args.samples_per_node:
                 continue
             touchdown_count[env_id] += 1
             current_foot = int(state.touchdown_foot[env_id].item())
@@ -440,11 +449,20 @@ def main() -> None:
                     "interval_pitch": completed_pitch,
                 }
             )
+            if len(samples[key]) >= args.samples_per_node:
+                mark_collection_done(
+                    env_ids_by_node[key],
+                    collection_done,
+                    previous_touchdown,
+                    interval_velocity_errors,
+                    interval_roll,
+                    interval_pitch,
+                )
 
         # Match runtime ordering: a touchdown closes the previous interval,
         # resets its sums, then the current policy frame starts the next one.
         for env_id, touchdown in enumerate(previous_touchdown):
-            if touchdown is None:
+            if collection_done[env_id] or touchdown is None:
                 continue
             interval_velocity_errors[env_id].append(
                 float(frame_velocity_error[env_id].item())

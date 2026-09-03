@@ -14,7 +14,23 @@ import numpy as np
 
 from .plane_adapter import Box2D, inverse_project_horizontal
 from .plane_certificate_runtime import plane_periodic_state
+from .plane_nominal_params import PRACTICAL_METRIC_INTERVAL_MEAN_V1
 from .practical_metrics import practical_interval_means_from_sums
+
+
+def mark_collection_done(
+    env_ids: Sequence[int],
+    collection_done: list[bool],
+    previous_touchdown: list[object | None],
+    *interval_buffers: list[list[float]],
+) -> None:
+    """Stop completed collector environments and release their interval frames."""
+
+    for env_id in env_ids:
+        collection_done[env_id] = True
+        previous_touchdown[env_id] = None
+        for buffer in interval_buffers:
+            buffer[env_id] = []
 
 
 def _statistics(values: Sequence[float]) -> dict[str, float | int]:
@@ -163,6 +179,7 @@ def calibrate_nominal_node(
         "mean_abs_pitch_error_threshold": max(epsilon_floor, float(np.quantile(pitch_errors, 0.95))),
         "sample_count": len(samples),
         "calibration_policy_id": calibration_policy_id,
+        "practical_metric_version": PRACTICAL_METRIC_INTERVAL_MEAN_V1,
     }
 
     alpha = math.radians(float(slope_degrees))
@@ -244,4 +261,4 @@ def calibrate_nominal_node(
     return node, report
 
 
-__all__ = ["calibrate_nominal_node"]
+__all__ = ["calibrate_nominal_node", "mark_collection_done"]

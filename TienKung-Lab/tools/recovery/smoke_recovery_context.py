@@ -53,7 +53,6 @@ from legged_lab.envs.g1.g1_symmetry import compute_symmetric_states  # noqa: E40
 from legged_lab.recovery.checkpoint_migration import warm_start_context_policy  # noqa: E402
 from legged_lab.recovery.plane_certificate_runtime import (  # noqa: E402
     PlaneCalibratedG1CertificateEvaluator,
-    PlaneCertificateQuery,
     mirror_plane_certificate_query,
 )
 from legged_lab.utils import task_registry  # noqa: E402
@@ -79,20 +78,7 @@ def _mirror_report(env, samples: list[dict]) -> dict:
     evaluator = env._certificate_evaluator
     if isinstance(evaluator, PlaneCalibratedG1CertificateEvaluator):
         queries = tuple(
-            mirror_plane_certificate_query(
-                PlaneCertificateQuery(
-                    command=np.asarray(item["command"], dtype=np.float64),
-                    b=np.asarray(item["b"], dtype=np.float64),
-                    q=np.asarray(item["q"], dtype=np.float64),
-                    support_side="left" if item["support_is_left"] else "right",
-                    phase=0.0,
-                    alpha=float(item["alpha"]),
-                    adapter_valid=bool(item["valid"]),
-                    invalid_reason=(
-                        "original plane query was invalid" if not item["valid"] else ""
-                    ),
-                )
-            )
+            mirror_plane_certificate_query(item["plane_query"])
             for item in samples
         )
         mirror_n, mirror_margin, mirror_valid = evaluator.resolve_with_validity(
@@ -297,26 +283,56 @@ def main() -> None:
             )
             if len(mirror_samples) < args.mirror_samples and torch.any(refresh_mask):
                 state = env._last_recovery_state
-                for env_id in refresh_mask.nonzero(as_tuple=False).flatten().tolist():
-                    if len(mirror_samples) >= args.mirror_samples:
-                        break
-                    mirror_samples.append(
-                        {
-                            "b": state.b[env_id].detach().cpu().tolist(),
-                            "q": state.q[env_id].detach().cpu().tolist(),
-                            "command": state.command_velocity[env_id].detach().cpu().tolist(),
-                            "phase": float(state.phase[env_id].item()),
-                            "alpha": float(state.signed_slope[env_id].item()),
-                            "support_is_left": bool(state.support_is_left[env_id].item()),
-                            "n_min": int(env._touchdown_certificate_cache_n[env_id].item()),
-                            "margin": float(
-                                env._touchdown_certificate_cache_margin[env_id].item()
-                            ),
-                            "valid": bool(
-                                env._touchdown_certificate_cache_valid[env_id].item()
-                            ),
-                        }
+                remaining = args.mirror_samples - len(mirror_samples)
+                sample_ids = refresh_mask.nonzero(as_tuple=False).flatten()[:remaining]
+                evaluator = env._certificate_evaluator
+                if isinstance(evaluator, PlaneCalibratedG1CertificateEvaluator):
+                    # Save the exact query built by Plane submit().  In
+                    # particular, its b uses the plane nominal omega rather
+                    # than state.b's geometric-height omega.
+                    pending = evaluator.submit(state, sample_ids)
+                    sample_n, sample_margin, sample_valid = (
+                        evaluator.resolve_with_validity(pending)
                     )
+                    for query, n_min, margin, valid in zip(
+                        pending.queries,
+                        sample_n.tolist(),
+                        sample_margin.tolist(),
+                        sample_valid.tolist(),
+                    ):
+                        mirror_samples.append(
+                            {
+                                "plane_query": query,
+                                "n_min": int(n_min),
+                                "margin": float(margin),
+                                "valid": bool(valid),
+                            }
+                        )
+                else:
+                    for env_id in sample_ids.tolist():
+                        mirror_samples.append(
+                            {
+                                "b": state.b[env_id].detach().cpu().tolist(),
+                                "q": state.q[env_id].detach().cpu().tolist(),
+                                "command": state.command_velocity[env_id]
+                                .detach()
+                                .cpu()
+                                .tolist(),
+                                "phase": float(state.phase[env_id].item()),
+                                "support_is_left": bool(
+                                    state.support_is_left[env_id].item()
+                                ),
+                                "n_min": int(
+                                    env._touchdown_certificate_cache_n[env_id].item()
+                                ),
+                                "margin": float(
+                                    env._touchdown_certificate_cache_margin[env_id].item()
+                                ),
+                                "valid": bool(
+                                    env._touchdown_certificate_cache_valid[env_id].item()
+                                ),
+                            }
+                        )
 
         push_only = push_mask & ~touchdown_mask
         if torch.any(push_only & refresh_mask):

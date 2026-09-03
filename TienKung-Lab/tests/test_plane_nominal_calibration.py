@@ -10,7 +10,11 @@ import torch
 import yaml
 
 from legged_lab.recovery.plane_certificate_runtime import plane_periodic_state
-from legged_lab.recovery.plane_nominal_calibration import calibrate_nominal_node
+from legged_lab.recovery.plane_nominal_calibration import (
+    calibrate_nominal_node,
+    mark_collection_done,
+)
+from legged_lab.recovery.plane_nominal_params import PRACTICAL_METRIC_INTERVAL_MEAN_V1
 from legged_lab.recovery.practical_metrics import practical_interval_means_from_sums
 
 
@@ -111,6 +115,7 @@ def test_practical_thresholds_use_complete_interval_means() -> None:
     assert node["mean_velocity_error_threshold"] == pytest.approx(0.1)
     assert node["mean_abs_roll_error_threshold"] == pytest.approx(0.1)
     assert node["mean_abs_pitch_error_threshold"] == pytest.approx(0.1)
+    assert node["practical_metric_version"] == PRACTICAL_METRIC_INTERVAL_MEAN_V1
     assert runtime_velocity.item() == pytest.approx(node["mean_velocity_error_threshold"])
     assert runtime_attitude.tolist() == pytest.approx(
         [
@@ -118,3 +123,26 @@ def test_practical_thresholds_use_complete_interval_means() -> None:
             node["mean_abs_pitch_error_threshold"],
         ]
     )
+
+
+def test_completed_node_stops_collection_and_clears_interval_buffers() -> None:
+    collection_done = [False, False, False]
+    previous_touchdown = [object(), object(), object()]
+    velocity = [[1.0], [2.0], [3.0]]
+    roll = [[4.0], [5.0], [6.0]]
+    pitch = [[7.0], [8.0], [9.0]]
+
+    mark_collection_done(
+        (0, 2),
+        collection_done,
+        previous_touchdown,
+        velocity,
+        roll,
+        pitch,
+    )
+
+    assert collection_done == [True, False, True]
+    assert previous_touchdown[0] is None and previous_touchdown[2] is None
+    assert velocity == [[], [2.0], []]
+    assert roll == [[], [5.0], []]
+    assert pitch == [[], [8.0], []]
