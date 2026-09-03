@@ -64,6 +64,8 @@ from rsl_rl.runners import DWAQOnPolicyRunner  # noqa: E402
 
 from legged_lab.envs import *  # noqa: E402,F401,F403
 from legged_lab.recovery.plane_nominal_calibration import calibrate_nominal_node  # noqa: E402
+from legged_lab.recovery.plane_nominal_params import upsert_nominal_nodes  # noqa: E402
+from legged_lab.recovery.practical_metrics import practical_frame_errors  # noqa: E402
 from legged_lab.recovery.state_extractor import (  # noqa: E402
     G1PrivilegedStateExtractor,
     G1StateExtractorCfg,
@@ -196,8 +198,23 @@ def main() -> None:
         raise FileNotFoundError(checkpoint)
     flat_path = args.flat_parameters.expanduser().resolve()
     anchor_path = args.anchor_nominal.expanduser().resolve()
+    output = args.output.expanduser().resolve()
     flat_parameters = _load_yaml(flat_path)
     anchor = _load_yaml(anchor_path)
+    existing_documents = [anchor]
+    if output.is_file() and output != anchor_path:
+        existing_documents.append(_load_yaml(output))
+    existing_nodes = [
+        node
+        for document in existing_documents
+        for node in document.get("nominal_plane_gait", {}).get("nodes", ())
+        if bool(node.get("valid", True))
+    ]
+    previous_node_reports = {}
+    if output.is_file():
+        previous_node_reports.update(
+            _load_yaml(output).get("collection", {}).get("node_reports", {})
+        )
     anchor_nodes = [
         node
         for node in anchor["nominal_plane_gait"]["nodes"]
@@ -255,7 +272,7 @@ def main() -> None:
         G1StateExtractorCfg(
             h_eff=None,
             use_terrain_plane_geometry=True,
-            slope_alignment_tolerance=0.05,
+            slope_alignment_tolerance=math.radians(5.0),
         ),
     )
     foot_ids, _ = env.robot.find_bodies(
@@ -285,6 +302,9 @@ def main() -> None:
         env.num_envs, dtype=torch.bool, device=env.device
     )
     previous_touchdown = [None] * env.num_envs
+    interval_velocity_errors = [[] for _ in range(env.num_envs)]
+    interval_roll = [[] for _ in range(env.num_envs)]
+    interval_pitch = [[] for _ in range(env.num_envs)]
 
     _set_commands(env, assignments)
     obs, obs_hist = env.get_observations()
@@ -308,6 +328,12 @@ def main() -> None:
             > args.illegal_contact_force_threshold,
             dim=1,
         )
+        frame_velocity_error, _ = practical_frame_errors(
+            state.com_velocity[:, :2],
+            state.command_velocity[:, :2],
+            state.root_roll_pitch,
+            torch.zeros_like(state.root_roll_pitch),
+        )
         slip_since_touchdown |= slip_now
         illegal_since_touchdown |= illegal_now
 
@@ -319,6 +345,9 @@ def main() -> None:
             slip_since_touchdown[env_id] = False
             illegal_since_touchdown[env_id] = False
             previous_touchdown[env_id] = None
+            interval_velocity_errors[env_id] = []
+            interval_roll[env_id] = []
+            interval_pitch[env_id] = []
 
         touchdown_ids = state.touchdown.nonzero(as_tuple=False).flatten().tolist()
         for env_id in touchdown_ids:
@@ -361,6 +390,12 @@ def main() -> None:
             }
             previous = previous_touchdown[env_id]
             previous_touchdown[env_id] = current
+            completed_velocity_errors = interval_velocity_errors[env_id]
+            completed_roll = interval_roll[env_id]
+            completed_pitch = interval_pitch[env_id]
+            interval_velocity_errors[env_id] = []
+            interval_roll[env_id] = []
+            interval_pitch[env_id] = []
             if previous is None or touchdown_count[env_id] <= args.warmup_touchdowns:
                 rejected[key]["warmup"] += 1
                 continue
@@ -382,13 +417,11 @@ def main() -> None:
             if interval_illegal_contact:
                 rejected[key]["illegal_contact"] += 1
                 continue
+            if not completed_velocity_errors:
+                rejected[key]["invalid_transition_start"] += 1
+                continue
             l_h = -state.q[env_id].detach().cpu().numpy()
             command = np.asarray(assignments[env_id]["command"], dtype=np.float64)
-            velocity_error = float(
-                torch.linalg.vector_norm(
-                    state.com_velocity[env_id, :2] - state.command_velocity[env_id, :2]
-                ).item()
-            )
             samples[key].append(
                 {
                     "T": float(state.step_period[env_id].item()),
@@ -402,10 +435,25 @@ def main() -> None:
                     "q_H": state.q[env_id].detach().cpu().tolist(),
                     "q_start_H": np.asarray(previous["q_start_H"]).tolist(),
                     "l_H": l_h.tolist(),
-                    "roll": float(state.root_roll_pitch[env_id, 0].item()),
-                    "pitch": float(state.root_roll_pitch[env_id, 1].item()),
-                    "velocity_error": velocity_error,
+                    "interval_velocity_error": completed_velocity_errors,
+                    "interval_roll": completed_roll,
+                    "interval_pitch": completed_pitch,
                 }
+            )
+
+        # Match runtime ordering: a touchdown closes the previous interval,
+        # resets its sums, then the current policy frame starts the next one.
+        for env_id, touchdown in enumerate(previous_touchdown):
+            if touchdown is None:
+                continue
+            interval_velocity_errors[env_id].append(
+                float(frame_velocity_error[env_id].item())
+            )
+            interval_roll[env_id].append(
+                float(state.root_roll_pitch[env_id, 0].item())
+            )
+            interval_pitch[env_id].append(
+                float(state.root_roll_pitch[env_id, 1].item())
             )
 
         if (policy_step + 1) % 250 == 0:
@@ -481,6 +529,9 @@ def main() -> None:
         if not anchor_preserved:
             collected_nodes.append(node)
 
+    merged_nodes = upsert_nominal_nodes(existing_nodes, collected_nodes)
+    merged_node_reports = dict(previous_node_reports)
+    merged_node_reports.update(node_reports)
     output_document = {
         "schema_version": 1,
         "description": "Flat anchors plus validated DWAQ continuous-plane nominal nodes; C/L/v_max remain in the separate flat capability file.",
@@ -488,7 +539,7 @@ def main() -> None:
             flat_path, args.output.expanduser().resolve().parent
         ),
         "nominal_plane_gait": {
-            "nodes": anchor_nodes + collected_nodes,
+            "nodes": merged_nodes,
         },
         "collection": {
             "checkpoint": str(checkpoint),
@@ -501,10 +552,9 @@ def main() -> None:
             "slip_velocity_threshold": args.slip_velocity_threshold,
             "illegal_contact_force_threshold": args.illegal_contact_force_threshold,
             "policy_steps": policy_step + 1,
-            "node_reports": node_reports,
+            "node_reports": merged_node_reports,
         },
     }
-    output = args.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(yaml.safe_dump(output_document, sort_keys=False), encoding="utf-8")
     summary = {

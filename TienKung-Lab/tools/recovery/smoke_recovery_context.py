@@ -51,6 +51,11 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 from legged_lab.envs import *  # noqa: E402,F401,F403
 from legged_lab.envs.g1.g1_symmetry import compute_symmetric_states  # noqa: E402
 from legged_lab.recovery.checkpoint_migration import warm_start_context_policy  # noqa: E402
+from legged_lab.recovery.plane_certificate_runtime import (  # noqa: E402
+    PlaneCalibratedG1CertificateEvaluator,
+    PlaneCertificateQuery,
+    mirror_plane_certificate_query,
+)
 from legged_lab.utils import task_registry  # noqa: E402
 
 
@@ -71,31 +76,58 @@ def _old_actor_mean(model_state: dict[str, torch.Tensor], observations: torch.Te
 def _mirror_report(env, samples: list[dict]) -> dict:
     if not samples:
         return {"sample_count": 0, "valid_pair_count": 0}
-    b = torch.tensor([item["b"] for item in samples], dtype=torch.float32, device=env.device)
-    q = torch.tensor([item["q"] for item in samples], dtype=torch.float32, device=env.device)
-    command = torch.tensor(
-        [item["command"] for item in samples], dtype=torch.float32, device=env.device
-    )
-    phase = torch.tensor(
-        [item["phase"] for item in samples], dtype=torch.float32, device=env.device
-    )
-    support = torch.tensor(
-        [item["support_is_left"] for item in samples], dtype=torch.bool, device=env.device
-    )
-    b[:, 1] *= -1.0
-    q[:, 1] *= -1.0
-    command[:, 1:] *= -1.0
-    mirrored_state = SimpleNamespace(
-        b=b,
-        q=q,
-        command_velocity=command,
-        phase=phase,
-        support_is_left=~support,
-    )
-    ids = torch.arange(len(samples), device=env.device)
-    mirror_n, mirror_margin, mirror_valid = env._certificate_evaluator.evaluate_with_validity(
-        mirrored_state, ids
-    )
+    evaluator = env._certificate_evaluator
+    if isinstance(evaluator, PlaneCalibratedG1CertificateEvaluator):
+        queries = tuple(
+            mirror_plane_certificate_query(
+                PlaneCertificateQuery(
+                    command=np.asarray(item["command"], dtype=np.float64),
+                    b=np.asarray(item["b"], dtype=np.float64),
+                    q=np.asarray(item["q"], dtype=np.float64),
+                    support_side="left" if item["support_is_left"] else "right",
+                    phase=0.0,
+                    alpha=float(item["alpha"]),
+                    adapter_valid=bool(item["valid"]),
+                    invalid_reason=(
+                        "original plane query was invalid" if not item["valid"] else ""
+                    ),
+                )
+            )
+            for item in samples
+        )
+        mirror_n, mirror_margin, mirror_valid = evaluator.resolve_with_validity(
+            evaluator.submit_queries(queries, env.device)
+        )
+    else:
+        b = torch.tensor(
+            [item["b"] for item in samples], dtype=torch.float32, device=env.device
+        )
+        q = torch.tensor(
+            [item["q"] for item in samples], dtype=torch.float32, device=env.device
+        )
+        command = torch.tensor(
+            [item["command"] for item in samples], dtype=torch.float32, device=env.device
+        )
+        phase = torch.tensor(
+            [item["phase"] for item in samples], dtype=torch.float32, device=env.device
+        )
+        support = torch.tensor(
+            [item["support_is_left"] for item in samples], dtype=torch.bool, device=env.device
+        )
+        b[:, 1] *= -1.0
+        q[:, 1] *= -1.0
+        command[:, 1:] *= -1.0
+        mirrored_state = SimpleNamespace(
+            b=b,
+            q=q,
+            command_velocity=command,
+            phase=phase,
+            support_is_left=~support,
+        )
+        ids = torch.arange(len(samples), device=env.device)
+        mirror_n, mirror_margin, mirror_valid = evaluator.evaluate_with_validity(
+            mirrored_state, ids
+        )
     original_n = torch.tensor(
         [item["n_min"] for item in samples], dtype=torch.long, device=env.device
     )
@@ -274,6 +306,7 @@ def main() -> None:
                             "q": state.q[env_id].detach().cpu().tolist(),
                             "command": state.command_velocity[env_id].detach().cpu().tolist(),
                             "phase": float(state.phase[env_id].item()),
+                            "alpha": float(state.signed_slope[env_id].item()),
                             "support_is_left": bool(state.support_is_left[env_id].item()),
                             "n_min": int(env._touchdown_certificate_cache_n[env_id].item()),
                             "margin": float(

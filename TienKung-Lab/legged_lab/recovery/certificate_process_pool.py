@@ -44,11 +44,12 @@ class _Worker:
         index: int,
         worker_mode: str = "flat",
         nominal_parameters_path: Path | None = None,
+        z_sole: float = -0.045,
     ) -> None:
         # Do not pass Isaac/Kit's dynamic-library environment into the clean
         # solver interpreter.  In particular, inherited LD_LIBRARY_PATH values
         # can make SciPy/HiGHS load incompatible simulator-side runtimes.
-        environment = {
+        self._environment = {
             name: os.environ[name]
             for name in (
                 "HOME",
@@ -62,41 +63,113 @@ class _Worker:
             )
             if name in os.environ
         }
-        environment.update(
+        self._environment.update(
             OMP_NUM_THREADS="1",
             OPENBLAS_NUM_THREADS="1",
             MKL_NUM_THREADS="1",
             PYTHONUNBUFFERED="1",
         )
+        self._parameters_path = parameters_path
+        self._index = int(index)
+        self._worker_mode = worker_mode
+        self._nominal_parameters_path = nominal_parameters_path
+        self._z_sole = float(z_sole)
+        self._process_lock = threading.Lock()
+        self._closing = False
+        self._thread_generation = 0
+        self.process = self._start_process()
+        self.queue: Queue[Any] = Queue()
+        self.thread = self._new_io_thread()
+        self.thread.start()
+
+    def _new_io_thread(self) -> threading.Thread:
+        self._thread_generation += 1
+        return threading.Thread(
+            target=self._serve,
+            name=(
+                f"certificate-process-io-{self._index}-"
+                f"{self._thread_generation}"
+            ),
+            daemon=True,
+        )
+
+    def _start_process(self) -> subprocess.Popen:
         command = [
             sys.executable,
             "-m",
             "legged_lab.recovery.certificate_worker",
             "--parameters",
-            str(parameters_path),
+            str(self._parameters_path),
             "--mode",
-            worker_mode,
+            self._worker_mode,
         ]
-        if nominal_parameters_path is not None:
-            command.extend(("--nominal-parameters", str(nominal_parameters_path)))
-        self.process = subprocess.Popen(
+        if self._nominal_parameters_path is not None:
+            command.extend(("--nominal-parameters", str(self._nominal_parameters_path)))
+        if self._worker_mode == "plane":
+            command.extend(("--z-sole", str(self._z_sole)))
+        return subprocess.Popen(
             tuple(command),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=environment,
+            env=self._environment,
             bufsize=0,
         )
-        self.queue: Queue[Any] = Queue()
-        self.thread = threading.Thread(
-            target=self._serve,
-            name=f"certificate-process-io-{index}",
-            daemon=True,
-        )
-        self.thread.start()
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen) -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+    def _restart_process(self, failed_process: subprocess.Popen | None = None) -> None:
+        with self._process_lock:
+            if self._closing:
+                return
+            if failed_process is not None and self.process is not failed_process:
+                return
+            self._stop_process(self.process)
+            self.process = self._start_process()
+
+    def _ensure_healthy(self) -> None:
+        with self._process_lock:
+            if self._closing:
+                raise RuntimeError("certificate worker is closing")
+            if self.process.poll() is not None:
+                self._stop_process(self.process)
+                self.process = self._start_process()
+
+    def _replace_after_transport_failure(
+        self,
+        failed_process: subprocess.Popen,
+    ) -> bool:
+        """Replace the failed process and its I/O thread for this queue slot."""
+
+        with self._process_lock:
+            if self._closing:
+                return False
+            if self.process is failed_process:
+                self._stop_process(self.process)
+                self.process = self._start_process()
+            replacement = self._new_io_thread()
+            self.thread = replacement
+            replacement.start()
+            return True
 
     def submit(self, query) -> Future:
         future: Future = Future()
+        try:
+            self._ensure_healthy()
+        except Exception as exc:
+            future.set_exception(exc)
+            return future
         self.queue.put((future, query))
         return future
 
@@ -110,33 +183,43 @@ class _Worker:
             future, query = item
             if not future.set_running_or_notify_cancel():
                 continue
+            process = self.process
             try:
+                if process.poll() is not None:
+                    self._restart_process(process)
+                    process = self.process
+                assert process.stdin is not None
+                assert process.stdout is not None
                 request = pickle.dumps(query, protocol=pickle.HIGHEST_PROTOCOL)
-                self.process.stdin.write(_HEADER.pack(len(request)))
-                self.process.stdin.write(request)
-                self.process.stdin.flush()
+                process.stdin.write(_HEADER.pack(len(request)))
+                process.stdin.write(request)
+                process.stdin.flush()
                 readable, _, _ = select.select(
-                    (self.process.stdout,), (), (), _RESPONSE_TIMEOUT_S
+                    (process.stdout,), (), (), _RESPONSE_TIMEOUT_S
                 )
                 if not readable:
-                    self.process.terminate()
-                    self.process.wait(timeout=5.0)
-                    diagnostic = self.stderr().strip()
                     raise TimeoutError(
                         "clean certificate worker did not respond within "
-                        f"{_RESPONSE_TIMEOUT_S:.0f}s; returncode={self.process.returncode}; "
-                        f"stderr={diagnostic!r}"
+                        f"{_RESPONSE_TIMEOUT_S:.0f}s"
                     )
-                response_size = _HEADER.unpack(_read_exact(self.process.stdout, _HEADER.size))[0]
-                success, payload = pickle.loads(_read_exact(self.process.stdout, response_size))
+                response_size = _HEADER.unpack(_read_exact(process.stdout, _HEADER.size))[0]
+                success, payload = pickle.loads(_read_exact(process.stdout, response_size))
                 if success:
                     future.set_result(payload)
                 else:
                     future.set_exception(RuntimeError(payload))
             except BaseException as exc:
                 future.set_exception(exc)
+                transport_failure = isinstance(
+                    exc,
+                    (BrokenPipeError, EOFError, OSError, TimeoutError, pickle.PickleError),
+                ) or process.poll() is not None
+                if transport_failure:
+                    if self._replace_after_transport_failure(process):
+                        return
 
     def request_close(self) -> None:
+        self._closing = True
         self.queue.put(_STOP)
         self.thread.join(timeout=0.5)
         if self.thread.is_alive() and self.process.poll() is None:
@@ -150,7 +233,7 @@ class _Worker:
             try:
                 self.process.stdin.write(_HEADER.pack(0))
                 self.process.stdin.flush()
-            except BrokenPipeError:
+            except (BrokenPipeError, OSError, ValueError):
                 pass
 
     def stderr(self) -> str:
@@ -169,6 +252,7 @@ class CertificateProcessPool:
         *,
         worker_mode: str = "flat",
         nominal_parameters_path: str | Path | None = None,
+        z_sole: float = -0.045,
     ) -> None:
         if workers <= 0:
             raise ValueError("certificate process workers must be positive")
@@ -183,7 +267,8 @@ class CertificateProcessPool:
         if worker_mode == "plane" and nominal_path is None:
             raise ValueError("plane certificate workers require nominal parameters")
         self._workers = tuple(
-            _Worker(path, index, worker_mode, nominal_path) for index in range(workers)
+            _Worker(path, index, worker_mode, nominal_path, z_sole)
+            for index in range(workers)
         )
         self._next_worker = 0
         self._closed = False
@@ -193,6 +278,7 @@ class CertificateProcessPool:
             raise RuntimeError("certificate process pool is closed")
         worker = self._workers[self._next_worker]
         self._next_worker = (self._next_worker + 1) % len(self._workers)
+        worker._ensure_healthy()
         return worker.submit(query)
 
     def close(self) -> None:
@@ -221,3 +307,5 @@ class CertificateProcessPool:
             except subprocess.TimeoutExpired:
                 worker.process.kill()
                 worker.process.wait(timeout=1.0)
+        for worker in self._workers:
+            worker._stop_process(worker.process)

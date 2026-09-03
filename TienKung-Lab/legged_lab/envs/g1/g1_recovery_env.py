@@ -16,6 +16,10 @@ from legged_lab.recovery.push_curriculum import (
     PushCurriculumController,
     record_episode_batch,
 )
+from legged_lab.recovery.practical_metrics import (
+    practical_frame_errors,
+    practical_interval_means_from_sums,
+)
 from legged_lab.recovery.recovery_context import (
     RECOVERY_CONTEXT_DIM,
     RECOVERY_CONTEXT_MODES,
@@ -792,9 +796,11 @@ class G1RecoveryEnv(BaseEnv):
         self._recovery_touchdowns[env_ids] += 1
         sample_count = self._interval_sample_count[env_ids]
         has_complete_interval = self._interval_started_after_touchdown[env_ids] & (sample_count > 0)
-        safe_count = torch.clamp(sample_count, min=1).to(torch.float32)
-        mean_velocity_error = self._interval_velocity_error_sum[env_ids] / safe_count
-        mean_abs_tilt = self._interval_abs_tilt_sum[env_ids] / safe_count.unsqueeze(-1)
+        mean_velocity_error, mean_abs_tilt = practical_interval_means_from_sums(
+            self._interval_velocity_error_sum[env_ids],
+            self._interval_abs_tilt_sum[env_ids],
+            sample_count,
+        )
         touchdown_foot = state.touchdown_foot[env_ids]
         previous_foot = self._last_touchdown_foot[env_ids]
         alternating = (previous_foot < 0) | (touchdown_foot != previous_foot)
@@ -930,11 +936,12 @@ class G1RecoveryEnv(BaseEnv):
     def _practical_errors(self, state) -> tuple[torch.Tensor, torch.Tensor]:
         """Return velocity and absolute attitude errors for practical recovery."""
 
-        velocity_error = torch.linalg.vector_norm(
-            state.com_velocity[:, :2] - state.command_velocity[:, :2],
-            dim=1,
+        return practical_frame_errors(
+            state.com_velocity[:, :2],
+            state.command_velocity[:, :2],
+            state.root_roll_pitch,
+            torch.zeros_like(state.root_roll_pitch),
         )
-        return velocity_error, torch.abs(state.root_roll_pitch)
 
     def _practical_thresholds(
         self,

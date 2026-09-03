@@ -53,16 +53,43 @@ def test_l_and_vmax_are_even_in_signed_slope(flat_parameters) -> None:
     assert positive.swing_velocity_limits == negative.swing_velocity_limits
 
 
-def test_signed_slope_and_cross_slope_rejection() -> None:
-    alpha = math.radians(10.0)
-    normal = (-math.sin(alpha), 0.0, math.cos(alpha))
-    result = signed_slope_from_heading_normal(normal, 0.05)
-    assert result.valid
-    assert result.alpha == pytest.approx(alpha)
+def _normal(slope_degrees: float, direction_offset_degrees: float = 0.0):
+    slope = math.radians(slope_degrees)
+    offset = math.radians(direction_offset_degrees)
+    return (
+        -math.sin(slope) * math.cos(offset),
+        -math.sin(slope) * math.sin(offset),
+        math.cos(slope),
+    )
 
-    invalid = signed_slope_from_heading_normal((normal[0], 0.1, normal[2]), 0.05)
-    assert not invalid.valid
-    assert "cross-slope" in invalid.reason
+
+@pytest.mark.parametrize(
+    ("slope_degrees", "offset_degrees", "valid"),
+    (
+        (10.0, 0.0, True),
+        (10.0, 3.0, True),
+        (10.0, 10.0, False),
+        (1.0, 30.0, False),
+        (0.1, 80.0, True),
+    ),
+)
+def test_slope_alignment_uses_angular_direction_error(
+    slope_degrees: float,
+    offset_degrees: float,
+    valid: bool,
+) -> None:
+    result = signed_slope_from_heading_normal(
+        _normal(slope_degrees, offset_degrees)
+    )
+    assert result.valid is valid
+
+
+def test_signed_slope_keeps_normal_based_sign_definition() -> None:
+    uphill = signed_slope_from_heading_normal(_normal(10.0))
+    downhill = signed_slope_from_heading_normal(_normal(-10.0))
+    assert uphill.valid and downhill.valid
+    assert uphill.alpha == pytest.approx(math.radians(10.0))
+    assert downhill.alpha == pytest.approx(math.radians(-10.0))
 
 
 def test_vertical_height_is_not_normal_distance() -> None:

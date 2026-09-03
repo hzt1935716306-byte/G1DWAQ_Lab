@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from isaaclab.utils import configclass
@@ -27,7 +28,7 @@ class G1PlaneRecoveryCfg:
     """Scope and geometry constants for the first x-aligned plane version."""
 
     slopes_degrees: tuple[float, ...] = PLANE_RECOVERY_SLOPES_DEG
-    slope_alignment_tolerance: float = 0.05
+    slope_alignment_tolerance: float = math.radians(5.0)
     z_sole: float = -0.045
     minimum_command_speed: float = 0.2
     nominal_parameters_path: str = _DEFAULT_PLANE_NOMINAL_PARAMETERS

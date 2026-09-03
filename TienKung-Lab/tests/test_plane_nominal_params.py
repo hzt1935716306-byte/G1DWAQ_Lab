@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from legged_lab.recovery.plane_certificate_runtime import plane_periodic_state
 from legged_lab.recovery.plane_nominal_params import (
     PlaneNominalParameterTable,
     command_direction,
+    nominal_node_key,
+    upsert_nominal_nodes,
 )
 
 
@@ -53,3 +56,61 @@ def test_flat_plus_x_interpolation_matches_legacy_linear_period(table) -> None:
     assert result.value.step_period == pytest.approx(expected, abs=1.0e-15)
     assert result.value.h_eff == pytest.approx(0.6884990671277046)
     assert result.value.step_width == pytest.approx(0.22294799983501434)
+
+
+def test_collector_upsert_preserves_uncollected_nodes_and_deduplicates() -> None:
+    negative = {
+        "slope_degrees": -10.0,
+        "direction": "+x",
+        "speed": 0.4,
+        "marker": "preserved",
+    }
+    old_positive = {
+        "slope_degrees": 10.0,
+        "direction": "+x",
+        "speed": 0.4,
+        "marker": "old",
+    }
+    new_positive = dict(old_positive, marker="new")
+    merged = upsert_nominal_nodes(
+        [negative, old_positive],
+        [new_positive, new_positive],
+    )
+
+    assert [nominal_node_key(node) for node in merged] == [
+        (-10.0, "+x", 0.4),
+        (10.0, "+x", 0.4),
+    ]
+    assert merged[0]["marker"] == "preserved"
+    assert merged[1]["marker"] == "new"
+
+
+def test_interpolation_does_not_cross_known_failed_slope(table) -> None:
+    base = next(
+        node
+        for node in table.nodes
+        if node.direction == "+x" and node.alpha == 0.0 and node.speed == 0.2
+    )
+    alpha_15 = math.radians(-15.0)
+    alpha_10 = math.radians(-10.0)
+    alpha_5 = math.radians(-5.0)
+    outer_nodes = (
+        replace(base, alpha=alpha_15),
+        replace(base, alpha=alpha_5),
+    )
+    hole = PlaneNominalParameterTable(
+        outer_nodes,
+        known_missing_slope_directions=((alpha_10, "+x"),),
+    )
+
+    for slope in (-12.0, -7.0):
+        result = hole.lookup(math.radians(slope), "+x", base.speed)
+        assert not result.valid
+        assert result.reason == "interpolation would cross an explicitly failed calibration slope"
+
+    filled = PlaneNominalParameterTable(
+        (*outer_nodes, replace(base, alpha=alpha_10)),
+        known_missing_slope_directions=((alpha_10, "+x"),),
+    )
+    assert filled.lookup(math.radians(-12.0), "+x", base.speed).valid
+    assert filled.lookup(math.radians(-7.0), "+x", base.speed).valid

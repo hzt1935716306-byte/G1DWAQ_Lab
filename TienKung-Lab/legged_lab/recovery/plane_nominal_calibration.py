@@ -14,6 +14,7 @@ import numpy as np
 
 from .plane_adapter import Box2D, inverse_project_horizontal
 from .plane_certificate_runtime import plane_periodic_state
+from .practical_metrics import practical_interval_means_from_sums
 
 
 def _statistics(values: Sequence[float]) -> dict[str, float | int]:
@@ -56,8 +57,16 @@ def calibrate_nominal_node(
 
     period = float(np.median([float(row["T"]) for row in calibration]))
     h_eff = float(np.median([float(row["h_geom"]) for row in calibration]))
-    roll_star = float(np.median([float(row["roll"]) for row in calibration]))
-    pitch_star = float(np.median([float(row["pitch"]) for row in calibration]))
+    calibration_roll_frames = np.concatenate(
+        [np.asarray(row["interval_roll"], dtype=np.float64) for row in calibration]
+    )
+    calibration_pitch_frames = np.concatenate(
+        [np.asarray(row["interval_pitch"], dtype=np.float64) for row in calibration]
+    )
+    if calibration_roll_frames.size == 0 or calibration_pitch_frames.size == 0:
+        raise ValueError("complete touchdown intervals must contain policy-step frames")
+    roll_star = float(np.median(calibration_roll_frames))
+    pitch_star = float(np.median(calibration_pitch_frames))
     if period <= 0.0 or h_eff < 0.20:
         raise ValueError("calibrated period must be positive and h_eff must be at least 0.20 m")
 
@@ -107,9 +116,36 @@ def calibrate_nominal_node(
     epsilon = np.maximum(kappa * scales, epsilon_floor)
     holdout_covered = np.all(np.abs(holdout_errors) <= epsilon, axis=1)
 
-    velocity_errors = np.asarray([float(row["velocity_error"]) for row in calibration])
-    roll_errors = np.abs(np.asarray([float(row["roll"]) for row in calibration]) - roll_star)
-    pitch_errors = np.abs(np.asarray([float(row["pitch"]) for row in calibration]) - pitch_star)
+    interval_metrics = []
+    for row in calibration:
+        velocity_frames = np.asarray(row["interval_velocity_error"], dtype=np.float64)
+        roll_frames = np.asarray(row["interval_roll"], dtype=np.float64)
+        pitch_frames = np.asarray(row["interval_pitch"], dtype=np.float64)
+        if not (
+            velocity_frames.ndim == roll_frames.ndim == pitch_frames.ndim == 1
+            and velocity_frames.size == roll_frames.size == pitch_frames.size
+            and velocity_frames.size > 0
+        ):
+            raise ValueError("practical metrics require equally sized non-empty interval frames")
+        attitude_error_sum = np.asarray(
+            (
+                np.abs(roll_frames - roll_star).sum(),
+                np.abs(pitch_frames - pitch_star).sum(),
+            ),
+            dtype=np.float64,
+        )
+        mean_velocity_error, mean_attitude_error = practical_interval_means_from_sums(
+            velocity_frames.sum(),
+            attitude_error_sum,
+            velocity_frames.size,
+        )
+        interval_metrics.append(
+            (mean_velocity_error, mean_attitude_error[0], mean_attitude_error[1])
+        )
+    interval_metrics = np.asarray(interval_metrics, dtype=np.float64)
+    velocity_errors = interval_metrics[:, 0]
+    roll_errors = interval_metrics[:, 1]
+    pitch_errors = interval_metrics[:, 2]
 
     node = {
         "slope_degrees": float(slope_degrees),

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import yaml
@@ -132,6 +132,30 @@ def _lerp(a: float, b: float, weight: float) -> float:
     return (1.0 - weight) * float(a) + weight * float(b)
 
 
+def nominal_node_key(node: Mapping[str, object]) -> tuple[float, str, float]:
+    """Return the unique stable key used by the nominal YAML collector."""
+
+    return (
+        float(node["slope_degrees"]),
+        str(node["direction"]),
+        float(node["speed"]),
+    )
+
+
+def upsert_nominal_nodes(
+    existing_nodes: Sequence[Mapping[str, object]],
+    new_nodes: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Preserve uncollected valid nodes and replace only successful matching keys."""
+
+    by_key: dict[tuple[float, str, float], dict[str, object]] = {}
+    for node in (*existing_nodes, *new_nodes):
+        if not bool(node.get("valid", True)):
+            continue
+        by_key[nominal_node_key(node)] = dict(node)
+    return [by_key[key] for key in sorted(by_key)]
+
+
 class PlaneNominalParameterTable:
     """Bounded same-direction interpolation over slope and speed nodes."""
 
@@ -143,7 +167,16 @@ class PlaneNominalParameterTable:
     ):
         self.nodes = tuple(nodes)
         self.tolerance = float(tolerance)
-        self.known_missing_slope_directions = tuple(known_missing_slope_directions)
+        valid_slope_directions = {(node.alpha, node.direction) for node in self.nodes}
+        self.known_missing_slope_directions = tuple(
+            (float(alpha), direction)
+            for alpha, direction in known_missing_slope_directions
+            if not any(
+                direction == valid_direction
+                and abs(float(alpha) - valid_alpha) <= self.tolerance
+                for valid_alpha, valid_direction in valid_slope_directions
+            )
+        )
         self._by_key: dict[tuple[str, float, float], PlaneNominalGait] = {}
         for node in self.nodes:
             key = (node.direction, node.alpha, node.speed)
@@ -221,6 +254,18 @@ class PlaneNominalParameterTable:
         alpha_bounds = _bracket((node.alpha for node in candidates), float(alpha), self.tolerance)
         if alpha_bounds is None:
             return PlaneNominalLookup(None, False, "slope is outside calibrated bounds")
+        if alpha_bounds[0] != alpha_bounds[1] and any(
+            missing_direction == direction
+            and alpha_bounds[0] + self.tolerance
+            < missing_alpha
+            < alpha_bounds[1] - self.tolerance
+            for missing_alpha, missing_direction in self.known_missing_slope_directions
+        ):
+            return PlaneNominalLookup(
+                None,
+                False,
+                "interpolation would cross an explicitly failed calibration slope",
+            )
 
         alpha_weight = 0.0 if alpha_bounds[0] == alpha_bounds[1] else (
             (alpha - alpha_bounds[0]) / (alpha_bounds[1] - alpha_bounds[0])
@@ -321,4 +366,6 @@ __all__ = [
     "PlaneNominalLookup",
     "PlaneNominalParameterTable",
     "command_direction",
+    "nominal_node_key",
+    "upsert_nominal_nodes",
 ]

@@ -25,7 +25,7 @@ class G1StateExtractorCfg:
     left_foot_body_name: str = "left_ankle_roll_link"
     right_foot_body_name: str = "right_ankle_roll_link"
     use_terrain_plane_geometry: bool = False
-    slope_alignment_tolerance: float = 0.05
+    slope_alignment_tolerance: float = math.radians(5.0)
 
     def __post_init__(self):
         if self.gravity <= 0.0:
@@ -248,14 +248,19 @@ class G1PrivilegedStateExtractor:
         )
         safe_norm = torch.clamp(normal_norm, min=1.0e-12)
         terrain_normal_heading = terrain_normal_heading / safe_norm.unsqueeze(-1)
+        horizontal_normal = torch.linalg.vector_norm(
+            terrain_normal_heading[:, :2], dim=1
+        )
+        near_flat = horizontal_normal < math.sin(math.radians(0.5))
+        alignment_angle = torch.atan2(
+            torch.abs(terrain_normal_heading[:, 1]),
+            torch.abs(terrain_normal_heading[:, 0]),
+        )
         terrain_plane_valid = (
             provider_valid
             & finite_geometry
             & (terrain_normal_heading[:, 2] > 0.0)
-            & (
-                torch.abs(terrain_normal_heading[:, 1])
-                <= self.cfg.slope_alignment_tolerance
-            )
+            & (near_flat | (alignment_angle <= self.cfg.slope_alignment_tolerance))
         )
         signed_slope = torch.atan2(
             -terrain_normal_heading[:, 0], terrain_normal_heading[:, 2]

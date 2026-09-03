@@ -14,6 +14,10 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
+NEAR_FLAT_ANGLE_RAD = math.radians(0.5)
+SLOPE_ALIGNMENT_TOLERANCE_RAD = math.radians(5.0)
+
+
 @dataclass(frozen=True)
 class PlaneGeometry:
     alpha: float
@@ -50,7 +54,7 @@ class PlaneCapability:
 
 def signed_slope_from_heading_normal(
     normal_heading: Sequence[float],
-    slope_alignment_tolerance: float,
+    slope_alignment_tolerance: float = SLOPE_ALIGNMENT_TOLERANCE_RAD,
 ) -> PlaneGeometry:
     """Return ``alpha=atan2(-n_x,n_z)`` for a valid x-only heading plane."""
 
@@ -63,8 +67,15 @@ def signed_slope_from_heading_normal(
     normal = normal / norm
     if normal[2] <= 0.0:
         return PlaneGeometry(0.0, False, "terrain normal does not point upward")
-    if abs(float(normal[1])) > float(slope_alignment_tolerance):
-        return PlaneGeometry(0.0, False, "terrain has an unsupported cross-slope component")
+    horizontal = math.hypot(float(normal[0]), float(normal[1]))
+    if horizontal >= math.sin(NEAR_FLAT_ANGLE_RAD):
+        alignment_angle = math.atan2(abs(float(normal[1])), abs(float(normal[0])))
+        if alignment_angle > float(slope_alignment_tolerance):
+            return PlaneGeometry(
+                0.0,
+                False,
+                "terrain slope direction is not aligned with heading x",
+            )
     return PlaneGeometry(math.atan2(-float(normal[0]), float(normal[2])), True)
 
 

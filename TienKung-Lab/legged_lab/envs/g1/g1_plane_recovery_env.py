@@ -18,6 +18,7 @@ from legged_lab.recovery.plane_certificate_runtime import (
     PlaneCalibratedG1CertificateEvaluator,
 )
 from legged_lab.recovery.plane_nominal_params import PlaneNominalParameterTable
+from legged_lab.recovery.practical_metrics import practical_frame_errors
 from legged_lab.recovery.state_extractor import G1PrivilegedStateExtractor, G1StateExtractorCfg
 
 
@@ -165,10 +166,12 @@ class G1PlaneRecoveryEnv(G1RecoveryEnv):
 
     def _practical_errors(self, state):
         self._refresh_nominal_cache(state)
-        velocity_error = torch.linalg.vector_norm(
-            state.com_velocity[:, :2] - state.command_velocity[:, :2], dim=1
+        velocity_error, attitude_error = practical_frame_errors(
+            state.com_velocity[:, :2],
+            state.command_velocity[:, :2],
+            state.root_roll_pitch,
+            self._nominal_cache_attitude,
         )
-        attitude_error = torch.abs(state.root_roll_pitch - self._nominal_cache_attitude)
         invalid = ~self._nominal_cache_valid
         velocity_error[invalid] = math.inf
         attitude_error[invalid] = math.inf

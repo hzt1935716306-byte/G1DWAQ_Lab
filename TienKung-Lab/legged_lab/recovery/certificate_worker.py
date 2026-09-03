@@ -29,6 +29,7 @@ def main() -> None:
     parser.add_argument("--parameters", required=True)
     parser.add_argument("--mode", choices=("flat", "plane"), default="flat")
     parser.add_argument("--nominal-parameters")
+    parser.add_argument("--z-sole", type=float, default=-0.045)
     args = parser.parse_args()
     if args.mode == "plane":
         if not args.nominal_parameters:
@@ -40,6 +41,7 @@ def main() -> None:
             args.nominal_parameters,
             workers=1,
             executor_type="sequential",
+            z_sole=args.z_sole,
         )
     else:
         evaluator = CalibratedG1CertificateEvaluator(

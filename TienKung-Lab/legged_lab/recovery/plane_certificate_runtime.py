@@ -37,6 +37,29 @@ class PlaneCertificateQuery:
     invalid_reason: str = ""
 
 
+def mirror_plane_certificate_query(query: PlaneCertificateQuery) -> PlaneCertificateQuery:
+    """Mirror one plane query laterally while leaving its signed slope unchanged."""
+
+    command = np.asarray(query.command, dtype=np.float64).copy()
+    command[1] *= -1.0
+    if command.size >= 3:
+        command[2] *= -1.0
+    b = np.asarray(query.b, dtype=np.float64).copy()
+    q = np.asarray(query.q, dtype=np.float64).copy()
+    b[1] *= -1.0
+    q[1] *= -1.0
+    return PlaneCertificateQuery(
+        command=command,
+        b=b,
+        q=q,
+        support_side="right" if query.support_side == "left" else "left",
+        phase=0.0,
+        alpha=query.alpha,
+        adapter_valid=query.adapter_valid,
+        invalid_reason=query.invalid_reason,
+    )
+
+
 @dataclass(frozen=True)
 class PendingPlaneCertificateBatch(PendingCertificateBatch):
     queries: tuple[PlaneCertificateQuery, ...]
@@ -105,6 +128,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 self.workers,
                 worker_mode="plane",
                 nominal_parameters_path=self.nominal_parameters_path,
+                z_sole=self.z_sole,
             )
         elif self.executor_type == "thread" and self.workers > 1:
             self._executor = ThreadPoolExecutor(max_workers=self.workers)
@@ -200,7 +224,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 None,
                 (),
                 f"Unexpected plane certificate exception: {type(exc).__name__}: {exc}",
-                diagnostic={"kind": "unexpected_plane_certificate_exception"},
+                diagnostic={
+                    "kind": "unexpected_plane_certificate_exception",
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
             )
 
     def submit(self, state, env_ids: torch.Tensor) -> PendingPlaneCertificateBatch:
@@ -218,7 +246,6 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         support_left = state.support_is_left[env_ids].detach().cpu().numpy()
 
         queries = []
-        jobs = []
         for command, alpha, plane_valid, com, velocity, left, right, q, is_left in zip(
             commands,
             alphas,
@@ -267,19 +294,47 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 invalid_reason=reason,
             )
             queries.append(query)
+        return self.submit_queries(tuple(queries), env_ids.device, env_ids=ids)
+
+    def submit_queries(
+        self,
+        queries: Sequence[PlaneCertificateQuery],
+        device: torch.device,
+        *,
+        env_ids: Sequence[int] | None = None,
+    ) -> PendingPlaneCertificateBatch:
+        """Submit already-formed queries for diagnostics without fabricating state."""
+
+        ids = tuple(range(len(queries))) if env_ids is None else tuple(env_ids)
+        if len(ids) != len(queries):
+            raise ValueError("env_ids and plane queries must have the same length")
+        jobs = []
+        for query in queries:
+            valid = query.adapter_valid
             if not valid:
-                jobs.append(self._invalid_result(reason))
+                jobs.append(self._invalid_result(query.invalid_reason))
             elif self._executor is None:
                 jobs.append(self._solve(query))
             elif self.executor_type == "subprocess":
                 jobs.append(self._executor.submit(query))
             else:
                 jobs.append(self._executor.submit(self._solve, query))
-        return PendingPlaneCertificateBatch(ids, tuple(queries), tuple(jobs), env_ids.device)
+        return PendingPlaneCertificateBatch(ids, tuple(queries), tuple(jobs), device)
 
     def _failure_record(self, env_id, query, result):
-        config = self._plane_config(query.command, query.alpha)
-        return {
+        period = None
+        omega = None
+        configuration_lookup_error = None
+        try:
+            config = self._plane_config(query.command, query.alpha)
+            period = float(config.step_period)
+            omega = float(config.omega)
+        except Exception as exc:
+            configuration_lookup_error = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+        record = {
             "schema_version": 1,
             "env_id": int(env_id),
             "parameters_path": str(self.parameters_path),
@@ -288,20 +343,42 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 "b": query.b.tolist(),
                 "q": query.q.tolist(),
                 "phase": query.phase,
-                "T": config.step_period,
+                "T": period,
                 "support": query.support_side,
                 "command": query.command.tolist(),
-                "omega": config.omega,
+                "omega": omega,
                 "alpha": query.alpha,
             },
             "result": {
                 "status": result.status.value,
                 "N": result.n_min,
                 "margin": result.margin,
+                "margin_fallback": result.margin_fallback,
+                "solver_fallback": result.solver_fallback,
+                "solver_retried": result.solver_retried,
                 "message": result.message,
             },
             "failure": result.diagnostic,
         }
+        if configuration_lookup_error is not None:
+            record["configuration_lookup_error"] = configuration_lookup_error
+        return record
+
+    @staticmethod
+    def _transport_failure_result(exc: Exception) -> CertificateResult:
+        return CertificateResult(
+            CertificateStatus.SOLVER_FAILURE,
+            None,
+            None,
+            None,
+            (),
+            f"Plane certificate worker transport failure: {type(exc).__name__}: {exc}",
+            diagnostic={
+                "kind": "worker_transport_failure",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        )
 
     def _resolve_with_validity(
         self,
@@ -313,12 +390,25 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 torch.empty(0, dtype=torch.float32, device=pending.device),
                 torch.empty(0, dtype=torch.bool, device=pending.device),
             )
-        raw_results: Sequence[CertificateResult] = [
-            job.result() if isinstance(job, Future) else job for job in pending.jobs
-        ]
+        raw_results: list[CertificateResult] = []
+        for job in pending.jobs:
+            if not isinstance(job, Future):
+                raw_results.append(job)
+                continue
+            try:
+                raw_results.append(job.result())
+            except Exception as exc:
+                raw_results.append(self._transport_failure_result(exc))
         results = []
         valid_results = []
         for env_id, query, result in zip(pending.env_ids, pending.queries, raw_results):
+            if result.status == CertificateStatus.CONSTRAINT_BUILDER_MISMATCH:
+                record = self._failure_record(env_id, query, result)
+                self._save_failure_record(record)
+                raise RuntimeError(
+                    "G1 plane certificate feasibility/margin constraint builder mismatch; "
+                    f"env_id={env_id}, diagnostics={self._diagnostics_path}, record={record}"
+                )
             if not query.adapter_valid:
                 results.append(self._invalid_result(query.invalid_reason))
                 valid_results.append(False)
@@ -359,5 +449,6 @@ __all__ = [
     "PendingPlaneCertificateBatch",
     "PlaneCalibratedG1CertificateEvaluator",
     "PlaneCertificateQuery",
+    "mirror_plane_certificate_query",
     "plane_periodic_state",
 ]
