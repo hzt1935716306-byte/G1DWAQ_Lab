@@ -64,9 +64,23 @@ from legged_lab.envs.g1.g1_dwaq_config import (
     G1DwaqAgentCfg,
     G1DwaqEnvCfg,
 )
+from legged_lab.envs.g1.g1_dwaq_nosys_config import (
+    G1DwaqNoSysAgentCfg,
+    G1DwaqNoSysEnvCfg,
+)
 from legged_lab.envs.g1.g1_dwaq_slope_config import (
     G1DwaqSlopeAgentCfg,
     G1DwaqSlopeEnvCfg,
+)
+from legged_lab.envs.g1.g1_slope_training_config import (
+    G1DwaqSlopeNoSysDAgentCfg,
+    G1DwaqSlopeNoSysDEnvCfg,
+    G1SlopeNoSysDAgentCfg,
+    G1SlopeNoSysDEnvCfg,
+    G1SlopeSysDAgentCfg,
+    G1SlopeSysDEnvCfg,
+    G1SlopeSysNdAgentCfg,
+    G1SlopeSysNdEnvCfg,
 )
 
 from legged_lab.envs.h1.h1_config import (
@@ -145,4 +159,34 @@ task_registry.register(
     G1DwaqEnv,
     G1DwaqSlopeEnvCfg(),
     G1DwaqSlopeAgentCfg(),
+)
+task_registry.register(
+    "g1_dwaq_nosys",
+    G1DwaqEnv,
+    G1DwaqNoSysEnvCfg(),
+    G1DwaqNoSysAgentCfg(),
+)
+task_registry.register(
+    "g1_slope_nosys_d",
+    BaseEnv,
+    G1SlopeNoSysDEnvCfg(),
+    G1SlopeNoSysDAgentCfg(),
+)
+task_registry.register(
+    "g1_slope_sys_nd",
+    G1RecoveryEnv,
+    G1SlopeSysNdEnvCfg(),
+    G1SlopeSysNdAgentCfg(),
+)
+task_registry.register(
+    "g1_slope_sys_d",
+    BaseEnv,
+    G1SlopeSysDEnvCfg(),
+    G1SlopeSysDAgentCfg(),
+)
+task_registry.register(
+    "g1_dwaq_slope_nosys_d",
+    G1DwaqEnv,
+    G1DwaqSlopeNoSysDEnvCfg(),
+    G1DwaqSlopeNoSysDAgentCfg(),
 )
