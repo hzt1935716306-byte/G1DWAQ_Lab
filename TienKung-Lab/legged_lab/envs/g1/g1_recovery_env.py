@@ -1,8 +1,10 @@
-"""Thin Stage2 recovery environment with a certificate-only A/B reward path."""
+"""Stage2 recovery environment with optional low-frequency actor context."""
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
+import time
 
 import torch
 
@@ -13,6 +15,11 @@ from legged_lab.recovery.push_curriculum import (
     CurriculumUpgradeReason,
     PushCurriculumController,
     record_episode_batch,
+)
+from legged_lab.recovery.recovery_context import (
+    RECOVERY_CONTEXT_DIM,
+    RECOVERY_CONTEXT_MODES,
+    normalize_recovery_context,
 )
 from legged_lab.recovery.stage2_reward import (
     CERTIFICATE_PROGRESS_SCALE,
@@ -27,9 +34,8 @@ from legged_lab.recovery.state_extractor import G1PrivilegedStateExtractor, G1St
 class G1RecoveryEnv(BaseEnv):
     """Keep the Stage1A task intact while adding Stage2-only bookkeeping.
 
-    Recovery state is simulator-privileged and is never appended to actor or
-    critic observations.  Baseline keeps the original RewardManager output;
-    Ours enables the Stage2 recovery-event and certificate reward channel.
+    The proprioceptive history and critic observation remain unchanged.  A
+    configured actor receives one 3-D touchdown-held context after its history.
     """
 
     def __init__(self, cfg, headless):
@@ -49,6 +55,15 @@ class G1RecoveryEnv(BaseEnv):
         self._deferred_certificate_configured = bool(
             cfg.stage2_reward.defer_certificate_reward_to_rollout_end
         )
+        self._recovery_context_enabled = bool(cfg.recovery_context.enabled)
+        self._recovery_context_mode = str(cfg.recovery_context.mode)
+        if self._recovery_context_mode not in RECOVERY_CONTEXT_MODES:
+            raise ValueError(
+                f"unknown recovery context mode {self._recovery_context_mode!r}; "
+                f"expected one of {RECOVERY_CONTEXT_MODES}"
+            )
+        if not self._recovery_context_enabled and self._recovery_context_mode != "zero":
+            raise ValueError("a disabled recovery context must use mode='zero'")
         if not self._stage2_reward_enabled and (
             self._shared_event_reward_enabled
             or self._certificate_reward_enabled
@@ -57,19 +72,33 @@ class G1RecoveryEnv(BaseEnv):
             raise ValueError("Stage2 subchannels require stage2_reward.enabled=True")
         if self._deferred_certificate_configured and not self._certificate_reward_enabled:
             raise ValueError("deferred certificate rewards require the certificate channel")
+        if (
+            self._deferred_certificate_configured
+            and self._certificate_reward_enabled
+            and self._recovery_context_mode == "certificate"
+        ):
+            raise ValueError(
+                "certificate context requires synchronous touchdown solves; "
+                "deferred certificate reward cannot be combined with it"
+            )
         self._steps_per_learning_iteration = int(cfg.push_curriculum.num_steps_per_iteration)
         self._state_extractor = G1PrivilegedStateExtractor(
             self,
             G1StateExtractorCfg(h_eff=0.6884990671277046),
         )
+        need_certificate_solver = (
+            self._certificate_reward_enabled
+            or (self._recovery_context_enabled and self._recovery_context_mode == "certificate")
+        )
         self._certificate_evaluator = (
             CalibratedG1CertificateEvaluator(
                 cfg.stage2_reward.certificate_parameters_path,
                 workers=cfg.stage2_reward.certificate_workers,
+                executor_type=cfg.stage2_reward.certificate_executor,
                 failure_window_size=cfg.stage2_reward.certificate_failure_window_size,
                 failure_rate_threshold=cfg.stage2_reward.certificate_failure_rate_threshold,
             )
-            if self._stage2_reward_enabled and self._certificate_reward_enabled
+            if need_certificate_solver
             else None
         )
         self._initialize_recovery_buffers()
@@ -88,12 +117,45 @@ class G1RecoveryEnv(BaseEnv):
         self._interval_abs_tilt_sum = torch.zeros((count, 2), device=device)
         self._practical_entered = torch.zeros(count, dtype=torch.bool, device=device)
         self._practical_enter_step = torch.zeros(count, dtype=torch.long, device=device)
+        self._recovery_start_time_s = torch.zeros(count, dtype=torch.float64, device=device)
         self._truncated_recovery_count = 0
         self._pending_initial_certificate = torch.zeros(count, dtype=torch.bool, device=device)
         self._push_started_this_step = torch.zeros(count, dtype=torch.bool, device=device)
         self._certificate_n = torch.full((count,), -1, dtype=torch.long, device=device)
         self._certificate_margin = torch.zeros(count, device=device)
         self._certificate_phi_previous = torch.zeros(count, device=device)
+
+        self._recovery_context = torch.zeros(
+            (count, RECOVERY_CONTEXT_DIM), dtype=torch.float32, device=device
+        )
+        self.current_n_min = torch.full((count,), -1, dtype=torch.long, device=device)
+        self.current_margin = torch.zeros(count, dtype=torch.float32, device=device)
+        self.current_certificate_valid = torch.zeros(count, dtype=torch.bool, device=device)
+        self._context_refresh_mask = torch.zeros(count, dtype=torch.bool, device=device)
+        self._context_touchdown_mask = torch.zeros(count, dtype=torch.bool, device=device)
+        self._touchdown_certificate_cache_mask = torch.zeros(
+            count, dtype=torch.bool, device=device
+        )
+        self._touchdown_certificate_cache_n = torch.full(
+            (count,), -1, dtype=torch.long, device=device
+        )
+        self._touchdown_certificate_cache_margin = torch.zeros(
+            count, dtype=torch.float32, device=device
+        )
+        self._touchdown_certificate_cache_valid = torch.zeros(
+            count, dtype=torch.bool, device=device
+        )
+        self._context_refresh_batches = 0
+        self._context_refresh_evaluations = 0
+        self._context_refresh_total_seconds = 0.0
+        self._context_refresh_last_seconds = 0.0
+        self._context_refresh_latencies_s: deque[float] = deque(maxlen=4096)
+        self._context_refresh_batch_sizes: deque[int] = deque(maxlen=4096)
+        self._context_valid_evaluations = 0
+        self._context_n_counts = torch.zeros(7, dtype=torch.long, device=device)
+        self._policy_step_total_seconds = 0.0
+        self._policy_step_count = 0
+        self._policy_step_latencies_s: deque[float] = deque(maxlen=4096)
 
         self._event_touchdown_cost = torch.zeros(count, device=device)
         self._event_success = torch.zeros(count, device=device)
@@ -169,6 +231,28 @@ class G1RecoveryEnv(BaseEnv):
         if hasattr(self, "recovery_active") and not self._defer_recovery_reset_cleanup:
             env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
             self._clear_recovery(env_ids, clear_event_buffers=True)
+            self._clear_recovery_context(env_ids)
+
+    def _append_recovery_context(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        if not self._recovery_context_enabled:
+            return actor_obs
+        if actor_obs.ndim != 2 or actor_obs.shape[0] != self.num_envs:
+            raise ValueError(
+                f"unexpected actor observation shape before context: {tuple(actor_obs.shape)}"
+            )
+        return torch.cat((actor_obs, self._recovery_context), dim=-1)
+
+    def get_observations(self):
+        actor_obs, extras = super().get_observations()
+        return self._append_recovery_context(actor_obs), extras
+
+    def _clear_recovery_context(self, env_ids: torch.Tensor) -> None:
+        if env_ids.numel() == 0:
+            return
+        self._recovery_context[env_ids] = 0.0
+        self.current_n_min[env_ids] = -1
+        self.current_margin[env_ids] = 0.0
+        self.current_certificate_valid[env_ids] = False
 
     def set_num_steps_per_learning_iteration(self, steps: int) -> None:
         if steps <= 0:
@@ -391,6 +475,9 @@ class G1RecoveryEnv(BaseEnv):
         self._interval_abs_tilt_sum[env_ids] = 0.0
         self._practical_entered[env_ids] = False
         self._practical_enter_step[env_ids] = 0
+        self._recovery_start_time_s[env_ids] = (
+            float(self.sim_step_counter) * float(self.physics_dt)
+        )
         self.last_push_delta_v_xy[env_ids] = delta_v_xy
         self._push_started_this_step[env_ids] = True
         if self._stage2_reward_enabled:
@@ -418,6 +505,7 @@ class G1RecoveryEnv(BaseEnv):
         self._interval_abs_tilt_sum[env_ids] = 0.0
         self._practical_entered[env_ids] = False
         self._practical_enter_step[env_ids] = 0
+        self._recovery_start_time_s[env_ids] = 0.0
         self._pending_initial_certificate[env_ids] = False
         self._push_started_this_step[env_ids] = False
         self._certificate_n[env_ids] = -1
@@ -515,6 +603,10 @@ class G1RecoveryEnv(BaseEnv):
         if env_ids.numel() == 0:
             return
         levels = self._recovery_level_indices[env_ids].detach().cpu().tolist()
+        now_s = float(self.sim_step_counter) * float(self.physics_dt)
+        recovery_times_s = (
+            now_s - self._recovery_start_time_s[env_ids]
+        ).detach().cpu().tolist()
         if practical_enter_steps is None:
             steps = [None] * len(levels)
         else:
@@ -524,6 +616,7 @@ class G1RecoveryEnv(BaseEnv):
             levels,
             [outcome] * len(levels),
             steps,
+            recovery_times_s,
         )
         self._record_episode_reward_metrics(env_ids, outcome)
         self._clear_recovery(env_ids, clear_event_buffers=clear_event_buffers)
@@ -544,6 +637,47 @@ class G1RecoveryEnv(BaseEnv):
         horizon_ids = reset_ids[self.time_out_buf[reset_ids]]
         self._truncated_recovery_count += int(horizon_ids.numel())
         self._clear_recovery(horizon_ids, clear_event_buffers=True)
+
+    def _refresh_recovery_context(self, state, dones: torch.Tensor) -> None:
+        """Synchronously refresh certificate context at every non-terminal touchdown."""
+
+        touchdown_mask = state.touchdown & ~dones
+        self._context_touchdown_mask.copy_(touchdown_mask)
+        self._context_refresh_mask.zero_()
+        self._touchdown_certificate_cache_mask.zero_()
+        if not self._recovery_context_enabled or self._recovery_context_mode == "zero":
+            return
+
+        env_ids = touchdown_mask.nonzero(as_tuple=False).flatten()
+        if env_ids.numel() == 0:
+            return
+        assert self._certificate_evaluator is not None
+        started = time.perf_counter()
+        n_min, margin, valid = self._certificate_evaluator.evaluate_with_validity(state, env_ids)
+        elapsed = time.perf_counter() - started
+
+        self._context_refresh_mask[env_ids] = True
+        self._touchdown_certificate_cache_mask[env_ids] = True
+        self._touchdown_certificate_cache_n[env_ids] = n_min
+        self._touchdown_certificate_cache_margin[env_ids] = margin
+        self._touchdown_certificate_cache_valid[env_ids] = valid
+        self._recovery_context[env_ids] = normalize_recovery_context(n_min, margin, valid)
+        self.current_n_min[env_ids] = torch.where(valid, n_min, torch.full_like(n_min, -1))
+        self.current_margin[env_ids] = torch.where(valid, margin, torch.zeros_like(margin))
+        self.current_certificate_valid[env_ids] = valid
+
+        self._context_refresh_batches += 1
+        self._context_refresh_evaluations += int(env_ids.numel())
+        valid_count = int(valid.sum().item())
+        self._context_valid_evaluations += valid_count
+        if valid_count:
+            self._context_n_counts += torch.bincount(
+                torch.clamp(n_min[valid], min=0, max=6), minlength=7
+            )
+        self._context_refresh_total_seconds += elapsed
+        self._context_refresh_last_seconds = elapsed
+        self._context_refresh_latencies_s.append(elapsed)
+        self._context_refresh_batch_sizes.append(int(env_ids.numel()))
 
     def _initialize_pending_certificates(self, state, dones: torch.Tensor) -> None:
         if not self._certificate_reward_enabled:
@@ -591,7 +725,23 @@ class G1RecoveryEnv(BaseEnv):
         if self._certificate_reward_enabled:
             assert self._certificate_evaluator is not None
             self._certificate_event_count += int(env_ids.numel())
-            if self._deferred_rollout_active:
+            if self._recovery_context_enabled and self._recovery_context_mode == "certificate":
+                if not torch.all(self._touchdown_certificate_cache_mask[env_ids]):
+                    raise RuntimeError("certificate reward could not reuse the touchdown context solve")
+                n_min = self._touchdown_certificate_cache_n[env_ids]
+                margin = self._touchdown_certificate_cache_margin[env_ids]
+                phi_current = certificate_potential_tensor(n_min, margin)
+                raw_certificate = CERTIFICATE_PROGRESS_SCALE * (
+                    phi_current - self._certificate_phi_previous[env_ids]
+                )
+                self._certificate_phi_previous[env_ids] = phi_current
+                self._certificate_n[env_ids] = n_min
+                self._certificate_margin[env_ids] = margin
+                self._event_certificate[env_ids] = scale * raw_certificate
+                self._certificate_nonzero_event_count += int(
+                    torch.count_nonzero(torch.abs(raw_certificate) > 1.0e-8).item()
+                )
+            elif self._deferred_rollout_active:
                 self._submit_deferred_certificate_batch(state, env_ids, kind="touchdown")
             else:
                 n_min, margin = self._certificate_evaluator.evaluate(state, env_ids)
@@ -831,8 +981,57 @@ class G1RecoveryEnv(BaseEnv):
                 if current_stats["median_practical_enter_step"] is not None
                 else -1.0
             ),
+            "Recovery/mean_recovery_time_s_current_level": (
+                current_stats["mean_recovery_time_s"]
+                if current_stats["mean_recovery_time_s"] is not None
+                else -1.0
+            ),
+            "Recovery/median_recovery_time_s_current_level": (
+                current_stats["median_recovery_time_s"]
+                if current_stats["median_recovery_time_s"] is not None
+                else -1.0
+            ),
+            "Recovery/timeout_rate_current_level": current_stats["timeout_rate"],
+            "Recovery/fall_rate_current_level": current_stats["fall_rate"],
             "Recovery/truncated_by_env_horizon": float(self._truncated_recovery_count),
+            "RecoveryContext/enabled": float(self._recovery_context_enabled),
+            "RecoveryContext/solver_enabled": float(self._certificate_evaluator is not None),
+            "RecoveryContext/valid_fraction": float(
+                self.current_certificate_valid.float().mean().item()
+            ),
+            "RecoveryContext/refresh_batches": float(self._context_refresh_batches),
+            "RecoveryContext/evaluations": float(self._context_refresh_evaluations),
+            "RecoveryContext/evaluations_per_second": (
+                self._context_refresh_evaluations / self._context_refresh_total_seconds
+                if self._context_refresh_total_seconds > 0.0
+                else 0.0
+            ),
+            "RecoveryContext/last_refresh_latency_ms": 1000.0
+            * self._context_refresh_last_seconds,
+            "RecoveryContext/mean_batch_latency_ms": (
+                1000.0 * self._context_refresh_total_seconds / self._context_refresh_batches
+                if self._context_refresh_batches > 0
+                else 0.0
+            ),
+            "RecoveryContext/certificate_wall_time_fraction": (
+                self._context_refresh_total_seconds / self._policy_step_total_seconds
+                if self._policy_step_total_seconds > 0.0
+                else 0.0
+            ),
         }
+        for touchdown in range(1, 6):
+            log[f"Recovery/P{touchdown}_current_level"] = current_stats[f"P{touchdown}"]
+        valid_total = max(self._context_valid_evaluations, 1)
+        log.update(
+            {
+                "RecoveryContext/P_N0": float(self._context_n_counts[0].item()) / valid_total,
+                "RecoveryContext/P_N1": float(self._context_n_counts[1].item()) / valid_total,
+                "RecoveryContext/P_N2": float(self._context_n_counts[2].item()) / valid_total,
+                "RecoveryContext/P_N_ge_3": float(self._context_n_counts[3:].sum().item())
+                / valid_total,
+                "RecoveryContext/P_N6": float(self._context_n_counts[6].item()) / valid_total,
+            }
+        )
         if not self._deferred_rollout_active:
             log["Recovery/reward"] = self._last_recovery_reward_mean
         if self._certificate_evaluator is not None:
@@ -846,6 +1045,8 @@ class G1RecoveryEnv(BaseEnv):
             log[f"{prefix}/TIMEOUT"] = float(level_stats["timeout"])
             log[f"{prefix}/FALL"] = float(level_stats["fall"])
             log[f"{prefix}/P5"] = level_stats["P5"]
+            for touchdown in range(1, 5):
+                log[f"{prefix}/P{touchdown}"] = level_stats[f"P{touchdown}"]
             log[f"{prefix}/mean_enter_step"] = (
                 level_stats["mean_practical_enter_step"]
                 if level_stats["mean_practical_enter_step"] is not None
@@ -856,9 +1057,22 @@ class G1RecoveryEnv(BaseEnv):
                 if level_stats["median_practical_enter_step"] is not None
                 else -1.0
             )
+            log[f"{prefix}/mean_recovery_time_s"] = (
+                level_stats["mean_recovery_time_s"]
+                if level_stats["mean_recovery_time_s"] is not None
+                else -1.0
+            )
+            log[f"{prefix}/median_recovery_time_s"] = (
+                level_stats["median_recovery_time_s"]
+                if level_stats["median_recovery_time_s"] is not None
+                else -1.0
+            )
+            log[f"{prefix}/timeout_rate"] = level_stats["timeout_rate"]
+            log[f"{prefix}/fall_rate"] = level_stats["fall_rate"]
         self.extras.setdefault("log", {}).update(log)
 
     def step(self, actions: torch.Tensor):
+        policy_step_started = time.perf_counter()
         if (
             self._deferred_rollout_active
             and self._deferred_rollout_step >= self._deferred_rollout_length
@@ -872,6 +1086,7 @@ class G1RecoveryEnv(BaseEnv):
         finally:
             self._defer_recovery_reset_cleanup = False
         state = self._state_extractor.extract()
+        self._last_recovery_state = state
         reward_buf = self._apply_soft_reward_scaling(reward_buf, recovery_at_step_start, dones)
         if self._stage2_reward_enabled:
             recovery_locomotion_reward = reward_buf[recovery_at_step_start]
@@ -880,6 +1095,9 @@ class G1RecoveryEnv(BaseEnv):
                 recovery_locomotion_reward
             )
         self._process_resets(dones)
+        done_ids = dones.nonzero(as_tuple=False).flatten()
+        self._clear_recovery_context(done_ids)
+        self._refresh_recovery_context(state, dones)
         self._initialize_pending_certificates(state, dones)
         self._process_touchdowns(state, dones)
         self._accumulate_practical_metrics(state)
@@ -900,4 +1118,21 @@ class G1RecoveryEnv(BaseEnv):
         self._update_curriculum_logs()
         if self._deferred_rollout_active:
             self._deferred_rollout_step += 1
-        return actor_obs, reward_buf, dones, extras
+        policy_step_elapsed = time.perf_counter() - policy_step_started
+        self._policy_step_total_seconds += policy_step_elapsed
+        self._policy_step_count += 1
+        self._policy_step_latencies_s.append(policy_step_elapsed)
+        extras.setdefault("log", {}).update(
+            {
+                "Performance/policy_step_wall_ms": 1000.0 * policy_step_elapsed,
+                "Performance/mean_policy_step_wall_ms": 1000.0
+                * self._policy_step_total_seconds
+                / self._policy_step_count,
+                "RecoveryContext/certificate_wall_time_fraction": (
+                    self._context_refresh_total_seconds / self._policy_step_total_seconds
+                    if self._policy_step_total_seconds > 0.0
+                    else 0.0
+                ),
+            }
+        )
+        return self._append_recovery_context(actor_obs), reward_buf, dones, extras

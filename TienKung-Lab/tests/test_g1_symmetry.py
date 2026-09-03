@@ -123,3 +123,21 @@ def test_critic_mirror_swaps_foot_contacts(fake_env):
 
     torch.testing.assert_close(mirrored_frame[96:99], torch.tensor([1.0, -2.0, 3.0]))
     torch.testing.assert_close(mirrored_frame[99:101], torch.tensor([0.0, 1.0]))
+
+
+def test_actor_recovery_context_is_mirror_invariant(fake_env):
+    fake_env.cfg.recovery_context = SimpleNamespace(enabled=True, mode="certificate")
+    history = torch.randn(4, 10 * 96)
+    context = torch.tensor(
+        [[0.0, -1.0, 1.0], [0.5, 0.25, 1.0], [1.0, 0.0, 1.0], [0.0, 0.0, 0.0]]
+    )
+    observations = torch.cat((history, context), dim=-1)
+
+    augmented, _ = compute_symmetric_states(fake_env, obs=observations, obs_type="policy")
+
+    assert augmented.shape == (8, 963)
+    torch.testing.assert_close(augmented[4:, -3:], context)
+    mirrored_twice, _ = compute_symmetric_states(
+        fake_env, obs=augmented[4:], obs_type="policy"
+    )
+    torch.testing.assert_close(mirrored_twice[4:], observations)

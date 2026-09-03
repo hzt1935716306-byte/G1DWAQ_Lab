@@ -14,7 +14,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import traceback
 
 from isaaclab.app import AppLauncher
 
@@ -23,6 +25,8 @@ POLICY_TASKS = {
     "baseline": "g1_flat_symmetric",
     "ours": "g1_flat_symmetric",
     "dwaq": "g1_dwaq",
+    "stage2_baseline": "g1_flat_symmetric_stage2_baseline",
+    "stage2_input": "g1_flat_symmetric_stage2_ours",
 }
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -35,6 +39,12 @@ parser.add_argument("--prepare_steps", type=int, default=50)
 parser.add_argument("--max_recovery_time_s", type=float, default=10.0)
 parser.add_argument("--max_steps", type=int, default=12000)
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument(
+    "--disturbance_pattern",
+    choices=("random", "cardinal"),
+    default="random",
+    help="Random component-wise pushes or balanced fixed +/-x and +/-y pushes.",
+)
 parser.add_argument("--output", type=Path, required=True)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -123,20 +133,44 @@ def _make_plans(levels, episodes_per_level: int, level_ratios, maxima, seed: int
     rng = np.random.default_rng(seed)
     plans = []
     # Reuse the same normalized disturbance at every requested level.  Scaling
-    # only by the curriculum ratio makes the level response interpretable and
-    # still reproduces the training distribution (independent uniform x/y).
-    normalized_deltas = rng.uniform(-1.0, 1.0, size=(episodes_per_level, 2))
+    # only by the curriculum ratio makes the level response interpretable.  In
+    # random mode this reproduces independent uniform training components;
+    # cardinal mode instead provides an explicitly balanced direction test.
+    if args.disturbance_pattern == "random":
+        normalized_deltas = rng.uniform(-1.0, 1.0, size=(episodes_per_level, 2))
+    else:
+        cardinal = np.asarray(
+            (
+                (-0.5, 0.0),
+                (0.5, 0.0),
+                (0.0, -0.5),
+                (0.0, 0.5),
+                (-1.0, 0.0),
+                (1.0, 0.0),
+                (0.0, -1.0),
+                (0.0, 1.0),
+            ),
+            dtype=np.float64,
+        )
+        normalized_deltas = cardinal[
+            np.arange(episodes_per_level, dtype=np.int64) % len(cardinal)
+        ]
     for level in levels:
         bound = np.asarray(maxima, dtype=np.float64) * float(level_ratios[level - 1])
         for sample_index in range(episodes_per_level):
             normalized_delta = normalized_deltas[sample_index]
             delta = normalized_delta * bound
+            command_index = (
+                sample_index % len(COMMANDS)
+                if args.disturbance_pattern == "random"
+                else (sample_index // 8) % len(COMMANDS)
+            )
             plans.append(
                 {
                     "trial_id": f"L{level}-{sample_index:05d}",
                     "level": int(level),
                     "level_ratio": float(level_ratios[level - 1]),
-                    "command_velocity": list(COMMANDS[sample_index % len(COMMANDS)]),
+                    "command_velocity": list(COMMANDS[command_index]),
                     "normalized_delta_xy": [
                         float(normalized_delta[0]), float(normalized_delta[1])
                     ],
@@ -215,6 +249,12 @@ def _performance(episodes: list[dict]) -> dict:
     return {
         "episode_count": total,
         "outcome_counts": counts,
+        **{
+            f"P{touchdown}": (
+                sum(step <= touchdown for step in success_steps) / total if total else None
+            )
+            for touchdown in range(1, 6)
+        },
         "success_rate_P5": counts["SUCCESS"] / total if total else None,
         "timeout_rate": counts["TIMEOUT"] / total if total else None,
         "fall_rate": counts["FALL"] / total if total else None,
@@ -243,6 +283,11 @@ def _policy_environment():
     env_cfg.commands.debug_vis = False
     env_cfg.commands.resampling_time_range = (1.0e9, 1.0e9)
     _disable_randomization(env_cfg)
+    if hasattr(env_cfg, "stage2_reward"):
+        env_cfg.stage2_reward.enabled = False
+        env_cfg.stage2_reward.enable_shared_event_reward = False
+        env_cfg.stage2_reward.enable_certificate_reward = False
+        env_cfg.stage2_reward.certificate_workers = min(8, args.num_envs)
     if hasattr(args, "device"):
         env_cfg.sim.device = args.device
         agent_cfg.device = args.device
@@ -266,6 +311,11 @@ def main() -> None:
         raise ValueError("--levels must contain unique values from 1 through 6")
     if args.episodes_per_level <= 0 or args.num_envs <= 0 or args.prepare_steps < 0:
         raise ValueError("episode, environment, and preparation counts are invalid")
+    if args.disturbance_pattern == "cardinal" and args.episodes_per_level % 64 != 0:
+        raise ValueError(
+            "cardinal episodes_per_level must be divisible by 64 to balance "
+            "8 disturbance cases across 8 commands"
+        )
     if args.max_recovery_time_s <= 0.0 or args.max_steps <= 0:
         raise ValueError("time and step limits must be positive")
 
@@ -422,6 +472,7 @@ def main() -> None:
             "episodes_per_level": args.episodes_per_level,
             "commands": [list(command) for command in COMMANDS],
             "seed": args.seed,
+            "disturbance_pattern": args.disturbance_pattern,
             "trial_plan_sha256": plan_hash,
             "flat_plane": True,
             "observation_noise": False,
@@ -451,11 +502,15 @@ def main() -> None:
     summary.pop("episodes")
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
     print(f"[policy-level-sweep] wrote {output}", flush=True)
-    env.close()
+    evaluator = getattr(env, "_certificate_evaluator", None)
+    if evaluator is not None:
+        evaluator.close()
 
 
 if __name__ == "__main__":
     try:
         main()
-    finally:
-        simulation_app.close()
+    except BaseException:
+        traceback.print_exc()
+        os._exit(1)
+    os._exit(0)

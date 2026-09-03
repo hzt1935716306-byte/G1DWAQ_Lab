@@ -6,8 +6,9 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 import torch
@@ -21,7 +22,39 @@ from .certificate import (
     RecoverabilityConfig,
     certify_recoverability,
 )
-from .state_extractor import G1PrivilegedRecoveryState, theoretical_periodic_state
+from .certificate_process_pool import CertificateProcessPool
+
+if TYPE_CHECKING:
+    from .state_extractor import G1PrivilegedRecoveryState
+
+
+def _theoretical_periodic_state(
+    vx_cmd: float,
+    vy_cmd: float,
+    step_period: float,
+    omega: float,
+    step_width: float,
+) -> dict[str, tuple[float, float]]:
+    """Isaac-independent form of the unchanged periodic-state equations."""
+
+    gain = math.exp(omega * step_period)
+    landing_left = np.asarray(
+        (vx_cmd * step_period, vy_cmd * step_period - step_width), dtype=np.float64
+    )
+    landing_right = np.asarray(
+        (vx_cmd * step_period, vy_cmd * step_period + step_width), dtype=np.float64
+    )
+    denominator = gain * gain - 1.0
+    b_left = (gain * landing_left + landing_right) / denominator
+    b_right = (landing_left + gain * landing_right) / denominator
+    return {
+        "b_left": tuple(float(value) for value in b_left),
+        "b_right": tuple(float(value) for value in b_right),
+        "q_left": tuple(float(value) for value in -landing_right),
+        "q_right": tuple(float(value) for value in -landing_left),
+        "landing_left": tuple(float(value) for value in landing_left),
+        "landing_right": tuple(float(value) for value in landing_right),
+    }
 
 
 def _bounds(region: dict) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -48,6 +81,7 @@ class CalibratedG1CertificateEvaluator:
         self,
         parameters_path: str | Path,
         workers: int = 1,
+        executor_type: str = "thread",
         failure_window_size: int = 4096,
         failure_rate_threshold: float = 0.01,
     ) -> None:
@@ -55,13 +89,23 @@ class CalibratedG1CertificateEvaluator:
         with self.parameters_path.open("r", encoding="utf-8") as stream:
             self.parameters = yaml.safe_load(stream)
         self.workers = max(1, int(workers))
+        self.executor_type = str(executor_type)
+        if self.executor_type not in ("sequential", "thread", "subprocess"):
+            raise ValueError(
+                "certificate executor_type must be sequential, thread, or subprocess"
+            )
         self.failure_window_size = int(failure_window_size)
         self.failure_rate_threshold = float(failure_rate_threshold)
         if self.failure_window_size <= 0:
             raise ValueError("certificate failure_window_size must be positive")
         if not 0.0 < self.failure_rate_threshold <= 1.0:
             raise ValueError("certificate failure_rate_threshold must lie in (0, 1]")
-        self._executor = ThreadPoolExecutor(max_workers=self.workers) if self.workers > 1 else None
+        if self.executor_type == "subprocess":
+            self._executor = CertificateProcessPool(self.parameters_path, self.workers)
+        elif self.executor_type == "thread" and self.workers > 1:
+            self._executor = ThreadPoolExecutor(max_workers=self.workers)
+        else:
+            self._executor = None
         self._failure_window: deque[int] = deque(maxlen=self.failure_window_size)
         self._evaluation_count = 0
         self._failure_count = 0
@@ -105,7 +149,7 @@ class CalibratedG1CertificateEvaluator:
         parameters = self.parameters
         period = self._period_at(speed)
         omega = float(parameters["omega"])
-        theory = theoretical_periodic_state(speed, 0.0, period, omega, float(parameters["w"]))
+        theory = _theoretical_periodic_state(speed, 0.0, period, omega, float(parameters["w"]))
         c_left_x, c_left_y = _bounds(parameters["C_left"])
         c_right_x, c_right_y = _bounds(parameters["C_right"])
         l_left_x, l_left_y = _bounds(parameters["L_left"])
@@ -299,25 +343,30 @@ class CalibratedG1CertificateEvaluator:
                 self._solve(query) for query in queries
             )
         else:
-            jobs = tuple(self._executor.submit(self._solve, query) for query in queries)
+            if self.executor_type == "subprocess":
+                jobs = tuple(self._executor.submit(query) for query in queries)
+            else:
+                jobs = tuple(self._executor.submit(self._solve, query) for query in queries)
         return PendingCertificateBatch(ids, queries, jobs, env_ids.device)
 
-    def resolve(
+    def _resolve_with_validity(
         self,
         pending: PendingCertificateBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Resolve a submitted batch and apply the normal fallback policy in order."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Resolve a batch and retain whether every result was a normal solve."""
 
         if not pending.env_ids:
             return (
                 torch.empty(0, dtype=torch.long, device=pending.device),
                 torch.empty(0, dtype=torch.float32, device=pending.device),
+                torch.empty(0, dtype=torch.bool, device=pending.device),
             )
         results: Sequence[CertificateResult] = [
             job.result() if isinstance(job, Future) else job for job in pending.jobs
         ]
 
         resolved_results: list[CertificateResult] = []
+        valid_results: list[bool] = []
         for env_id, query, result in zip(pending.env_ids, pending.queries, results):
             if result.status == CertificateStatus.CONSTRAINT_BUILDER_MISMATCH:
                 record = self._failure_record(env_id, query, result)
@@ -326,6 +375,13 @@ class CalibratedG1CertificateEvaluator:
                     "G1 certificate feasibility/margin constraint builder mismatch; "
                     f"env_id={env_id}, diagnostics={self._diagnostics_path}, record={record}"
                 )
+            normal_result = (
+                result.status in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
+                and result.n_min is not None
+                and result.margin is not None
+                and not result.margin_fallback
+                and not result.solver_fallback
+            )
             if (
                 result.status not in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
                 or result.n_min is None
@@ -343,6 +399,7 @@ class CalibratedG1CertificateEvaluator:
                     )
             self._register_result(result)
             resolved_results.append(result)
+            valid_results.append(normal_result)
 
         self._check_failure_rate()
         n_min = torch.tensor(
@@ -355,7 +412,25 @@ class CalibratedG1CertificateEvaluator:
             dtype=torch.float32,
             device=pending.device,
         )
+        valid = torch.tensor(valid_results, dtype=torch.bool, device=pending.device)
+        return n_min, margin, valid
+
+    def resolve(
+        self,
+        pending: PendingCertificateBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Resolve a submitted batch and apply the normal fallback policy in order."""
+
+        n_min, margin, _ = self._resolve_with_validity(pending)
         return n_min, margin
+
+    def resolve_with_validity(
+        self,
+        pending: PendingCertificateBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Resolve a batch and mark fallback/numerical results invalid for actor use."""
+
+        return self._resolve_with_validity(pending)
 
     def evaluate(
         self,
@@ -366,7 +441,19 @@ class CalibratedG1CertificateEvaluator:
 
         return self.resolve(self.submit(state, env_ids))
 
+    def evaluate_with_validity(
+        self,
+        state: G1PrivilegedRecoveryState,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return certificate values plus a normal-solve mask on the environment device."""
+
+        return self.resolve_with_validity(self.submit(state, env_ids))
+
     def close(self) -> None:
         if self._executor is not None:
-            self._executor.shutdown(wait=True)
+            if self.executor_type == "subprocess":
+                self._executor.close()
+            else:
+                self._executor.shutdown(wait=True)
             self._executor = None

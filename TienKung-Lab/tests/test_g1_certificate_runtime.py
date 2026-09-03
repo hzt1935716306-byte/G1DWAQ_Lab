@@ -118,10 +118,11 @@ def test_one_environment_failure_falls_back_and_writes_reproducer(
     evaluator.configure_diagnostics(tmp_path)
     monkeypatch.setattr(evaluator, "_solve", lambda _query: _raw_solver_failure(module))
 
-    n_min, margin = evaluator.evaluate(_state(), torch.tensor([0]))
+    n_min, margin, valid = evaluator.evaluate_with_validity(_state(), torch.tensor([0]))
 
     assert n_min.tolist() == [6]
     assert margin.tolist() == pytest.approx([-3.0])
+    assert valid.tolist() == [False]
     assert evaluator.statistics["fallbacks"] == 1
     assert evaluator.statistics["solver_fallbacks"] == 1
     record = evaluator.failure_records[0]
@@ -134,6 +135,35 @@ def test_one_environment_failure_falls_back_and_writes_reproducer(
     assert record["result"]["N"] == 6
     assert record["failure"]["solver"]["retry"]["status"] == 4
     assert (tmp_path / "certificate_solver_fallbacks.jsonl").is_file()
+    evaluator.close()
+
+
+def test_normal_certificate_result_is_valid_for_actor_context(
+    runtime_module,
+    monkeypatch,
+) -> None:
+    module = runtime_module
+    evaluator = module.CalibratedG1CertificateEvaluator(
+        Path("tools/recovery/generated/g1_recovery_params.yaml"),
+        workers=1,
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "_solve",
+        lambda _query: module.CertificateResult(
+            module.CertificateStatus.FINITE,
+            2,
+            0.4,
+            None,
+            (False, True),
+        ),
+    )
+
+    n_min, margin, valid = evaluator.evaluate_with_validity(_state(), torch.tensor([0]))
+
+    assert n_min.tolist() == [2]
+    assert margin.tolist() == pytest.approx([0.4])
+    assert valid.tolist() == [True]
     evaluator.close()
 
 

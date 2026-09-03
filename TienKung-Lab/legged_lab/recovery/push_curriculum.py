@@ -36,14 +36,24 @@ class LevelRecoveryStatistics:
     timeout: int = 0
     fall: int = 0
     practical_enter_step_counts: list[int] = field(default_factory=lambda: [0] * 6)
+    success_recovery_times_s: list[float] = field(default_factory=list)
 
-    def record(self, outcome: CurriculumRecoveryOutcome, practical_enter_step: int | None) -> None:
+    def record(
+        self,
+        outcome: CurriculumRecoveryOutcome,
+        practical_enter_step: int | None,
+        recovery_time_s: float | None = None,
+    ) -> None:
         self.recovery_episodes += 1
         if outcome is CurriculumRecoveryOutcome.SUCCESS:
             if practical_enter_step is None or not 1 <= practical_enter_step <= 5:
                 raise ValueError("SUCCESS requires practical_enter_step in [1, 5]")
             self.success += 1
             self.practical_enter_step_counts[practical_enter_step] += 1
+            if recovery_time_s is not None:
+                if recovery_time_s < 0.0:
+                    raise ValueError("recovery time cannot be negative")
+                self.success_recovery_times_s.append(float(recovery_time_s))
         elif outcome is CurriculumRecoveryOutcome.TIMEOUT:
             self.timeout += 1
         elif outcome is CurriculumRecoveryOutcome.FALL:
@@ -54,6 +64,12 @@ class LevelRecoveryStatistics:
     @property
     def p5(self) -> float:
         return self.success / self.recovery_episodes if self.recovery_episodes else 0.0
+
+    def p_at(self, touchdown: int) -> float:
+        if not 1 <= touchdown <= 5:
+            raise ValueError("touchdown probability is defined only for P1 through P5")
+        successes = sum(self.practical_enter_step_counts[1 : touchdown + 1])
+        return successes / self.recovery_episodes if self.recovery_episodes else 0.0
 
     @property
     def mean_practical_enter_step(self) -> float | None:
@@ -79,13 +95,26 @@ class LevelRecoveryStatistics:
                     break
         return 0.5 * (values[0] + values[1])
 
+    @property
+    def mean_recovery_time_s(self) -> float | None:
+        return statistics.mean(self.success_recovery_times_s) if self.success_recovery_times_s else None
+
+    @property
+    def median_recovery_time_s(self) -> float | None:
+        return statistics.median(self.success_recovery_times_s) if self.success_recovery_times_s else None
+
     def to_dict(self) -> dict:
         result = asdict(self)
+        result.pop("success_recovery_times_s")
         result.update(
             {
-                "P5": self.p5,
+                **{f"P{touchdown}": self.p_at(touchdown) for touchdown in range(1, 6)},
                 "mean_practical_enter_step": self.mean_practical_enter_step,
                 "median_practical_enter_step": self.median_practical_enter_step,
+                "mean_recovery_time_s": self.mean_recovery_time_s,
+                "median_recovery_time_s": self.median_recovery_time_s,
+                "timeout_rate": self.timeout / self.recovery_episodes if self.recovery_episodes else 0.0,
+                "fall_rate": self.fall / self.recovery_episodes if self.recovery_episodes else 0.0,
             }
         )
         return result
@@ -232,8 +261,9 @@ class PushCurriculumController:
         level_index: int,
         outcome: CurriculumRecoveryOutcome,
         practical_enter_step: int | None,
+        recovery_time_s: float | None = None,
     ) -> None:
-        self.level_statistics[level_index].record(outcome, practical_enter_step)
+        self.level_statistics[level_index].record(outcome, practical_enter_step, recovery_time_s)
         # Episodes that started at an older level may finish just after an
         # upgrade.  Keep them in their per-level totals, but do not contaminate
         # the new level's performance window.
@@ -344,14 +374,25 @@ def record_episode_batch(
     level_indices: Sequence[int],
     outcomes: Sequence[CurriculumRecoveryOutcome],
     practical_enter_steps: Sequence[int | None],
+    recovery_times_s: Sequence[float | None] | None = None,
 ) -> None:
     """Record a small batch of completed recovery episodes in deterministic order."""
 
-    if not (len(level_indices) == len(outcomes) == len(practical_enter_steps)):
+    if recovery_times_s is None:
+        recovery_times_s = [None] * len(level_indices)
+    if not (
+        len(level_indices)
+        == len(outcomes)
+        == len(practical_enter_steps)
+        == len(recovery_times_s)
+    ):
         raise ValueError("recovery episode batch fields must have equal lengths")
-    for level_index, outcome, enter_step in zip(level_indices, outcomes, practical_enter_steps):
+    for level_index, outcome, enter_step, recovery_time_s in zip(
+        level_indices, outcomes, practical_enter_steps, recovery_times_s
+    ):
         controller.record_episode(
             level_index=int(level_index),
             outcome=outcome,
             practical_enter_step=enter_step,
+            recovery_time_s=recovery_time_s,
         )

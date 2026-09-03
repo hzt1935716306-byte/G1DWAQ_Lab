@@ -12,7 +12,11 @@ from legged_lab.recovery.stage2_reward import (
     certificate_potential,
     certificate_potential_tensor,
 )
-from legged_lab.recovery.push_curriculum import PushCurriculumController
+from legged_lab.recovery.push_curriculum import (
+    CurriculumRecoveryOutcome,
+    LevelRecoveryStatistics,
+    PushCurriculumController,
+)
 
 
 def test_certificate_potential_definition() -> None:
@@ -129,3 +133,25 @@ def test_adaptive_curriculum_upgrades_can_be_frozen() -> None:
     controller.set_learning_iteration(100)
     assert controller.level == 1
     assert controller.level_ratio == pytest.approx(0.25)
+
+
+def test_recovery_statistics_report_p1_to_p5_and_recovery_time() -> None:
+    stats = LevelRecoveryStatistics()
+    stats.record(CurriculumRecoveryOutcome.SUCCESS, 1, recovery_time_s=0.4)
+    stats.record(CurriculumRecoveryOutcome.SUCCESS, 3, recovery_time_s=0.8)
+    stats.record(CurriculumRecoveryOutcome.TIMEOUT, None, recovery_time_s=1.2)
+    stats.record(CurriculumRecoveryOutcome.FALL, None, recovery_time_s=0.2)
+
+    report = stats.to_dict()
+    assert report["P1"] == pytest.approx(0.25)
+    assert report["P2"] == pytest.approx(0.25)
+    assert report["P3"] == pytest.approx(0.50)
+    assert report["P4"] == pytest.approx(0.50)
+    assert report["P5"] == pytest.approx(0.50)
+    assert report["mean_practical_enter_step"] == pytest.approx(2.0)
+    assert report["median_practical_enter_step"] == pytest.approx(2.0)
+    assert report["mean_recovery_time_s"] == pytest.approx(0.6)
+    assert report["median_recovery_time_s"] == pytest.approx(0.6)
+    assert report["timeout_rate"] == pytest.approx(0.25)
+    assert report["fall_rate"] == pytest.approx(0.25)
+    assert "success_recovery_times_s" not in report

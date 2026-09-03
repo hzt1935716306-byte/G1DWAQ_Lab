@@ -141,6 +141,7 @@ TienKung-Lab/logs/*
 # per-environment trajectories.  Keep only the calibrated runtime parameters.
 TienKung-Lab/tools/recovery/generated/*
 !TienKung-Lab/tools/recovery/generated/g1_recovery_params.yaml
+TienKung-Lab/tools/push_test/generated/
 
 # Temporary files
 *.tmp

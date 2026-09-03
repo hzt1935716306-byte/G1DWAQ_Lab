@@ -60,6 +60,14 @@ parser.add_argument(
     default=None,
     help="Number of completed iterations in the resumed Stage2 curriculum level.",
 )
+parser.add_argument(
+    "--stage1a_context_warm_start",
+    action="store_true",
+    help=(
+        "Strictly migrate a 960-D Stage1A actor to the 963-D context actor; "
+        "model weights are loaded and the Stage2 optimizer starts fresh."
+    ),
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -81,6 +89,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_tasks.utils import get_checkpoint_path
 
 from legged_lab.envs import *  # noqa:F401, F403
+from legged_lab.recovery.checkpoint_migration import warm_start_context_policy
 from legged_lab.utils.cli_args import update_rsl_rl_cfg
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -164,6 +173,13 @@ def train():
             f"level={curriculum_cfg.initial_level}, "
             f"iterations_in_level={curriculum_cfg.initial_iterations_in_level}"
         )
+    if args_cli.stage1a_context_warm_start:
+        if not agent_cfg.resume:
+            raise ValueError("--stage1a_context_warm_start requires --resume True")
+        if resume_level is not None:
+            raise ValueError(
+                "Stage1A context warm start cannot restore a Stage2 curriculum position"
+            )
     env_cfg.scene.seed = agent_cfg.seed
 
     if args_cli.distributed:
@@ -197,8 +213,18 @@ def train():
         # get path to previous checkpoint
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
-        runner.load(resume_path)
+        if args_cli.stage1a_context_warm_start:
+            if not getattr(env, "_recovery_context_enabled", False):
+                raise ValueError("Stage1A context warm start requires a 963-D recovery-context task")
+            migration = warm_start_context_policy(runner.alg.policy, resume_path)
+            print(
+                "[INFO] Strict Stage1A context warm start: "
+                f"actor={migration['actor_input_before']}->{migration['actor_input_after']}, "
+                f"source_iteration={migration['source_iteration']}, optimizer_loaded=False"
+            )
+        else:
+            # A same-shape Stage2 resume preserves the model, optimizer, and iteration.
+            runner.load(resume_path)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
+import os
 from pathlib import Path
+import traceback
 from types import MethodType
 
 from isaaclab.app import AppLauncher
@@ -25,6 +28,7 @@ parser.add_argument("--num_envs", type=int, default=32)
 parser.add_argument("--steps", type=int, default=1500)
 parser.add_argument("--push_interval_s", type=float, nargs=2, default=(0.25, 0.35))
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--diagnostic_trace", action="store_true")
 parser.add_argument("--output", type=Path, required=True)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -147,9 +151,16 @@ def _performance(episodes: list[dict]) -> dict:
         for episode in episodes
         if episode["outcome"] == "SUCCESS"
     ]
+    p_by_touchdown = {
+        f"P{touchdown}": (
+            sum(step <= touchdown for step in success_steps) / total if total else None
+        )
+        for touchdown in range(1, 6)
+    }
     return {
         "episode_count": total,
         "outcome_counts": counts,
+        **p_by_touchdown,
         "success_rate_P5": counts["SUCCESS"] / total if total else None,
         "timeout_rate": counts["TIMEOUT"] / total if total else None,
         "fall_rate": counts["FALL"] / total if total else None,
@@ -170,6 +181,22 @@ def _performance(episodes: list[dict]) -> dict:
     }
 
 
+def _signed_axis_performance(episodes: list[dict], axis: int) -> dict[str, dict]:
+    """Split outcomes by the sign of one world-frame push component."""
+
+    labels = ("negative", "positive")
+    return {
+        label: _performance(
+            [
+                episode
+                for episode in episodes
+                if (episode["delta_v_xy"][axis] < 0.0) == (label == "negative")
+            ]
+        )
+        for label in labels
+    }
+
+
 def _stratified_performance(episodes: list[dict], bound: float) -> list[dict]:
     bins = ((0.0, 0.25), (0.25, 0.50), (0.50, 0.75), (0.75, 1.000001))
     result = []
@@ -186,6 +213,9 @@ def _stratified_performance(episodes: list[dict], bound: float) -> list[dict]:
 
 
 def main() -> None:
+    if args.diagnostic_trace:
+        faulthandler.enable()
+        faulthandler.dump_traceback_later(60.0, repeat=True)
     if args.push_interval_s[0] <= 0.0 or args.push_interval_s[1] < args.push_interval_s[0]:
         raise ValueError("push interval must be positive and ordered")
 
@@ -196,20 +226,21 @@ def main() -> None:
     env_cfg.domain_rand.events.push_robot.interval_range_s = tuple(args.push_interval_s)
     env_cfg.push_curriculum.adaptive_upgrades_enabled = False
     env_cfg.push_curriculum.easy_sample_probability = 0.0
-    env_cfg.stage2_reward.certificate_workers = min(16, args.num_envs)
-    if args.task.endswith("_baseline"):
-        # The checkpoint was trained with the shared Stage2 bookkeeping path.
-        # Keep identical touchdown/push exclusion semantics for evaluation,
-        # while leaving the certificate evaluator completely disabled.  The
-        # resulting rewards are ignored because this script never updates PPO.
-        env_cfg.stage2_reward.enabled = False
-        env_cfg.stage2_reward.enable_certificate_reward = False
+    env_cfg.stage2_reward.certificate_workers = min(8, args.num_envs)
+    # Rewards are irrelevant during inference.  Disable them equally for both
+    # policies while preserving the real certificate evaluator required by the
+    # Input-only actor context.
+    env_cfg.stage2_reward.enabled = False
+    env_cfg.stage2_reward.enable_shared_event_reward = False
+    env_cfg.stage2_reward.enable_certificate_reward = False
     if hasattr(args, "device"):
         env_cfg.sim.device = args.device
         agent_cfg.device = args.device
 
     env_class = task_registry.get_task_class(args.task)
+    print("[fixed-level-eval] before environment construction", flush=True)
     env = env_class(env_cfg, args.headless)
+    print("[fixed-level-eval] after environment construction", flush=True)
     env.push_curriculum.level_index = args.level - 1
     env.push_curriculum.level_start_iteration = 0
     env.push_curriculum.current_learning_iteration = 0
@@ -225,8 +256,11 @@ def main() -> None:
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
+    print("[fixed-level-eval] before runner construction", flush=True)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    print("[fixed-level-eval] before checkpoint load", flush=True)
     runner.load(str(checkpoint), load_optimizer=False)
+    print("[fixed-level-eval] after checkpoint load", flush=True)
     policy = runner.get_inference_policy(device=env.device)
     obs, extras = env.get_observations()
 
@@ -265,6 +299,10 @@ def main() -> None:
         "incomplete_episode_count_at_stop": len(capture.active),
         "performance": _performance(episodes),
         "performance_by_normalized_max_abs_delta_v": _stratified_performance(episodes, bound),
+        "performance_by_push_direction": {
+            "delta_v_x": _signed_axis_performance(episodes, axis=0),
+            "delta_v_y": _signed_axis_performance(episodes, axis=1),
+        },
         "disturbance": {
             "delta_v_x": _quantiles(deltas[:, 0] if deltas.size else []),
             "delta_v_y": _quantiles(deltas[:, 1] if deltas.size else []),
@@ -288,11 +326,19 @@ def main() -> None:
     print(f"[fixed-level-eval] wrote {output}", flush=True)
     if env._certificate_evaluator is not None:
         env._certificate_evaluator.close()
-    env.close()
+    if args.diagnostic_trace:
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":
     try:
         main()
-    finally:
-        simulation_app.close()
+    except BaseException:
+        # Isaac shutdown may block and hide the actual evaluation error.  Emit
+        # it first, then let the standalone process release resources on exit.
+        traceback.print_exc()
+        os._exit(1)
+    # This standalone diagnostic has already persisted its report and closed
+    # the certificate workers.  Isaac's shutdown callback can otherwise block
+    # indefinitely after a successful headless run.
+    os._exit(0)

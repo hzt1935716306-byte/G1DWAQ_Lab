@@ -61,7 +61,10 @@ class G1Stage2RewardCfg:
     defer_certificate_reward_to_rollout_end: bool = False
     event_scale: float = DEFAULT_EVENT_SCALE
     certificate_parameters_path: str = _DEFAULT_CERTIFICATE_PARAMETERS
-    certificate_workers: int = 16
+    # HiGHS is isolated from the Isaac/CUDA process.  Parent-side threads only
+    # perform pipe I/O; each clean worker solves exact certificates sequentially.
+    certificate_executor: str = "subprocess"
+    certificate_workers: int = 8
     certificate_failure_window_size: int = 4096
     certificate_failure_rate_threshold: float = 0.01
     soft_reward_min_multipliers: dict[str, float] = {
@@ -80,11 +83,20 @@ class G1Stage2RewardCfg:
 
 
 @configclass
+class G1RecoveryContextCfg:
+    """Low-frequency actor context appended outside the proprioceptive history."""
+
+    enabled: bool = False
+    mode: str = "zero"
+
+
+@configclass
 class G1FlatSymmetricRecoveryEnvCfg(G1FlatSymmetricEnvCfg):
     """Stage2: Stage1A policy plus velocity-jump curriculum and recovery logging."""
 
     push_curriculum: G1PushCurriculumCfg = G1PushCurriculumCfg()
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg()
+    recovery_context: G1RecoveryContextCfg = G1RecoveryContextCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -113,36 +125,43 @@ class G1FlatSymmetricRecoveryAgentCfg(G1FlatSymmetricAgentCfg):
 
 @configclass
 class G1FlatSymmetricStage2BaselineEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
-    """Original locomotion reward under the shared Stage2 physical curriculum."""
+    """Strong baseline: shared recovery reward and a zero 3-D actor context."""
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
-        enabled=False,
-        enable_shared_event_reward=False,
+        enabled=True,
+        enable_shared_event_reward=True,
         enable_certificate_reward=False,
         enable_soft_reward_scaling=False,
         defer_certificate_reward_to_rollout_end=False,
+    )
+    recovery_context: G1RecoveryContextCfg = G1RecoveryContextCfg(
+        enabled=True,
+        mode="zero",
     )
 
 
 @configclass
 class G1FlatSymmetricStage2OursEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
-    """The identical Stage2 task with the certificate potential channel enabled."""
+    """Input-only task: shared reward and real touchdown certificate context."""
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
         enabled=True,
-        enable_shared_event_reward=False,
-        enable_certificate_reward=True,
+        enable_shared_event_reward=True,
+        enable_certificate_reward=False,
         enable_soft_reward_scaling=False,
         defer_certificate_reward_to_rollout_end=False,
-        event_scale=0.50,
+    )
+    recovery_context: G1RecoveryContextCfg = G1RecoveryContextCfg(
+        enabled=True,
+        mode="certificate",
     )
 
 
 @configclass
 class G1FlatSymmetricStage2BaselineAgentCfg(G1FlatSymmetricRecoveryAgentCfg):
-    run_name: str = "stage2_baseline"
+    run_name: str = "stage2_context_zero_baseline"
 
 
 @configclass
 class G1FlatSymmetricStage2OursAgentCfg(G1FlatSymmetricRecoveryAgentCfg):
-    run_name: str = "stage2_ours"
+    run_name: str = "stage2_context_input_only"

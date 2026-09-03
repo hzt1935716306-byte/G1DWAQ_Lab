@@ -120,21 +120,27 @@ def _mirror_observations(env, obs: torch.Tensor, obs_type: str) -> torch.Tensor:
         history_length = env.cfg.robot.actor_obs_history_length
         frame_dim = actor_frame_dim
         feet_names: tuple[str, ...] = ()
+        context_cfg = getattr(env.cfg, "recovery_context", None)
+        context_dim = 3 if context_cfg is not None and bool(context_cfg.enabled) else 0
     elif obs_type == "critic":
         history_length = env.cfg.robot.critic_obs_history_length
         feet_names = _feet_body_names(env)
         frame_dim = actor_frame_dim + 3 + len(feet_names)
+        context_dim = 0
     else:
         raise ValueError(f"Unsupported G1 symmetry observation type: {obs_type!r}")
 
-    expected_dim = history_length * frame_dim
+    history_dim = history_length * frame_dim
+    expected_dim = history_dim + context_dim
     if obs.ndim != 2 or obs.shape[-1] != expected_dim:
         raise ValueError(
             f"Expected {obs_type} observations shaped [batch, {expected_dim}], got {tuple(obs.shape)}. "
             "The G1 symmetry mapping must be updated when the observation layout changes."
         )
 
-    frames = obs.reshape(obs.shape[0], history_length, frame_dim)
+    history = obs[..., :history_dim]
+    context = obs[..., history_dim:]
+    frames = history.reshape(obs.shape[0], history_length, frame_dim)
     mirrored = frames.clone()
     mirrored[..., :actor_frame_dim] = _mirror_current_actor_frame(frames[..., :actor_frame_dim], joint_names)
 
@@ -151,7 +157,10 @@ def _mirror_observations(env, obs: torch.Tensor, obs_type: str) -> torch.Tensor:
         )
         mirrored[..., contact_start:] = frames[..., contact_start:].index_select(-1, contact_indices)
 
-    return mirrored.reshape_as(obs)
+    mirrored_history = mirrored.reshape(obs.shape[0], history_dim)
+    if context_dim:
+        return torch.cat((mirrored_history, context), dim=-1)
+    return mirrored_history
 
 
 @torch.no_grad()
