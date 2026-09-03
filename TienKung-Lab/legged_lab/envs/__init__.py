@@ -51,11 +51,22 @@ from legged_lab.envs.g1.g1_recovery_config import (
     G1FlatSymmetricStage2OursEnvCfg,
 )
 from legged_lab.envs.g1.g1_recovery_env import G1RecoveryEnv
+from legged_lab.envs.g1.g1_plane_recovery_config import (
+    G1PlaneSymmetricStage2BaselineAgentCfg,
+    G1PlaneSymmetricStage2BaselineEnvCfg,
+    G1PlaneSymmetricStage2OursAgentCfg,
+    G1PlaneSymmetricStage2OursEnvCfg,
+)
+from legged_lab.envs.g1.g1_plane_recovery_env import G1PlaneRecoveryEnv
 
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
 from legged_lab.envs.g1.g1_dwaq_config import (
     G1DwaqAgentCfg,
     G1DwaqEnvCfg,
+)
+from legged_lab.envs.g1.g1_dwaq_slope_config import (
+    G1DwaqSlopeAgentCfg,
+    G1DwaqSlopeEnvCfg,
 )
 
 from legged_lab.envs.h1.h1_config import (
@@ -90,6 +101,20 @@ task_registry.register(
     G1FlatSymmetricRecoveryAgentCfg(),
 )
 task_registry.register(
+    "g1_flat_symmetric_stage2_baseline_old",
+    G1RecoveryEnv,
+    G1FlatSymmetricStage2BaselineEnvCfg(),
+    G1FlatSymmetricStage2BaselineAgentCfg(),
+)
+task_registry.register(
+    "g1_flat_symmetric_stage2_ours_old",
+    G1RecoveryEnv,
+    G1FlatSymmetricStage2OursEnvCfg(),
+    G1FlatSymmetricStage2OursAgentCfg(),
+)
+# Deprecated aliases retained only for old scripts/checkpoints.  They still
+# point to the LEGACY FLAT-ONLY IMPLEMENTATION and never to the plane tasks.
+task_registry.register(
     "g1_flat_symmetric_stage2_baseline",
     G1RecoveryEnv,
     G1FlatSymmetricStage2BaselineEnvCfg(),
@@ -101,5 +126,23 @@ task_registry.register(
     G1FlatSymmetricStage2OursEnvCfg(),
     G1FlatSymmetricStage2OursAgentCfg(),
 )
+task_registry.register(
+    "g1_plane_symmetric_stage2_baseline",
+    G1PlaneRecoveryEnv,
+    G1PlaneSymmetricStage2BaselineEnvCfg(),
+    G1PlaneSymmetricStage2BaselineAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_symmetric_stage2_ours",
+    G1PlaneRecoveryEnv,
+    G1PlaneSymmetricStage2OursEnvCfg(),
+    G1PlaneSymmetricStage2OursAgentCfg(),
+)
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())
+task_registry.register(
+    "g1_dwaq_slope",
+    G1DwaqEnv,
+    G1DwaqSlopeEnvCfg(),
+    G1DwaqSlopeAgentCfg(),
+)

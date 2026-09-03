@@ -72,7 +72,7 @@ class BaseEnv(VecEnv):
             debug_vis=self.cfg.commands.debug_vis,
             ranges=self.cfg.commands.ranges,
         )
-        self.command_generator = UniformVelocityCommand(cfg=command_cfg, env=self)
+        self.command_generator = self._create_command_generator(command_cfg)
         self.reward_manager = RewardManager(self.cfg.reward, self)
 
         self.init_buffers()
@@ -82,6 +82,11 @@ class BaseEnv(VecEnv):
         if "startup" in self.event_manager.available_modes:
             self.event_manager.apply(mode="startup")
         self.reset(env_ids)
+
+    def _create_command_generator(self, command_cfg: UniformVelocityCommandCfg):
+        """Factory hook for tasks with a restricted command support."""
+
+        return UniformVelocityCommand(cfg=command_cfg, env=self)
 
     def init_buffers(self):
         self.extras = {}

@@ -2,7 +2,7 @@
 # All rights reserved.
 # Modifications are licensed under the BSD-3-Clause license.
 
-"""Stage2 symmetric flat-ground recovery curriculum configuration."""
+"""LEGACY FLAT-ONLY IMPLEMENTATION of the Stage2 recovery tasks."""
 
 from pathlib import Path
 
@@ -92,7 +92,7 @@ class G1RecoveryContextCfg:
 
 @configclass
 class G1FlatSymmetricRecoveryEnvCfg(G1FlatSymmetricEnvCfg):
-    """Stage2: Stage1A policy plus velocity-jump curriculum and recovery logging."""
+    """LEGACY FLAT-ONLY IMPLEMENTATION: Stage1A plus recovery curriculum."""
 
     push_curriculum: G1PushCurriculumCfg = G1PushCurriculumCfg()
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg()
@@ -125,7 +125,7 @@ class G1FlatSymmetricRecoveryAgentCfg(G1FlatSymmetricAgentCfg):
 
 @configclass
 class G1FlatSymmetricStage2BaselineEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
-    """Strong baseline: shared recovery reward and a zero 3-D actor context."""
+    """LEGACY FLAT-ONLY IMPLEMENTATION: shared reward and zero context."""
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
         enabled=True,
@@ -142,7 +142,7 @@ class G1FlatSymmetricStage2BaselineEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
 
 @configclass
 class G1FlatSymmetricStage2OursEnvCfg(G1FlatSymmetricRecoveryEnvCfg):
-    """Input-only task: shared reward and real touchdown certificate context."""
+    """LEGACY FLAT-ONLY IMPLEMENTATION: real touchdown certificate context."""
 
     stage2_reward: G1Stage2RewardCfg = G1Stage2RewardCfg(
         enabled=True,

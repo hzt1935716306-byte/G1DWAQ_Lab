@@ -16,6 +16,10 @@ from isaaclab.app import AppLauncher
 TASKS = (
     "g1_flat_symmetric_stage2_baseline",
     "g1_flat_symmetric_stage2_ours",
+    "g1_flat_symmetric_stage2_baseline_old",
+    "g1_flat_symmetric_stage2_ours_old",
+    "g1_plane_symmetric_stage2_baseline",
+    "g1_plane_symmetric_stage2_ours",
 )
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -152,7 +156,11 @@ def main() -> None:
     env_cfg.commands.rel_standing_envs = 0.0
     env_cfg.commands.heading_command = False
     env_cfg.commands.ranges.lin_vel_x = (0.5, 0.5)
-    env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
+    # Plane tasks construct their cardinal sampler during BaseEnv.__init__.
+    # Keep every direction constructible, then pin the smoke rollout to the
+    # calibrated flat-compatible +x command immediately below.
+    plane_task = args.task.startswith("g1_plane_")
+    env_cfg.commands.ranges.lin_vel_y = (-0.5, 0.5) if plane_task else (0.0, 0.0)
     env_cfg.commands.ranges.ang_vel_z = (0.0, 0.0)
     # Test-only short interval so a minimal smoke observes push-without-touchdown
     # leakage cases.  The training configuration remains unchanged at 10--15 s.
@@ -161,11 +169,14 @@ def main() -> None:
     env_cfg.push_curriculum.easy_sample_probability = 0.0
     env_cfg.stage2_reward.certificate_workers = args.certificate_workers
     env_cfg.stage2_reward.certificate_executor = args.certificate_executor
-    env_cfg.sim.device = args.device
+    env_cfg.device = args.device
     agent_cfg.device = args.device
 
     env_class = task_registry.get_task_class(args.task)
     env = env_class(env_cfg, args.headless)
+    if plane_task:
+        env.command_generator.command[:, 0] = 0.5
+        env.command_generator.command[:, 1:] = 0.0
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     migration = warm_start_context_policy(runner.alg.policy, args.checkpoint)
     policy = runner.get_inference_policy(device=env.device)
@@ -208,6 +219,9 @@ def main() -> None:
     context_changes_at_refresh = 0
     started = time.perf_counter()
     for step_index in range(args.steps):
+        if plane_task:
+            env.command_generator.command[:, 0] = 0.5
+            env.command_generator.command[:, 1:] = 0.0
         if args.diagnostic_trace:
             print(f"[ContextSmoke] step={step_index} before_policy", flush=True)
         context_before = env._recovery_context.clone()

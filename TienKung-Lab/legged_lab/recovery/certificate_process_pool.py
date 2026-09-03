@@ -38,7 +38,13 @@ def _read_exact(stream, size: int) -> bytes:
 
 
 class _Worker:
-    def __init__(self, parameters_path: Path, index: int) -> None:
+    def __init__(
+        self,
+        parameters_path: Path,
+        index: int,
+        worker_mode: str = "flat",
+        nominal_parameters_path: Path | None = None,
+    ) -> None:
         # Do not pass Isaac/Kit's dynamic-library environment into the clean
         # solver interpreter.  In particular, inherited LD_LIBRARY_PATH values
         # can make SciPy/HiGHS load incompatible simulator-side runtimes.
@@ -62,14 +68,19 @@ class _Worker:
             MKL_NUM_THREADS="1",
             PYTHONUNBUFFERED="1",
         )
+        command = [
+            sys.executable,
+            "-m",
+            "legged_lab.recovery.certificate_worker",
+            "--parameters",
+            str(parameters_path),
+            "--mode",
+            worker_mode,
+        ]
+        if nominal_parameters_path is not None:
+            command.extend(("--nominal-parameters", str(nominal_parameters_path)))
         self.process = subprocess.Popen(
-            (
-                sys.executable,
-                "-m",
-                "legged_lab.recovery.certificate_worker",
-                "--parameters",
-                str(parameters_path),
-            ),
+            tuple(command),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -151,11 +162,29 @@ class _Worker:
 class CertificateProcessPool:
     """Small round-robin pool exposing the subset of Executor used at runtime."""
 
-    def __init__(self, parameters_path: str | Path, workers: int) -> None:
+    def __init__(
+        self,
+        parameters_path: str | Path,
+        workers: int,
+        *,
+        worker_mode: str = "flat",
+        nominal_parameters_path: str | Path | None = None,
+    ) -> None:
         if workers <= 0:
             raise ValueError("certificate process workers must be positive")
         path = Path(parameters_path).expanduser().resolve()
-        self._workers = tuple(_Worker(path, index) for index in range(workers))
+        nominal_path = (
+            Path(nominal_parameters_path).expanduser().resolve()
+            if nominal_parameters_path is not None
+            else None
+        )
+        if worker_mode not in ("flat", "plane"):
+            raise ValueError("certificate worker mode must be 'flat' or 'plane'")
+        if worker_mode == "plane" and nominal_path is None:
+            raise ValueError("plane certificate workers require nominal parameters")
+        self._workers = tuple(
+            _Worker(path, index, worker_mode, nominal_path) for index in range(workers)
+        )
         self._next_worker = 0
         self._closed = False
 

@@ -24,6 +24,8 @@ class G1StateExtractorCfg:
     minimum_com_height: float = 0.20
     left_foot_body_name: str = "left_ankle_roll_link"
     right_foot_body_name: str = "right_ankle_roll_link"
+    use_terrain_plane_geometry: bool = False
+    slope_alignment_tolerance: float = 0.05
 
     def __post_init__(self):
         if self.gravity <= 0.0:
@@ -34,6 +36,8 @@ class G1StateExtractorCfg:
             raise ValueError("contact_force_threshold must be positive")
         if self.min_touchdown_interval < 0.0 or self.fallback_step_period <= 0.0:
             raise ValueError("touchdown debounce and fallback step period are invalid")
+        if self.slope_alignment_tolerance < 0.0:
+            raise ValueError("slope_alignment_tolerance must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,10 @@ class G1PrivilegedRecoveryState:
     b: torch.Tensor
     q: torch.Tensor
     root_roll_pitch: torch.Tensor
+    terrain_normal_heading: torch.Tensor
+    terrain_plane_point_w: torch.Tensor
+    signed_slope: torch.Tensor
+    terrain_plane_valid: torch.Tensor
 
     @property
     def support_side(self) -> list[str]:
@@ -213,10 +221,59 @@ class G1PrivilegedStateExtractor:
         swing_position = torch.where(
             self._support_is_left.unsqueeze(-1), right_foot_position, left_foot_position
         )
-        # This stage is restricted to a true plane.  The environment origin z
-        # is therefore the support-plane height and is a better LIPM height
-        # reference than the ankle-link origin above the sole.
-        com_height = com_pos_w[:, 2] - env_origins[:, 2]
+        if self.cfg.use_terrain_plane_geometry:
+            provider = getattr(env, "get_recovery_plane_geometry", None)
+            if provider is None:
+                raise RuntimeError(
+                    "plane state extraction requires env.get_recovery_plane_geometry()"
+                )
+            terrain_normal_w, terrain_plane_point_w, provider_valid = provider()
+            terrain_normal_w = terrain_normal_w.to(device=self.device, dtype=com_pos_w.dtype)
+            terrain_plane_point_w = terrain_plane_point_w.to(
+                device=self.device, dtype=com_pos_w.dtype
+            )
+            provider_valid = provider_valid.to(device=self.device, dtype=torch.bool)
+        else:
+            terrain_normal_w = torch.zeros_like(com_pos_w)
+            terrain_normal_w[:, 2] = 1.0
+            terrain_plane_point_w = env_origins.clone()
+            provider_valid = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+
+        terrain_normal_heading = quat_apply_inverse(heading_quat_w, terrain_normal_w)
+        normal_norm = torch.linalg.vector_norm(terrain_normal_heading, dim=1)
+        finite_geometry = (
+            torch.all(torch.isfinite(terrain_normal_heading), dim=1)
+            & torch.all(torch.isfinite(terrain_plane_point_w), dim=1)
+            & (normal_norm > 0.0)
+        )
+        safe_norm = torch.clamp(normal_norm, min=1.0e-12)
+        terrain_normal_heading = terrain_normal_heading / safe_norm.unsqueeze(-1)
+        terrain_plane_valid = (
+            provider_valid
+            & finite_geometry
+            & (terrain_normal_heading[:, 2] > 0.0)
+            & (
+                torch.abs(terrain_normal_heading[:, 1])
+                <= self.cfg.slope_alignment_tolerance
+            )
+        )
+        signed_slope = torch.atan2(
+            -terrain_normal_heading[:, 0], terrain_normal_heading[:, 2]
+        )
+        signed_slope = torch.where(
+            terrain_plane_valid, signed_slope, torch.zeros_like(signed_slope)
+        )
+
+        # Vertical height above the local plane: n·(r_com-r0)/n_z.  This is
+        # intentionally not the normal distance.
+        safe_normal_z = torch.where(
+            terrain_normal_w[:, 2] > 0.0,
+            terrain_normal_w[:, 2],
+            torch.ones_like(terrain_normal_w[:, 2]),
+        )
+        com_height = torch.sum(
+            terrain_normal_w * (com_pos_w - terrain_plane_point_w), dim=1
+        ) / safe_normal_z
         omega_height = (
             torch.full_like(com_height, self.cfg.h_eff)
             if self.cfg.h_eff is not None
@@ -256,6 +313,10 @@ class G1PrivilegedStateExtractor:
             b=b,
             q=q,
             root_roll_pitch=root_roll_pitch,
+            terrain_normal_heading=terrain_normal_heading,
+            terrain_plane_point_w=terrain_plane_point_w,
+            signed_slope=signed_slope,
+            terrain_plane_valid=terrain_plane_valid,
         )
 
         self._previous_contacts.copy_(contacts)

@@ -289,6 +289,37 @@ DWAQ_TERRAINS_CFG = TerrainGeneratorCfg(
 )
 
 
+# ========== G1 DWAQ 平地/斜坡课程 ==========
+# 保留足够的平地样本学习基础步态，并用正、倒金字塔斜坡同时覆盖下坡和上坡。
+# 课程难度沿 terrain row 递增；斜率从 0.0 逐步增加到 tan(20°)（约 0.364）。
+G1_DWAQ_SLOPE_TERRAINS_CFG = TerrainGeneratorCfg(
+    curriculum=True,
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.4),
+        "slope_down": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.3,
+            slope_range=(0.0, 0.364),
+            platform_width=2.0,
+            inverted=False,
+        ),
+        "slope_up": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.3,
+            slope_range=(0.0, 0.364),
+            platform_width=2.0,
+            inverted=True,
+        ),
+    },
+)
+
+
 # ========== DWAQ 高难度: 窄台阶 (20cm宽度) ==========
 # 用于训练后期，resume 时切换使用
 DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
@@ -429,4 +460,3 @@ STAIRS_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
     },
 )
-

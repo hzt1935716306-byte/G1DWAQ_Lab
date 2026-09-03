@@ -1,0 +1,1041 @@
+schema_version: 1
+description: Flat anchors plus validated DWAQ continuous-plane nominal nodes; C/L/v_max
+  remain in the separate flat capability file.
+flat_capability_path: g1_recovery_params.yaml
+nominal_plane_gait:
+  nodes:
+  - slope_degrees: 0.0
+    direction: +x
+    speed: 0.2
+    T: 0.2479997634887696
+    h_eff: 0.6884990671277046
+    w: 0.22294799983501434
+    epsilon_b:
+      x: 0.02979998700459262
+      y: 0.029979350395705824
+    epsilon_q:
+      x: 0.01929521560668951
+      y: 0.02328165620565414
+    roll_star: 0.0
+    pitch_star: 0.0
+    mean_velocity_error_threshold: 0.14522231240183686
+    mean_abs_roll_error_threshold: 0.02584471284877509
+    mean_abs_pitch_error_threshold: 0.042438490772619845
+    sample_count: 40
+    calibration_policy_id: flat_official_2026-08-27_model_9998
+  - slope_degrees: 0.0
+    direction: +x
+    speed: 1.0
+    T: 0.2640003204345704
+    h_eff: 0.6884990671277046
+    w: 0.22294799983501434
+    epsilon_b:
+      x: 0.02979998700459262
+      y: 0.029979350395705824
+    epsilon_q:
+      x: 0.01929521560668951
+      y: 0.02328165620565414
+    roll_star: 0.0
+    pitch_star: 0.0
+    mean_velocity_error_threshold: 0.14522231240183686
+    mean_abs_roll_error_threshold: 0.02584471284877509
+    mean_abs_pitch_error_threshold: 0.042438490772619845
+    sample_count: 40
+    calibration_policy_id: flat_official_2026-08-27_model_9998
+  - &id001
+    slope_degrees: -15.0
+    direction: +x
+    speed: 0.2
+    T: 0.3600006103515625
+    h_eff: 0.6968929767608643
+    w: 0.23714996129274368
+    epsilon_b:
+      x: 0.07074773269897713
+      y: 0.22653408867621294
+    epsilon_q:
+      x: 0.482757019665903
+      y: 0.0233835668311355
+    roll_star: 0.014227899257093668
+    pitch_star: -0.09048769250512123
+    mean_velocity_error_threshold: 0.18331068903207778
+    mean_abs_roll_error_threshold: 0.09464050913229584
+    mean_abs_pitch_error_threshold: 0.07733446243219076
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id002
+    slope_degrees: -15.0
+    direction: +x
+    speed: 0.4
+    T: 0.3999999761581421
+    h_eff: 0.6990028023719788
+    w: 0.1817159280180931
+    epsilon_b:
+      x: 0.11114987946153103
+      y: 0.04627573153283964
+    epsilon_q:
+      x: 0.02507454156875608
+      y: 0.014982018840982254
+    roll_star: -0.07193717360496521
+    pitch_star: -0.0590711310505867
+    mean_velocity_error_threshold: 0.15907928347587585
+    mean_abs_roll_error_threshold: 0.12929846923798322
+    mean_abs_pitch_error_threshold: 0.008978972770273683
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id003
+    slope_degrees: -15.0
+    direction: -y
+    speed: 0.4
+    T: 0.4200000762939453
+    h_eff: 0.69315966963768
+    w: 0.26776871681213377
+    epsilon_b:
+      x: 0.07293924862188328
+      y: 0.17051015117073912
+    epsilon_q:
+      x: 0.006385851764195548
+      y: 0.026846340298652686
+    roll_star: -0.005602147895842791
+    pitch_star: -0.017746394500136375
+    mean_velocity_error_threshold: 0.14441701099276544
+    mean_abs_roll_error_threshold: 0.015371581050567315
+    mean_abs_pitch_error_threshold: 0.002892481163144111
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id004
+    slope_degrees: -10.0
+    direction: +x
+    speed: 0.2
+    T: 0.3900003433227539
+    h_eff: 0.6945836544036865
+    w: 0.2477138638496399
+    epsilon_b:
+      x: 0.0916495705927761
+      y: 0.25494462951959673
+    epsilon_q:
+      x: 0.4720354478616094
+      y: 0.036165978882349126
+    roll_star: 0.013733727857470512
+    pitch_star: -0.08472153544425964
+    mean_velocity_error_threshold: 0.17273861542344093
+    mean_abs_roll_error_threshold: 0.052607032842934116
+    mean_abs_pitch_error_threshold: 0.06857517911121248
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id005
+    slope_degrees: -10.0
+    direction: +x
+    speed: 0.4
+    T: 0.3999999761581421
+    h_eff: 0.6943542957305908
+    w: 0.1916423663496971
+    epsilon_b:
+      x: 0.2887439937176513
+      y: 0.23651966568575647
+    epsilon_q:
+      x: 0.019610381126403786
+      y: 0.01485568708758943
+    roll_star: -0.050322022289037704
+    pitch_star: -0.062468333169817924
+    mean_velocity_error_threshold: 0.1254946507513523
+    mean_abs_roll_error_threshold: 0.09165047835558653
+    mean_abs_pitch_error_threshold: 0.0017652582377195357
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id006
+    slope_degrees: -5.0
+    direction: +x
+    speed: 0.2
+    T: 0.3600006103515625
+    h_eff: 0.6920737028121948
+    w: 0.25278308615088463
+    epsilon_b:
+      x: 0.07309546048860764
+      y: 0.2495476523368309
+    epsilon_q:
+      x: 0.5929300156203423
+      y: 0.054936561131580734
+    roll_star: 0.01536988141015172
+    pitch_star: -0.10510534793138504
+    mean_velocity_error_threshold: 0.19096202477812765
+    mean_abs_roll_error_threshold: 0.02909267217619342
+    mean_abs_pitch_error_threshold: 0.08395835971459746
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id007
+    slope_degrees: -5.0
+    direction: -x
+    speed: 0.4
+    T: 0.40000009536743164
+    h_eff: 0.692232608795166
+    w: 0.25040674209594727
+    epsilon_b:
+      x: 0.15987960168328458
+      y: 0.19636216957930047
+    epsilon_q:
+      x: 0.03961379528045655
+      y: 0.021341318002587102
+    roll_star: -0.004490521037951112
+    pitch_star: 0.033324213698506355
+    mean_velocity_error_threshold: 0.14494614973664283
+    mean_abs_roll_error_threshold: 0.013661742163822044
+    mean_abs_pitch_error_threshold: 0.034373173614585535
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id008
+    slope_degrees: 0.0
+    direction: +y
+    speed: 0.4
+    T: 0.40000009536743164
+    h_eff: 0.6905731558799744
+    w: 0.29679996967315675
+    epsilon_b:
+      x: 0.3062210062643151
+      y: 0.15614939382516488
+    epsilon_q:
+      x: 0.05866232514381409
+      y: 0.21563995995245702
+    roll_star: 0.025878635235130787
+    pitch_star: -0.03973914869129658
+    mean_velocity_error_threshold: 0.21604382321238516
+    mean_abs_roll_error_threshold: 0.013837785320356488
+    mean_abs_pitch_error_threshold: 0.002118274755775928
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  - &id009
+    slope_degrees: 0.0
+    direction: -y
+    speed: 0.4
+    T: 0.38000011444091797
+    h_eff: 0.6938264966011047
+    w: 0.278433895111084
+    epsilon_b:
+      x: 0.03856900357792604
+      y: 0.11636371472301942
+    epsilon_q:
+      x: 0.029902941299971307
+      y: 0.022090440988540714
+    roll_star: -0.026927156373858452
+    pitch_star: 0.0016000752802938223
+    mean_velocity_error_threshold: 0.18126131445169447
+    mean_abs_roll_error_threshold: 0.0027272788807749747
+    mean_abs_pitch_error_threshold: 0.004725842946209013
+    sample_count: 30
+    calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+collection:
+  checkpoint: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_dwaq/2026-01-16_00-46-00/model_9999.pt
+  calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+  slopes_degrees:
+  - -15.0
+  - -10.0
+  - -5.0
+  - 0.0
+  directions:
+  - +x
+  - -x
+  - +y
+  - -y
+  speeds:
+  - 0.2
+  - 0.4
+  samples_per_node: 30
+  max_resets_per_node: 0
+  slip_velocity_threshold: 0.3
+  illegal_contact_force_threshold: 1.0
+  policy_steps: 4000
+  node_reports:
+    alpha=-15,direction=+x,speed=0.2:
+      valid: true
+      anchor_preserved: false
+      node: *id001
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.3600006103515625
+          p05: 0.3400001525878906
+          p95: 0.4710010528564453
+          std: 0.041015131394147364
+        w_left: 0.23504756391048431
+        w_right: 0.23925235867500305
+        w_abs_side_difference: 0.004204794764518738
+        holdout_joint_coverage: 0.6666666666666666
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.3274580189814418
+          ratio_p99: 0.33119209112658515
+          ratio_max: 0.3321734751131223
+        by_transition_support:
+          left:
+            count: 16
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 14
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 50
+        non_alternating: 21
+        slip: 26
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-15,direction=+x,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id002
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.3999999761581421
+          p05: 0.39999961853027344
+          p95: 0.40000057220458984
+          std: 4.6265219300040826e-07
+        w_left: 0.1748804748058319
+        w_right: 0.1885513812303543
+        w_abs_side_difference: 0.0136709064245224
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.4028492293284173
+          ratio_p99: 0.40308420423226243
+          ratio_max: 0.4031418822150994
+        by_transition_support:
+          left:
+            count: 10
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 20
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 1
+        non_alternating: 0
+        slip: 11
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-15,direction=+y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 27
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 114
+        non_alternating: 17
+        slip: 4
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 17
+    alpha=-15,direction=+y,speed=0.4:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 2
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 188
+        non_alternating: 0
+        slip: 6
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 1
+    alpha=-15,direction=-x,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 6
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 99
+        non_alternating: 13
+        slip: 6
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 5
+    alpha=-15,direction=-x,speed=0.4:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 1
+      required_sample_count: 30
+      reset_count: 1
+      rejected:
+        warmup: 8
+        invalid_transition_start: 190
+        non_alternating: 0
+        slip: 2
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-15,direction=-y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 4
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 169
+        non_alternating: 1
+        slip: 2
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-15,direction=-y,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id003
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.4200000762939453
+          p05: 0.38000028133392333
+          p95: 0.4200000762939453
+          std: 0.014313863989810636
+        w_left: 0.2578951835632324
+        w_right: 0.27764225006103516
+        w_abs_side_difference: 0.01974706649780278
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.41501154213646885
+          ratio_p99: 0.4292481359421386
+          ratio_max: 0.4349065527315033
+        by_transition_support:
+          left:
+            count: 27
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 3
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 7
+        non_alternating: 0
+        slip: 31
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-10,direction=+x,speed=0.2:
+      valid: true
+      anchor_preserved: false
+      node: *id004
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.3900003433227539
+          p05: 0.3399998903274536
+          p95: 0.47999980449676516
+          std: 0.04580626019728571
+        w_left: 0.2484796941280365
+        w_right: 0.2469480335712433
+        w_abs_side_difference: 0.0015316605567932129
+        holdout_joint_coverage: 0.8333333333333334
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.30926155131389393
+          ratio_p99: 0.3130102431418768
+          ratio_max: 0.31319480270393263
+        by_transition_support:
+          left:
+            count: 16
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 14
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 4
+        non_alternating: 6
+        slip: 7
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-10,direction=+x,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id005
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.3999999761581421
+          p05: 0.39999961853027344
+          p95: 0.40000109672546386
+          std: 0.0035901227109147857
+        w_left: 0.189641535282135
+        w_right: 0.19364319741725922
+        w_abs_side_difference: 0.0040016621351242065
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.39895886077727394
+          ratio_p99: 0.3994544118094825
+          ratio_max: 0.3996012420770071
+        by_transition_support:
+          left:
+            count: 8
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 22
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 0
+        slip: 16
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-10,direction=+y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 1
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 1
+        non_alternating: 2
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-10,direction=+y,speed=0.4:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 6
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 186
+        non_alternating: 0
+        slip: 3
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 1
+    alpha=-10,direction=-x,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 0
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 85
+        non_alternating: 7
+        slip: 0
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-10,direction=-x,speed=0.4:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 12
+      required_sample_count: 30
+      reset_count: 1
+      rejected:
+        warmup: 8
+        invalid_transition_start: 178
+        non_alternating: 0
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 2
+    alpha=-10,direction=-y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 6
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 151
+        non_alternating: 2
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 1
+    alpha=-10,direction=-y,speed=0.4:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 10
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 174
+        non_alternating: 0
+        slip: 13
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-5,direction=+x,speed=0.2:
+      valid: true
+      anchor_preserved: false
+      node: *id006
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.4200000762939453
+          p05: 0.30900049209594727
+          p95: 0.5309996604919432
+          std: 0.07069170614008546
+        w_left: 0.24694160372018814
+        w_right: 0.2586245685815811
+        w_abs_side_difference: 0.011682964861392975
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.27377751615727575
+          ratio_p99: 0.27615802186104665
+          ratio_max: 0.27710713593436737
+        by_transition_support:
+          left:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 6
+        non_alternating: 11
+        slip: 7
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-5,direction=+x,speed=0.4:
+      valid: false
+      reason: both left- and right-support transitions are required
+      sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 1
+        non_alternating: 0
+        slip: 31
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-5,direction=+y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 2
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 1
+        slip: 0
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-5,direction=+y,speed=0.4:
+      valid: false
+      reason: policy was not continuously stable at this nominal node
+      sample_count: 30
+      reset_count: 1
+      max_resets_per_node: 0
+      rejected:
+        warmup: 8
+        invalid_transition_start: 101
+        non_alternating: 0
+        slip: 15
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 1
+    alpha=-5,direction=-x,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 5
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 40
+        non_alternating: 5
+        slip: 2
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 1
+    alpha=-5,direction=-x,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id007
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.40000009536743164
+          p05: 0.3799983263015747
+          p95: 0.4200019836425781
+          std: 0.020319484051242856
+        w_left: 0.25043582916259766
+        w_right: 0.2503776550292969
+        w_abs_side_difference: 5.817413330078125e-05
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 0.5
+          overflow_p90_m: 0.03596227100421648
+          overflow_p95_m: 0.03691751201990886
+          overflow_p99_m: 0.04816694700445866
+          overflow_max_m: 0.05259746424462919
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.3637206799624806
+          ratio_p99: 0.36876246534867485
+          ratio_max: 0.37060450674337314
+        by_transition_support:
+          left:
+            count: 15
+            L_containment_rate: 0.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 77
+        non_alternating: 0
+        slip: 2
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 3
+    alpha=-5,direction=-y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 8
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 7
+        non_alternating: 2
+        slip: 0
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=-5,direction=-y,speed=0.4:
+      valid: false
+      reason: policy was not continuously stable at this nominal node
+      sample_count: 30
+      reset_count: 1
+      max_resets_per_node: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 1
+        non_alternating: 0
+        slip: 8
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=+x,speed=0.2:
+      valid: true
+      anchor_preserved: true
+      node:
+        slope_degrees: 0.0
+        direction: +x
+        speed: 0.2
+        T: 0.40000009536743164
+        h_eff: 0.6893749833106995
+        w: 0.2542515993118286
+        epsilon_b:
+          x: 0.048230334966265775
+          y: 0.16977500455275712
+        epsilon_q:
+          x: 0.02270576944520351
+          y: 0.005702391458941624
+        roll_star: 0.0013042136561125517
+        pitch_star: -0.07701583951711655
+        mean_velocity_error_threshold: 0.11463641934096813
+        mean_abs_roll_error_threshold: 0.015978502319194378
+        mean_abs_pitch_error_threshold: 0.015106473863124836
+        sample_count: 30
+        calibration_policy_id: dwaq:model_9999.pt:5042017a558b
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.40000009536743164
+          p05: 0.38000011444091797
+          p95: 0.4200000762939453
+          std: 0.013999952594721282
+        w_left: 0.25602635741233826
+        w_right: 0.25247684121131897
+        w_abs_side_difference: 0.003549516201019287
+        holdout_joint_coverage: 1.0
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.21895847283175224
+          ratio_p99: 0.2219422974844648
+          ratio_max: 0.22301768854867932
+        by_transition_support:
+          left:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 5
+        non_alternating: 0
+        slip: 5
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=+x,speed=0.4:
+      valid: false
+      reason: both left- and right-support transitions are required
+      sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 0
+        slip: 50
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=+y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 4
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 1
+        slip: 0
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=+y,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id008
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.40000009536743164
+          p05: 0.39999961853027344
+          p95: 0.40000057220458984
+          std: 3.356728884687881e-07
+        w_left: 0.3261300563812256
+        w_right: 0.2674698829650879
+        w_abs_side_difference: 0.05866017341613772
+        holdout_joint_coverage: 0.8333333333333334
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.35671586511626896
+          ratio_p99: 0.3572040696429751
+          ratio_max: 0.35740198960961816
+        by_transition_support:
+          left:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 15
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 0
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=-x,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 4
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 15
+        slip: 0
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=-x,speed=0.4:
+      valid: false
+      reason: policy was not continuously stable at this nominal node
+      sample_count: 30
+      reset_count: 1
+      max_resets_per_node: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 2
+        non_alternating: 0
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=-y,speed=0.2:
+      valid: false
+      reason: did not reach the requested stable touchdown sample count
+      sample_count: 0
+      required_sample_count: 30
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 0
+        non_alternating: 0
+        slip: 1
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0
+    alpha=+0,direction=-y,speed=0.4:
+      valid: true
+      anchor_preserved: false
+      node: *id009
+      diagnostic:
+        sample_count: 30
+        calibration_count: 24
+        holdout_count: 6
+        T:
+          count: 30
+          median: 0.38000011444091797
+          p05: 0.3599991321563721
+          p95: 0.4200000762939453
+          std: 0.02154076340473316
+        w_left: 0.261053466796875
+        w_right: 0.295814323425293
+        w_abs_side_difference: 0.03476085662841799
+        holdout_joint_coverage: 0.8333333333333334
+        projected_L:
+          containment_rate: 1.0
+          overflow_p90_m: 0.0
+          overflow_p95_m: 0.0
+          overflow_p99_m: 0.0
+          overflow_max_m: 0.0
+        projected_vmax:
+          exceedance_rate: 0.0
+          ratio_p95: 0.43239188803699363
+          ratio_p99: 0.4359006601304638
+          ratio_max: 0.4372690186176311
+        by_transition_support:
+          left:
+            count: 23
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+          right:
+            count: 7
+            L_containment_rate: 1.0
+            vmax_exceedance_rate: 0.0
+      reset_count: 0
+      rejected:
+        warmup: 4
+        invalid_transition_start: 17
+        non_alternating: 0
+        slip: 35
+        illegal_contact: 0
+        invalid_height: 0
+        invalid_plane: 0

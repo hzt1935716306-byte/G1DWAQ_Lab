@@ -27,12 +27,26 @@ def _read_exact(size: int) -> bytes:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--parameters", required=True)
+    parser.add_argument("--mode", choices=("flat", "plane"), default="flat")
+    parser.add_argument("--nominal-parameters")
     args = parser.parse_args()
-    evaluator = CalibratedG1CertificateEvaluator(
-        args.parameters,
-        workers=1,
-        executor_type="sequential",
-    )
+    if args.mode == "plane":
+        if not args.nominal_parameters:
+            parser.error("--nominal-parameters is required in plane mode")
+        from .plane_certificate_runtime import PlaneCalibratedG1CertificateEvaluator
+
+        evaluator = PlaneCalibratedG1CertificateEvaluator(
+            args.parameters,
+            args.nominal_parameters,
+            workers=1,
+            executor_type="sequential",
+        )
+    else:
+        evaluator = CalibratedG1CertificateEvaluator(
+            args.parameters,
+            workers=1,
+            executor_type="sequential",
+        )
     while True:
         size = _HEADER.unpack(_read_exact(_HEADER.size))[0]
         if size == 0:

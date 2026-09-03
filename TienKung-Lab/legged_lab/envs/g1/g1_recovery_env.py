@@ -38,6 +38,22 @@ class G1RecoveryEnv(BaseEnv):
     configured actor receives one 3-D touchdown-held context after its history.
     """
 
+    def _create_state_extractor(self):
+        return G1PrivilegedStateExtractor(
+            self,
+            G1StateExtractorCfg(h_eff=0.6884990671277046),
+        )
+
+    def _create_certificate_evaluator(self):
+        cfg = self.cfg.stage2_reward
+        return CalibratedG1CertificateEvaluator(
+            cfg.certificate_parameters_path,
+            workers=cfg.certificate_workers,
+            executor_type=cfg.certificate_executor,
+            failure_window_size=cfg.certificate_failure_window_size,
+            failure_rate_threshold=cfg.certificate_failure_rate_threshold,
+        )
+
     def __init__(self, cfg, headless):
         if float(cfg.push_curriculum.recovery_reward_weight) != 0.0:
             raise ValueError("use stage2_reward.event_scale instead of recovery_reward_weight")
@@ -82,25 +98,12 @@ class G1RecoveryEnv(BaseEnv):
                 "deferred certificate reward cannot be combined with it"
             )
         self._steps_per_learning_iteration = int(cfg.push_curriculum.num_steps_per_iteration)
-        self._state_extractor = G1PrivilegedStateExtractor(
-            self,
-            G1StateExtractorCfg(h_eff=0.6884990671277046),
-        )
+        self._state_extractor = self._create_state_extractor()
         need_certificate_solver = (
             self._certificate_reward_enabled
             or (self._recovery_context_enabled and self._recovery_context_mode == "certificate")
         )
-        self._certificate_evaluator = (
-            CalibratedG1CertificateEvaluator(
-                cfg.stage2_reward.certificate_parameters_path,
-                workers=cfg.stage2_reward.certificate_workers,
-                executor_type=cfg.stage2_reward.certificate_executor,
-                failure_window_size=cfg.stage2_reward.certificate_failure_window_size,
-                failure_rate_threshold=cfg.stage2_reward.certificate_failure_rate_threshold,
-            )
-            if need_certificate_solver
-            else None
-        )
+        self._certificate_evaluator = self._create_certificate_evaluator() if need_certificate_solver else None
         self._initialize_recovery_buffers()
         self._initialize_soft_reward_terms()
 
@@ -796,12 +799,15 @@ class G1RecoveryEnv(BaseEnv):
         previous_foot = self._last_touchdown_foot[env_ids]
         alternating = (previous_foot < 0) | (touchdown_foot != previous_foot)
         cfg = self.cfg.push_curriculum
+        velocity_threshold, roll_threshold, pitch_threshold = self._practical_thresholds(
+            state, env_ids
+        )
         good_cycle = (
             has_complete_interval
             & alternating
-            & (mean_velocity_error <= cfg.mean_velocity_error_threshold)
-            & (mean_abs_tilt[:, 0] <= cfg.mean_abs_roll_threshold)
-            & (mean_abs_tilt[:, 1] <= cfg.mean_abs_pitch_threshold)
+            & (mean_velocity_error <= velocity_threshold)
+            & (mean_abs_tilt[:, 0] <= roll_threshold)
+            & (mean_abs_tilt[:, 1] <= pitch_threshold)
         )
         newly_entered = good_cycle & ~self._practical_entered[env_ids]
         entered_ids = env_ids[newly_entered]
@@ -921,16 +927,36 @@ class G1RecoveryEnv(BaseEnv):
         else:
             self.extras["recovery_episode_rewards"] = []
 
-    def _accumulate_practical_metrics(self, state) -> None:
-        active = self.recovery_active
-        if not torch.any(active):
-            return
+    def _practical_errors(self, state) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return velocity and absolute attitude errors for practical recovery."""
+
         velocity_error = torch.linalg.vector_norm(
             state.com_velocity[:, :2] - state.command_velocity[:, :2],
             dim=1,
         )
+        return velocity_error, torch.abs(state.root_roll_pitch)
+
+    def _practical_thresholds(
+        self,
+        state,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        del state
+        cfg = self.cfg.push_curriculum
+        shape = (env_ids.numel(),)
+        return (
+            torch.full(shape, cfg.mean_velocity_error_threshold, device=self.device),
+            torch.full(shape, cfg.mean_abs_roll_threshold, device=self.device),
+            torch.full(shape, cfg.mean_abs_pitch_threshold, device=self.device),
+        )
+
+    def _accumulate_practical_metrics(self, state) -> None:
+        active = self.recovery_active
+        if not torch.any(active):
+            return
+        velocity_error, absolute_attitude_error = self._practical_errors(state)
         self._interval_velocity_error_sum[active] += velocity_error[active]
-        self._interval_abs_tilt_sum[active] += torch.abs(state.root_roll_pitch[active])
+        self._interval_abs_tilt_sum[active] += absolute_attitude_error[active]
         self._interval_sample_count[active] += 1
 
     def _update_curriculum_logs(self) -> None:
