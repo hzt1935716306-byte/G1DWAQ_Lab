@@ -82,6 +82,12 @@ from legged_lab.envs.g1.g1_slope_training_config import (
     G1SlopeSysNdAgentCfg,
     G1SlopeSysNdEnvCfg,
 )
+from legged_lab.envs.g1.g1_com_velocity_estimator_config import (
+    G1ComVelocityEstimatorAgentCfg,
+    G1ComVelocityEstimatorEnvCfg,
+    G1ComVelocityEstimatorV2AgentCfg,
+    G1ComVelocityEstimatorV2EnvCfg,
+)
 
 from legged_lab.envs.h1.h1_config import (
     H1FlatAgentCfg,
@@ -183,6 +189,18 @@ task_registry.register(
     BaseEnv,
     G1SlopeSysDEnvCfg(),
     G1SlopeSysDAgentCfg(),
+)
+task_registry.register(
+    "g1_com_velocity_estimator",
+    BaseEnv,
+    G1ComVelocityEstimatorEnvCfg(),
+    G1ComVelocityEstimatorAgentCfg(),
+)
+task_registry.register(
+    "g1_com_velocity_estimator_v2",
+    BaseEnv,
+    G1ComVelocityEstimatorV2EnvCfg(),
+    G1ComVelocityEstimatorV2AgentCfg(),
 )
 task_registry.register(
     "g1_dwaq_slope_nosys_d",

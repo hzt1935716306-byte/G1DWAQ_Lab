@@ -9,7 +9,7 @@ to a world-frame vector from the robot yaw at every control step. Continuous
 tests use 10 s force plus 3 s observation; impulse tests use a 0.1 s pulse plus
 5 s observation. Both no-step and no-fall outcomes are saved.
 
-Run the complete five-model sweep:
+Run the complete strong-model sweep:
 
 ```bash
 cd /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab

@@ -108,6 +108,12 @@ run_model \
 run_model \
     baseline_original_nc ours \
     "$ROOT/logs/g1_flat_symmetric/2026-08-31_23-48-44_stage2_baseline_no_curriculum_from4999/model_9998.pt"
+run_model \
+    input_context_final stage2_input \
+    "$ROOT/logs/g1_flat_symmetric/2026-09-02_14-56-46_input_only_4096_resume_L3_to_10000/model_9998.pt"
+run_model \
+    dwaq_flat_new dwaq \
+    "$ROOT/logs/model_9999.pt"
 
 refine_model \
     unitree_17800 unitree \
@@ -124,6 +130,12 @@ refine_model \
 refine_model \
     baseline_original_nc ours \
     "$ROOT/logs/g1_flat_symmetric/2026-08-31_23-48-44_stage2_baseline_no_curriculum_from4999/model_9998.pt"
+refine_model \
+    input_context_final stage2_input \
+    "$ROOT/logs/g1_flat_symmetric/2026-09-02_14-56-46_input_only_4096_resume_L3_to_10000/model_9998.pt"
+refine_model \
+    dwaq_flat_new dwaq \
+    "$ROOT/logs/model_9999.pt"
 
 "$PYTHON" "$ROOT/tools/push_test/summarize_push_test.py" \
     --input_root "$OUTPUT_ROOT" \

@@ -22,6 +22,7 @@ from dataclasses import MISSING
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import ImuCfg
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.utils import configclass
 
@@ -71,6 +72,8 @@ class BaseSceneCfg:
     lidar: LidarCfg = LidarCfg()
     depth_camera: TiledCameraCfg = TiledCameraCfg()
     rgb_camera: RgbCameraCfg = RgbCameraCfg()
+    # Optional deployable body-mounted IMU.  Existing tasks leave this disabled.
+    imu: ImuCfg | None = None
 
 
 

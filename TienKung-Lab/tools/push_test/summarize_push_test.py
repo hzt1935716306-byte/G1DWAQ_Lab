@@ -17,6 +17,8 @@ MODELS = (
     ("ours_025_final", "Ours-0.25-final"),
     ("baseline_shared_020_l3", "Baseline-shared-0.2-L3"),
     ("baseline_original_nc", "Baseline-original-NC"),
+    ("input_context_final", "Input-context-final-L6"),
+    ("dwaq_flat_new", "DWAQ-flat-new"),
 )
 
 
@@ -262,9 +264,9 @@ def write_report(root: Path, output: Path, reports) -> None:
     exemplar = reports[MODELS[0][1]]["continuous"]
     protocol = exemplar["protocol"]
     lines = [
-        "# 五模型真实外力无踏步 / 不摔倒极限测试",
+        "# 强模型真实外力无踏步 / 不摔倒极限测试",
         "",
-        "生成日期：2026-09-02（Asia/Shanghai）",
+        "生成日期：2026-09-03（Asia/Shanghai）",
         "",
         "## 1. 测试身份",
         "",
@@ -291,7 +293,7 @@ def write_report(root: Path, output: Path, reports) -> None:
             f"- touchdown：接触阈值 {protocol['touchdown_contact_force_threshold_N']:g} N，去抖 {protocol['touchdown_debounce_s']:g} s；FALL 使用各原生任务 termination。",
             "- 每个强度每阶段 20 个 trial；粗扫 seed=42，细扫 seed=4242。重叠的 30/40 N 连续力点合并为 40 个 trial。",
             "- 极限主值采用保守的连续通过边界：从 0 开始所有较低测试点均须达到门槛。若更高强度出现非单调的孤立通过点，会在表中单独标出，不把它当作主极限。",
-            "- 四个 TienKung 模型在每个扫描阶段使用同一 seed、环境编号与 trial 顺序，因此 reset 初态抽样严格配对；Unitree 使用其原生环境 reset 分布，属于跨栈系统级比较。",
+            "- 六个 TienKung-Lab 模型在每个扫描阶段使用同一 seed、环境编号与 trial 顺序，因此 reset 初态抽样严格配对；Unitree 使用其原生环境 reset 分布，属于跨栈系统级比较。",
             "- 观测噪声和物理参数随机化关闭；保留 reset 初态抽样以使 20 次 trial 非重复。",
             "",
             "表格单元格均为 `no-step / no-fall`。",
@@ -309,14 +311,49 @@ def write_report(root: Path, output: Path, reports) -> None:
     c_base = reports["Baseline-original-NC"]["continuous"]["thresholds"]
     i_ours = reports["Ours-0.25-final"]["impulse"]["thresholds"]
     i_base = reports["Baseline-original-NC"]["impulse"]["thresholds"]
+    c_input = reports["Input-context-final-L6"]["continuous"]["thresholds"]
+    i_input = reports["Input-context-final-L6"]["impulse"]["thresholds"]
+    best_continuous = max(
+        (name for _, name in MODELS),
+        key=lambda name: reports[name]["continuous"]["thresholds"]["F_max_no_fall_90pct_N"],
+    )
+    best_impulse = max(
+        (name for _, name in MODELS),
+        key=lambda name: reports[name]["impulse"]["thresholds"]["J_max_no_fall_90pct_Ns"],
+    )
+    focus_models = (
+        "Baseline-original-NC",
+        "DWAQ-flat-new",
+        "Ours-0.25-final",
+        "Input-context-final-L6",
+    )
     lines.extend(
         [
             "",
-            "### 3.3 核心结果解读",
+            "### 3.3 四强 no-fall 极限对比",
             "",
-            f"- 10 s 持续力的 no-fall 主极限最高是 Baseline-original-NC：{c_base['F_max_no_fall_90pct_N']:g} N@90%、{c_base['F_max_no_fall_100pct_N']:g} N@100%；Ours-0.25-final 为 {c_ours['F_max_no_fall_90pct_N']:g}/{c_ours['F_max_no_fall_100pct_N']:g} N。",
-            f"- 0.1 s 冲量的主指标 `J_max_no_fall` 最高是 Ours-0.25-final：{i_ours['J_max_no_fall_90pct_Ns']:g} N·s@90%、{i_ours['J_max_no_fall_100pct_Ns']:g} N·s@100%；Baseline-original-NC 为 {i_base['J_max_no_fall_90pct_Ns']:g}/{i_base['J_max_no_fall_100pct_Ns']:g} N·s。",
-            "- 因此 Ours-0.25-final 的明确优势是短时冲量抗摔；它不是所有扰动指标都最好，长时恒力仍由 Baseline-original-NC 更强。",
+            "| 模型 | Continuous @90% | Continuous @100% | Impulse @90% | Impulse @100% |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for name in focus_models:
+        continuous = reports[name]["continuous"]["thresholds"]
+        impulse = reports[name]["impulse"]["thresholds"]
+        lines.append(
+            f"| {name} | {continuous['F_max_no_fall_90pct_N']:g} N | "
+            f"{continuous['F_max_no_fall_100pct_N']:g} N | "
+            f"{impulse['J_max_no_fall_90pct_Ns']:g} N·s | "
+            f"{impulse['J_max_no_fall_100pct_Ns']:g} N·s |"
+        )
+    lines.extend(
+        [
+            "",
+            "### 3.4 核心结果解读",
+            "",
+            f"- 10 s 持续力的 no-fall@90% 主极限最高模型为 {best_continuous}。Baseline-original-NC 为 {c_base['F_max_no_fall_90pct_N']:g}/{c_base['F_max_no_fall_100pct_N']:g} N（90/100%）；Ours-0.25-final 为 {c_ours['F_max_no_fall_90pct_N']:g}/{c_ours['F_max_no_fall_100pct_N']:g} N。",
+            f"- 0.1 s 冲量的 `J_max_no_fall@90%` 最高模型为 {best_impulse}。Ours-0.25-final 为 {i_ours['J_max_no_fall_90pct_Ns']:g}/{i_ours['J_max_no_fall_100pct_Ns']:g} N·s；Baseline-original-NC 为 {i_base['J_max_no_fall_90pct_Ns']:g}/{i_base['J_max_no_fall_100pct_Ns']:g} N·s。",
+            f"- Input-context-final-L6：持续 no-fall 为 {c_input['F_max_no_fall_90pct_N']:g}/{c_input['F_max_no_fall_100pct_N']:g} N（90/100%），冲量 no-fall 为 {i_input['J_max_no_fall_90pct_Ns']:g}/{i_input['J_max_no_fall_100pct_Ns']:g} N·s。",
+            "- 核心比较优先看 Input-context-final-L6、DWAQ-flat-new、Ours-0.25-final 与 Baseline-original-NC；其他模型保留为完整参考。",
             "- L3 对比没有单向碾压：Ours-0.20-L3 的持续 no-fall@90% 为 28 N，高于 shared Baseline 的 26 N；但冲量 no-fall@90% 为 18 N·s，低于 shared Baseline 的 22 N·s。",
             "- 完全不踏步的范围很小：连续力主边界最高为 8 N，冲量主边界多为 4 N·s；大部分更强扰动下的存活依赖踏步恢复。",
             "",
@@ -343,10 +380,10 @@ def write_report(root: Path, output: Path, reports) -> None:
             "## 8. 完整性审计",
             "",
             f"- 正式数据共 {audit['trial_rows']:,} 个 trial、{audit['summary_count']} 个扫描 summary；所有 planned/completed/CSV 行数一致。",
-            "- 共保存 3,526,804 行逐控制步 trace（含表头统计），覆盖实际世界力、作用点、base/CoM/feet/contact/touchdown/FALL。",
+            "- 每个扫描均保存逐控制步 trace，覆盖实际世界力、作用点、base/CoM/feet/contact/touchdown/FALL。",
             f"- 首次世界力向量模长最大误差 {audit['max_force_norm_error_N']:.3g} N；`J=F×duration` 最大误差 {audit['max_impulse_identity_error_Ns']:.3g} N·s。",
             f"- 未摔倒 trial 的实际施力时长最大误差 {audit['max_survivor_duration_error_s']:.3g} s；逻辑一致性错误数 {len(audit['errors'])}。",
-            "- sanity：两个原生栈均验证 0 N、20 N×10 s、100 N×0.1 s；后者实际为 5 个 0.02 s 控制步，积分约 10 N·s。",
+            "- sanity：四类策略适配路径（Unitree、960 维 actor、Input-context、DWAQ）均验证 0 N、20 N×10 s、100 N×0.1 s；后者实际为 5 个 0.02 s 控制步，积分约 10 N·s。",
             "",
             "## 9. 可审计数据",
             "",

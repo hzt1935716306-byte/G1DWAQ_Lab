@@ -22,6 +22,13 @@ MODELS = (
         "identity": "963维Actor；真实certificate context；shared events scale=0.5",
     },
     {
+        "slug": "input_context_final",
+        "name": "Input-context（最终L6）",
+        "transition": None,
+        "checkpoint_curriculum_iteration": None,
+        "identity": "963维Actor；真实certificate context；shared events scale=0.5；课程最终L6",
+    },
+    {
         "slug": "baseline_original_l2",
         "name": "Baseline-original（L2边界）",
         "transition": 2723,
@@ -183,11 +190,11 @@ def main() -> None:
     }
 
     lines = [
-        "# L2边界 checkpoint 与无课程/DWAQ：统一六等级恢复测试",
+        "# Input-context最终模型、L2边界 checkpoint 与无课程/DWAQ：统一六等级恢复测试",
         "",
         "## 1. 对比范围",
         "",
-        "有课程模型取各自训练中仍处于L2的最后一个已保存checkpoint；另外加入两个无课程最终模型和新旧DWAQ作为参考。测试协议与 `ALL_TRAINED_MODEL_COMPREHENSIVE_COMPARISON.md` 相同：seed=42/123/2026，L1--L6，每级每seed 256 episode，每模型共4608 episode。",
+        "有课程边界模型取各自训练中仍处于L2的最后一个已保存checkpoint；本报告额外加入Input-context课程最终L6模型，以及两个无课程最终模型和新旧DWAQ作为参考。测试协议与 `ALL_TRAINED_MODEL_COMPREHENSIVE_COMPARISON.md` 相同：seed=42/123/2026，L1--L6，每级每seed 256 episode，每模型共4608 episode。",
         "",
         "0.15和0.25只有独立最终权重，缺少L2中间checkpoint，因此未作为L2边界模型纳入。无课程模型和DWAQ没有课程阶段，结果仅作为最终能力参考。",
         "",
@@ -236,27 +243,69 @@ def main() -> None:
             f"| L{level} | " + " | ".join(_percent(per_level[model["slug"]][level]["P5"]) for model in MODELS) + " |"
         )
 
-    current_slug = MODELS[0]["slug"]
+    final_slug = "input_context_final"
     lines += [
         "",
-        "## 5. Input-context与其他模型的相同trial配对",
+        "## 5. Input-context最终L6与其他模型的相同trial配对",
         "",
-        "| 对照模型 | delta P5（Input-context - 对照） | Input-only/对照-only成功 | exact McNemar p |",
+        "| 对照模型 | delta P5（Input-context最终 - 对照） | Input-final/对照-only成功 | exact McNemar p |",
         "|---|---:|---:|---:|",
     ]
-    for model in MODELS[1:]:
-        paired = _paired(all_episodes[current_slug], all_episodes[model["slug"]])
-        delta = overall[current_slug]["P5"] - overall[model["slug"]]["P5"]
+    for model in MODELS:
+        if model["slug"] == final_slug:
+            continue
+        paired = _paired(all_episodes[final_slug], all_episodes[model["slug"]])
+        delta = overall[final_slug]["P5"] - overall[model["slug"]]["P5"]
         lines.append(
             f"| {model['name']} | {100.0 * delta:+.2f} pp | {paired['a_only']}/{paired['b_only']} | {_pvalue(paired['p'])} |"
         )
 
     lines += [
         "",
-        "## 6. 解释边界",
+        "## 6. Input-context L2边界与其他模型的相同trial配对",
+        "",
+        "| 对照模型 | delta P5（Input-context L2 - 对照） | Input-L2/对照-only成功 | exact McNemar p |",
+        "|---|---:|---:|---:|",
+    ]
+    l2_slug = "input_context_l2"
+    for model in MODELS:
+        if model["slug"] in (l2_slug, final_slug):
+            continue
+        paired = _paired(all_episodes[l2_slug], all_episodes[model["slug"]])
+        delta = overall[l2_slug]["P5"] - overall[model["slug"]]["P5"]
+        lines.append(
+            f"| {model['name']} | {100.0 * delta:+.2f} pp | {paired['a_only']}/{paired['b_only']} | {_pvalue(paired['p'])} |"
+        )
+
+    final_metric = overall[final_slug]
+    l2_metric = overall[l2_slug]
+    paired_progress = _paired(all_episodes[final_slug], all_episodes[l2_slug])
+    lines += [
+        "",
+        "## 7. Input-context自身训练前后变化",
+        "",
+        f"- 最终L6模型P5为 {_percent(final_metric['P5'])}，L2边界模型为 {_percent(l2_metric['P5'])}，提升 {100.0 * (final_metric['P5'] - l2_metric['P5']):+.2f} pp。",
+        f"- 相同trial中，最终模型独占成功 {paired_progress['a_only']} 次，L2边界模型独占成功 {paired_progress['b_only']} 次，exact McNemar p={_pvalue(paired_progress['p'])}。",
+        "",
+        "## 8. 真实外力与冲量极限补充",
+        "",
+        "下表来自独立的 torso_link 真实外力实验：5 s 稳定后施加 10 s 恒力，或施加 0.1 s 短脉冲；数值为从零开始连续满足 no-fall 门槛的保守边界。",
+        "",
+        "| 重点模型 | Continuous @90% | Continuous @100% | Impulse @90% | Impulse @100% |",
+        "|---|---:|---:|---:|---:|",
+        "| Baseline-original（无课程最终） | 42 N | 38 N | 26 N·s | 24 N·s |",
+        "| DWAQ-flat-new | 38 N | 24 N | 25 N·s | 22 N·s |",
+        "| Ours-0.25-final | 36 N | 36 N | 30 N·s | 25 N·s |",
+        "| Input-context（最终L6） | 36 N | 36 N | 22 N·s | 22 N·s |",
+        "",
+        "- 持续外力 @90% 的最高主边界是 Baseline-original（无课程最终）的 42 N。",
+        "- 短时冲量 @90% 和 @100% 的最高主边界都是 Ours-0.25-final，分别为 30 N·s 和 25 N·s。",
+        "- 完整逐强度结果、STEP 判据、trace 和审计见 `tools/push_test/ALL_MODELS_PUSH_LIMITS.md`。",
+        "",
+        "## 9. 解释边界",
         "",
         "- 所有测试均为inference-only，训练reward关闭。Input-context模型仍运行certificate solver，因为这是其Actor输入的一部分；其余960维模型不运行solver。",
-        "- 有课程checkpoint都属于L2，但到达L2边界所经历的训练轮数不同，这是各自自适应课程轨迹的一部分；无课程模型和DWAQ只作最终参考。",
+        "- 除Input-context最终L6外，有课程边界checkpoint都属于L2；到达L2边界所经历的训练轮数不同，这是各自自适应课程轨迹的一部分。无课程模型和DWAQ只作最终参考。",
         "- L2边界组回答‘各方法在各自L2结束时的策略能力’，不等于相同训练样本预算的单变量消融；与无课程/DWAQ的差异更不能归因于单一机制。",
         "- 每个seed的trial ID、command和速度跳变完全一致，可进行相同trial配对比较。",
         "",

@@ -50,6 +50,8 @@ def _samples(count: int = 20):
                 "interval_roll": [0.01, 0.01],
                 "interval_pitch": [-0.02, -0.02],
                 "interval_velocity_error": [0.03, 0.03],
+                "interval_actual_vx": [0.4, 0.4],
+                "interval_actual_vy": [0.0, 0.0],
             }
         )
     return rows
@@ -70,6 +72,7 @@ def test_calibration_uses_joint_holdout_and_only_diagnoses_capability() -> None:
 
     assert node["T"] == pytest.approx(0.25)
     assert node["h_eff"] == pytest.approx(0.70)
+    assert node["omega"] == pytest.approx(math.sqrt(9.81 / 0.70))
     assert node["w"] == pytest.approx(0.22)
     assert node["roll_star"] == pytest.approx(0.01)
     assert node["pitch_star"] == pytest.approx(-0.02)
@@ -79,6 +82,11 @@ def test_calibration_uses_joint_holdout_and_only_diagnoses_capability() -> None:
     assert report["holdout_count"] == 4
     assert report["holdout_joint_coverage"] == pytest.approx(1.0)
     assert "projected_L" in report and "projected_vmax" in report
+    assert report["projected_C"]["nominal_reference_contained"]
+    assert not report["projected_C"]["actual_cop_samples_available"]
+    assert report["nominal_certificate_distribution"]["sample_count"] == 20
+    assert report["gait_speed_diagnostic"]["actual_mean_vy_m_per_s"] == pytest.approx(0.0)
+    assert "landing_delta_xy_statistics" in report["gait_speed_diagnostic"]
     assert yaml.safe_dump(flat, sort_keys=True) == before
 
 
@@ -123,6 +131,43 @@ def test_practical_thresholds_use_complete_interval_means() -> None:
             node["mean_abs_pitch_error_threshold"],
         ]
     )
+
+
+def test_validation_epsilon_uses_independent_per_axis_absolute_p95() -> None:
+    with open("tools/recovery/generated/g1_recovery_params.yaml", encoding="utf-8") as stream:
+        flat = yaml.safe_load(stream)
+    rows = _samples()
+    # Calibration uses the first 80% (16 rows). Inject deliberately different
+    # deterministic errors so a joint normalized-max envelope cannot match the
+    # four independent per-axis quantiles by accident.
+    expected_errors = []
+    for index, row in enumerate(rows[:16]):
+        error = np.asarray(
+            (0.001 * index, -0.002 * index, 0.003 * index, -0.004 * index)
+        )
+        row["com_position_H"] = (
+            np.asarray(row["com_position_H"], dtype=np.float64) + error[:2]
+        ).tolist()
+        row["q_H"] = (
+            np.asarray(row["q_H"], dtype=np.float64) + error[2:]
+        ).tolist()
+        expected_errors.append(error)
+
+    node, report = calibrate_nominal_node(
+        rows,
+        flat,
+        slope_degrees=10.0,
+        direction="+x",
+        speed=0.4,
+        calibration_policy_id="validation-policy",
+        terminal_epsilon_semantics="per_axis_absolute_p95",
+    )
+    expected = np.quantile(np.abs(np.asarray(expected_errors)), 0.95, axis=0)
+
+    assert list(node["epsilon_b"].values()) == pytest.approx(expected[:2])
+    assert list(node["epsilon_q"].values()) == pytest.approx(expected[2:])
+    assert node["terminal_epsilon_semantics"] == "per_axis_absolute_p95"
+    assert report["terminal_epsilon_semantics"] == "per_axis_absolute_p95"
 
 
 def test_completed_node_stops_collection_and_clears_interval_buffers() -> None:

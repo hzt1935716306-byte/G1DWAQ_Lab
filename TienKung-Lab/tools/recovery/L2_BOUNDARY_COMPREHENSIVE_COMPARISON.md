@@ -1,8 +1,8 @@
-# L2边界 checkpoint 与无课程/DWAQ：统一六等级恢复测试
+# Input-context最终模型、L2边界 checkpoint 与无课程/DWAQ：统一六等级恢复测试
 
 ## 1. 对比范围
 
-有课程模型取各自训练中仍处于L2的最后一个已保存checkpoint；另外加入两个无课程最终模型和新旧DWAQ作为参考。测试协议与 `ALL_TRAINED_MODEL_COMPREHENSIVE_COMPARISON.md` 相同：seed=42/123/2026，L1--L6，每级每seed 256 episode，每模型共4608 episode。
+有课程边界模型取各自训练中仍处于L2的最后一个已保存checkpoint；本报告额外加入Input-context课程最终L6模型，以及两个无课程最终模型和新旧DWAQ作为参考。测试协议与 `ALL_TRAINED_MODEL_COMPREHENSIVE_COMPARISON.md` 相同：seed=42/123/2026，L1--L6，每级每seed 256 episode，每模型共4608 episode。
 
 0.15和0.25只有独立最终权重，缺少L2中间checkpoint，因此未作为L2边界模型纳入。无课程模型和DWAQ没有课程阶段，结果仅作为最终能力参考。
 
@@ -11,6 +11,7 @@
 | 模型 | checkpoint | Actor输入 | L2→L3迭代 | 距升级轮数 | SHA256 | 训练身份 |
 |---|---|---:|---:|---:|---|---|
 | Input-context（L2边界） | `/home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-09-02_10-41-16_pilot_input_only_256_seed42/model_3500.pt` | 963 | 3600 | 100 | `4d6f6f186997…` | 963维Actor；真实certificate context；shared events scale=0.5 |
+| Input-context（最终L6） | `/home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-09-02_14-56-46_input_only_4096_resume_L3_to_10000/model_9998.pt` | 963 | -- | -- | `c768900e395e…` | 963维Actor；真实certificate context；shared events scale=0.5；课程最终L6 |
 | Baseline-original（L2边界） | `/home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-08-30_02-35-28_stage2_baseline_original_from4999/model_7700.pt` | 960 | 2723 | 23 | `b8d37ecc8cb6…` | 960维Actor；原始locomotion reward |
 | Baseline-shared-0.2（L2边界） | `/home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-08-29_13-15-09_stage2_baseline_scale02_solverfix_resume/model_6400.pt` | 960 | 1425 | 25 | `5b091c402fa0…` | 960维Actor；三个shared events，scale=0.2 |
 | Ours-shared+cert-0.2（L2边界） | `/home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_flat_symmetric/2026-08-29_13-12-16_stage2_ours_scale02_solverfix_resume/model_8400.pt` | 960 | 1020 | 20 | `e7eced3f81cd…` | 960维Actor；shared events + certificate reward，scale=0.2 |
@@ -25,6 +26,7 @@
 
 | 模型 | SUCCESS/TIMEOUT/FALL | P5 | timeout | fall | 成功步数mean/median | 成功时间mean |
 |---|---:|---:|---:|---:|---:|---:|
+| Input-context（最终L6） | 4354/254/0 | 94.49% | 5.51% | 0.00% | 3.534/4.0 | 0.750 s |
 | DWAQ-flat-new | 4343/265/0 | 94.25% | 5.75% | 0.00% | 3.509/4.0 | 1.188 s |
 | Ours-cert-only-0.20（无课程最终） | 4193/415/0 | 90.99% | 9.01% | 0.00% | 3.806/4.0 | 0.791 s |
 | Baseline-original（无课程最终） | 4098/510/0 | 88.93% | 11.07% | 0.00% | 3.811/4.0 | 0.760 s |
@@ -38,18 +40,33 @@
 
 ## 4. 逐等级P5
 
-| Level | Input-context（L2边界） | Baseline-original（L2边界） | Baseline-shared-0.2（L2边界） | Ours-shared+cert-0.2（L2边界） | Ours-cert-only-0.20（L2边界） | Ours-cert-only-0.50（L2边界） | Baseline-original（无课程最终） | Ours-cert-only-0.20（无课程最终） | DWAQ-flat-new | DWAQ-old |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| L1 | 16.15% | 88.80% | 88.93% | 89.32% | 89.58% | 88.80% | 84.38% | 89.06% | 100.00% | 30.21% |
-| L2 | 16.28% | 90.10% | 93.62% | 94.92% | 92.45% | 93.49% | 89.97% | 93.23% | 99.48% | 33.98% |
-| L3 | 14.06% | 76.82% | 87.76% | 93.23% | 84.51% | 89.45% | 93.36% | 94.79% | 98.05% | 36.46% |
-| L4 | 10.94% | 62.24% | 73.05% | 79.95% | 67.19% | 79.04% | 93.36% | 92.71% | 94.92% | 35.81% |
-| L5 | 8.07% | 45.05% | 51.82% | 59.51% | 50.26% | 60.81% | 88.80% | 91.80% | 89.71% | 36.85% |
-| L6 | 7.42% | 30.60% | 42.19% | 45.18% | 38.67% | 47.79% | 83.72% | 84.38% | 83.33% | 35.68% |
+| Level | Input-context（L2边界） | Input-context（最终L6） | Baseline-original（L2边界） | Baseline-shared-0.2（L2边界） | Ours-shared+cert-0.2（L2边界） | Ours-cert-only-0.20（L2边界） | Ours-cert-only-0.50（L2边界） | Baseline-original（无课程最终） | Ours-cert-only-0.20（无课程最终） | DWAQ-flat-new | DWAQ-old |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| L1 | 16.15% | 89.19% | 88.80% | 88.93% | 89.32% | 89.58% | 88.80% | 84.38% | 89.06% | 100.00% | 30.21% |
+| L2 | 16.28% | 93.88% | 90.10% | 93.62% | 94.92% | 92.45% | 93.49% | 89.97% | 93.23% | 99.48% | 33.98% |
+| L3 | 14.06% | 96.61% | 76.82% | 87.76% | 93.23% | 84.51% | 89.45% | 93.36% | 94.79% | 98.05% | 36.46% |
+| L4 | 10.94% | 97.40% | 62.24% | 73.05% | 79.95% | 67.19% | 79.04% | 93.36% | 92.71% | 94.92% | 35.81% |
+| L5 | 8.07% | 96.48% | 45.05% | 51.82% | 59.51% | 50.26% | 60.81% | 88.80% | 91.80% | 89.71% | 36.85% |
+| L6 | 7.42% | 93.36% | 30.60% | 42.19% | 45.18% | 38.67% | 47.79% | 83.72% | 84.38% | 83.33% | 35.68% |
 
-## 5. Input-context与其他模型的相同trial配对
+## 5. Input-context最终L6与其他模型的相同trial配对
 
-| 对照模型 | delta P5（Input-context - 对照） | Input-only/对照-only成功 | exact McNemar p |
+| 对照模型 | delta P5（Input-context最终 - 对照） | Input-final/对照-only成功 | exact McNemar p |
+|---|---:|---:|---:|
+| Input-context（L2边界） | +82.34 pp | 3970/176 | <1e-300 |
+| Baseline-original（L2边界） | +28.88 pp | 1380/49 | <1e-300 |
+| Baseline-shared-0.2（L2边界） | +21.59 pp | 1054/59 | 1.589e-236 |
+| Ours-shared+cert-0.2（L2边界） | +17.47 pp | 852/47 | 3.821e-192 |
+| Ours-cert-only-0.20（L2边界） | +24.05 pp | 1177/69 | 5.864e-261 |
+| Ours-cert-only-0.50（L2边界） | +17.93 pp | 869/43 | 7.006e-201 |
+| Baseline-original（无课程最终） | +5.56 pp | 308/52 | 2.234e-45 |
+| Ours-cert-only-0.20（无课程最终） | +3.49 pp | 225/64 | 3.64e-22 |
+| DWAQ-flat-new | +0.24 pp | 252/241 | 0.6525 |
+| DWAQ-old | +59.66 pp | 2828/79 | <1e-300 |
+
+## 6. Input-context L2边界与其他模型的相同trial配对
+
+| 对照模型 | delta P5（Input-context L2 - 对照） | Input-L2/对照-only成功 | exact McNemar p |
 |---|---:|---:|---:|
 | Baseline-original（L2边界） | -53.45 pp | 255/2718 | <1e-300 |
 | Baseline-shared-0.2（L2边界） | -60.74 pp | 209/3008 | <1e-300 |
@@ -61,10 +78,30 @@
 | DWAQ-flat-new | -82.10 pp | 15/3798 | <1e-300 |
 | DWAQ-old | -22.68 pp | 281/1326 | 3.593e-162 |
 
-## 6. 解释边界
+## 7. Input-context自身训练前后变化
+
+- 最终L6模型P5为 94.49%，L2边界模型为 12.15%，提升 +82.34 pp。
+- 相同trial中，最终模型独占成功 3970 次，L2边界模型独占成功 176 次，exact McNemar p=<1e-300。
+
+## 8. 真实外力与冲量极限补充
+
+下表来自独立的 torso_link 真实外力实验：5 s 稳定后施加 10 s 恒力，或施加 0.1 s 短脉冲；数值为从零开始连续满足 no-fall 门槛的保守边界。
+
+| 重点模型 | Continuous @90% | Continuous @100% | Impulse @90% | Impulse @100% |
+|---|---:|---:|---:|---:|
+| Baseline-original（无课程最终） | 42 N | 38 N | 26 N·s | 24 N·s |
+| DWAQ-flat-new | 38 N | 24 N | 25 N·s | 22 N·s |
+| Ours-0.25-final | 36 N | 36 N | 30 N·s | 25 N·s |
+| Input-context（最终L6） | 36 N | 36 N | 22 N·s | 22 N·s |
+
+- 持续外力 @90% 的最高主边界是 Baseline-original（无课程最终）的 42 N。
+- 短时冲量 @90% 和 @100% 的最高主边界都是 Ours-0.25-final，分别为 30 N·s 和 25 N·s。
+- 完整逐强度结果、STEP 判据、trace 和审计见 `tools/push_test/ALL_MODELS_PUSH_LIMITS.md`。
+
+## 9. 解释边界
 
 - 所有测试均为inference-only，训练reward关闭。Input-context模型仍运行certificate solver，因为这是其Actor输入的一部分；其余960维模型不运行solver。
-- 有课程checkpoint都属于L2，但到达L2边界所经历的训练轮数不同，这是各自自适应课程轨迹的一部分；无课程模型和DWAQ只作最终参考。
+- 除Input-context最终L6外，有课程边界checkpoint都属于L2；到达L2边界所经历的训练轮数不同，这是各自自适应课程轨迹的一部分。无课程模型和DWAQ只作最终参考。
 - L2边界组回答‘各方法在各自L2结束时的策略能力’，不等于相同训练样本预算的单变量消融；与无课程/DWAQ的差异更不能归因于单一机制。
 - 每个seed的trial ID、command和速度跳变完全一致，可进行相同trial配对比较。
 

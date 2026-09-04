@@ -237,3 +237,84 @@ The corrected fixed component-wise +/-0.5 m/s comparison is in
 The corrected Unitree adapter converts its policy-step counter to physics
 steps before computing time.  In that protocol, Ours-0.20-L3 P5 is 94.14%
 versus Unitree-17800 at 79.43%; all four evaluated models have 100% non-fall.
+
+## 2026-09-03 training-form velocity-jump limits
+
+The four strongest/current policies were evaluated with the same physical
+operation as Stage2 training: one additive horizontal root-velocity jump.
+Unlike the P5 evaluator, every rollout continued for a fixed 10 s after the
+jump even if it recovered early.  The sweep used 13 magnitudes from 0 to
+3.0 m/s, eight world-frame directions, eight commands, and two onset offsets,
+for 128 paired trials per magnitude and 6656 trials total.
+
+| Model | Contiguous no-fall @90% | @100% | First observed FALL |
+|---|---:|---:|---:|
+| Baseline-original-NC | 2.25 m/s | 1.50 m/s | 1.75 m/s |
+| DWAQ-flat-new | **2.50 m/s** | **2.00 m/s** | 2.25 m/s |
+| Ours-0.25-final | 2.00 m/s | 1.25 m/s | 1.50 m/s |
+| Input-context-final-L6 | 2.00 m/s | 1.25 m/s | 1.50 m/s |
+
+All four policies survived every trial through 1.25 m/s.  At 2.0 m/s the
+10 s survival rates were 98.4% Baseline-original-NC, 100% DWAQ-flat-new,
+90.6% Ours-0.25-final, and 93.0% Input-context-final-L6.  DWAQ-flat-new has
+the largest velocity-jump survival boundary in this protocol.  Full per-speed
+and per-direction tables are in
+[`BEST_MODELS_VELOCITY_JUMP_LIMITS.md`](BEST_MODELS_VELOCITY_JUMP_LIMITS.md).
+
+The same paired sweep was then extended to the two original Stage1
+checkpoints.  Both recorded training pushes with independent world-frame
+components in [-1, 1] m/s.  Adding 3328 trials brings this suite to 9984
+trials across six models.
+
+| Stage1 model | Contiguous no-fall @90% | @100% | First observed FALL |
+|---|---:|---:|---:|
+| Symmetric model_4999 | 2.25 m/s | 1.25 m/s | 1.50 m/s |
+| Flat model_4999 | 2.25 m/s | 1.75 m/s | 2.00 m/s |
+
+The 90% boundaries tie.  Flat has the higher zero-failure boundary because
+Symmetric has one failure at 1.5 m/s.  In the extreme tail, however,
+Symmetric is stronger: at 3.0 m/s it survives 73.4% versus Flat at 58.6%
+(+14.8 pp, paired exact McNemar p=0.01445).  This is evidence for a stronger
+far-OOD tail, not a uniform advantage at every velocity.
+
+The same flat mixed-command sweep was finally extended to Slope-NoSys-D-9999,
+DWAQ-Slope-D-9999, and Slope-Sys-D-9999, bringing it to 14976 trials across
+nine models.  Their 90% boundaries are 2.25, 2.75, and 2.50 m/s respectively.
+DWAQ-Slope-D is the updated suite leader and has the highest 3.0 m/s survival
+rate at 85.9%; Slope-Sys-D is second at 77.3%.
+
+## 2026-09-04 slope-policy repeated velocity-jump comparison
+
+Three final slope-trained policies were evaluated on continuous -20, -10, 0,
++10, and +20 degree planes while commanded forward at 0.4 m/s.  Each policy
+received the same 8320 trials (24960 total): 13 jump magnitudes from 0 to
+3.0 m/s, eight directions, and 128 trials per slope/magnitude.  A surviving
+environment kept walking into the next trial; only native FALL reset it.
+Survival required a full 10 s after each jump.
+
+| Model | -20 deg | -10 deg | Flat | +10 deg | +20 deg |
+|---|---:|---:|---:|---:|---:|
+| Slope-NoSys-D-9999, no-fall @90% | 1.75 | 2.25 | 2.25 | 2.00 | 1.50 m/s |
+| DWAQ-Slope-D-9999, no-fall @90% | 2.25 | 3.00 | 3.00 | 2.75 | 2.25 m/s |
+| Slope-Sys-D-9999, no-fall @90% | 2.25 | 2.75 | 2.75 | 2.50 | 2.00 m/s |
+
+Across all slopes and magnitudes, survival is 86.08% for Slope-NoSys-D and
+95.01% for DWAQ-Slope-D.  In the strong 2.25--3.0 m/s region the rates are
+59.80% and 87.19%, a +27.38 pp DWAQ advantage.  In the 0--1.0 m/s region both
+are nearly saturated (99.47% NoSys-D and 98.75% DWAQ); DWAQ's small deficit
+comes primarily from spontaneous/weak-disturbance failures on the -10 degree
+downhill.  DWAQ also tracks velocity less accurately on -20 degrees (0.141 vs
+0.078 m/s), so its advantage is specifically much greater strong-impact
+survival rather than uniform dominance on every metric.
+
+Slope-Sys-D reaches 93.20% overall and 80.62% in the strong 2.25--3.0 m/s
+region.  Its 90% boundary is 0.50 m/s above NoSys-D on all five terrains.  It
+ties DWAQ at -20 degrees and is 0.25 m/s lower on each other terrain.  Thus it
+is a strong middle ground: much more robust than NoSys-D and less strong in
+the extreme tail than DWAQ, while retaining better downhill tracking than
+DWAQ at -20 degrees.
+
+The full three-policy tables and exact McNemar tests are in
+[`THREE_SLOPE_MODELS_STABILITY_COMPARISON.md`](THREE_SLOPE_MODELS_STABILITY_COMPARISON.md).
+The common flat mixed-command leaderboard, now covering nine policies, is in
+[`BEST_MODELS_VELOCITY_JUMP_LIMITS.md`](BEST_MODELS_VELOCITY_JUMP_LIMITS.md).

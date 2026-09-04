@@ -23,20 +23,49 @@ from isaaclab.app import AppLauncher
 
 POLICY_TASKS = {
     "baseline": "g1_flat_symmetric",
+    "flat": "g1_flat",
+    "slope": "g1_slope_nosys_d",
+    "slope_sys_d": "g1_slope_sys_d",
+    "dwaq_slope": "g1_dwaq_slope_nosys_d",
     "ours": "g1_flat_symmetric",
     "dwaq": "g1_dwaq",
     "stage2_baseline": "g1_flat_symmetric_stage2_baseline",
     "stage2_input": "g1_flat_symmetric_stage2_ours",
 }
+DWAQ_POLICIES = {"dwaq", "dwaq_slope"}
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--policy", choices=tuple(POLICY_TASKS), required=True)
 parser.add_argument("--checkpoint", type=Path, required=True)
 parser.add_argument("--levels", type=int, nargs="+", default=(1, 2, 3, 4, 5))
+parser.add_argument(
+    "--velocity_magnitudes",
+    type=float,
+    nargs="+",
+    default=None,
+    help=(
+        "Optional fixed root-velocity jump magnitudes in m/s. When set, this "
+        "replaces the six curriculum levels and balances fixed directions/commands."
+    ),
+)
+parser.add_argument("--direction_count", type=int, choices=(4, 8), default=8)
+parser.add_argument(
+    "--command_mode",
+    choices=("benchmark", "slope_forward"),
+    default="benchmark",
+    help="Use the common eight-command benchmark or the slope policy's supported +0.4 m/s command.",
+)
+parser.add_argument("--slope_degrees", type=float, default=0.0)
 parser.add_argument("--episodes_per_level", type=int, default=256)
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--prepare_steps", type=int, default=50)
 parser.add_argument("--max_recovery_time_s", type=float, default=10.0)
+parser.add_argument(
+    "--survival_horizon_s",
+    type=float,
+    default=None,
+    help="If set, keep every post-jump rollout alive for this fixed horizon and only score FALL/SURVIVED.",
+)
 parser.add_argument("--max_steps", type=int, default=12000)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument(
@@ -61,6 +90,7 @@ from legged_lab.recovery.state_extractor import (  # noqa: E402
     G1PrivilegedStateExtractor,
     G1StateExtractorCfg,
 )
+from legged_lab.terrains import make_plane_recovery_terrain_cfg  # noqa: E402
 from legged_lab.utils import task_registry  # noqa: E402
 
 
@@ -99,6 +129,14 @@ def _quantiles(values) -> dict:
         "min": float(np.min(array)),
         "max": float(np.max(array)),
     }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _disable_randomization(env_cfg) -> None:
@@ -182,6 +220,49 @@ def _make_plans(levels, episodes_per_level: int, level_ratios, maxima, seed: int
     return plans, hashlib.sha256(serialized).hexdigest()
 
 
+def _make_velocity_magnitude_plans(
+    magnitudes: tuple[float, ...],
+    episodes_per_magnitude: int,
+    direction_count: int,
+    commands: tuple[tuple[float, float, float], ...],
+    seed: int,
+):
+    cells_per_repeat = direction_count * len(commands)
+    if episodes_per_magnitude % cells_per_repeat != 0:
+        raise ValueError(
+            "episodes_per_level must be divisible by direction_count * command_count "
+            f"({cells_per_repeat}) in velocity-magnitude mode"
+        )
+    directions = [
+        (math.cos(2.0 * math.pi * index / direction_count),
+         math.sin(2.0 * math.pi * index / direction_count))
+        for index in range(direction_count)
+    ]
+    plans = []
+    for magnitude in magnitudes:
+        for sample_index in range(episodes_per_magnitude):
+            direction_index = sample_index % direction_count
+            command_index = (sample_index // direction_count) % len(commands)
+            repeat_index = sample_index // cells_per_repeat
+            unit = np.asarray(directions[direction_index], dtype=np.float64)
+            delta = float(magnitude) * unit
+            plans.append(
+                {
+                    "trial_id": f"V{magnitude:.3f}-{sample_index:05d}",
+                    "push_magnitude_mps": float(magnitude),
+                    "direction_index": int(direction_index),
+                    "direction_world_xy": [float(unit[0]), float(unit[1])],
+                    "command_velocity": list(commands[command_index]),
+                    "onset_offset_steps": int(6 * repeat_index),
+                    "delta_v_world_xy": [float(delta[0]), float(delta[1])],
+                }
+            )
+    rng = np.random.default_rng(seed)
+    rng.shuffle(plans)
+    serialized = json.dumps(plans, sort_keys=True, separators=(",", ":")).encode()
+    return plans, hashlib.sha256(serialized).hexdigest()
+
+
 def _set_commands(env, slots) -> None:
     command = env.command_generator.command
     command.zero_()
@@ -206,7 +287,7 @@ def _new_slot(plan: dict, prepare_steps: int) -> dict:
     return {
         "plan": plan,
         "status": "preparing",
-        "prepare_remaining": int(prepare_steps),
+        "prepare_remaining": int(prepare_steps + plan.get("onset_offset_steps", 0)),
         "start_step": None,
         "start_time": None,
         "touchdowns": 0,
@@ -220,6 +301,12 @@ def _new_slot(plan: dict, prepare_steps: int) -> dict:
 
 def _complete(slot: dict, outcome: str, state, env_id: int, policy_step: int, reason: str) -> dict:
     episode = dict(slot["plan"])
+    sample_count = int(slot["sample_count"])
+    mean_abs_tilt = (
+        slot["abs_tilt_sum"] / sample_count
+        if sample_count > 0
+        else np.asarray((math.nan, math.nan), dtype=np.float64)
+    )
     episode.update(
         {
             "env_id": int(env_id),
@@ -230,6 +317,18 @@ def _complete(slot: dict, outcome: str, state, env_id: int, policy_step: int, re
             "start_policy_step": int(slot["start_step"]),
             "end_policy_step": int(policy_step),
             "recovery_time_s": float(state.time[env_id].item()) - float(slot["start_time"]),
+            "active_sample_count": sample_count,
+            "mean_velocity_tracking_error_mps": (
+                float(slot["velocity_error_sum"] / sample_count)
+                if sample_count > 0
+                else None
+            ),
+            "mean_abs_roll_rad": (
+                float(mean_abs_tilt[0]) if sample_count > 0 else None
+            ),
+            "mean_abs_pitch_rad": (
+                float(mean_abs_tilt[1]) if sample_count > 0 else None
+            ),
         }
     )
     return episode
@@ -239,7 +338,7 @@ def _performance(episodes: list[dict]) -> dict:
     total = len(episodes)
     counts = {
         outcome: sum(item["outcome"] == outcome for item in episodes)
-        for outcome in ("SUCCESS", "TIMEOUT", "FALL")
+        for outcome in ("SUCCESS", "TIMEOUT", "FALL", "SURVIVED")
     }
     success_steps = [
         item["practical_enter_step"]
@@ -256,6 +355,8 @@ def _performance(episodes: list[dict]) -> dict:
             for touchdown in range(1, 6)
         },
         "success_rate_P5": counts["SUCCESS"] / total if total else None,
+        "non_fall_rate": 1.0 - counts["FALL"] / total if total else None,
+        "full_horizon_survival_rate": counts["SURVIVED"] / total if total else None,
         "timeout_rate": counts["TIMEOUT"] / total if total else None,
         "fall_rate": counts["FALL"] / total if total else None,
         "practical_enter_step": _quantiles(success_steps),
@@ -266,6 +367,13 @@ def _performance(episodes: list[dict]) -> dict:
         "recovery_time_s_success": _quantiles(
             [item["recovery_time_s"] for item in episodes if item["outcome"] == "SUCCESS"]
         ),
+        "mean_velocity_tracking_error_mps": _quantiles(
+            [
+                item["mean_velocity_tracking_error_mps"]
+                for item in episodes
+                if item.get("mean_velocity_tracking_error_mps") is not None
+            ]
+        ),
     }
 
 
@@ -275,8 +383,15 @@ def _policy_environment():
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.scene.seed = args.seed
     env_cfg.scene.max_episode_length_s = 1000.0
-    env_cfg.scene.terrain_type = "plane"
-    env_cfg.scene.terrain_generator = None
+    if math.isclose(args.slope_degrees, 0.0, abs_tol=1.0e-12):
+        env_cfg.scene.terrain_type = "plane"
+        env_cfg.scene.terrain_generator = None
+    else:
+        env_cfg.scene.terrain_type = "generator"
+        env_cfg.scene.terrain_generator = make_plane_recovery_terrain_cfg(
+            (float(args.slope_degrees),)
+        )
+        env_cfg.scene.max_init_terrain_level = 0
     env_cfg.commands.rel_standing_envs = 0.0
     env_cfg.commands.rel_heading_envs = 0.0
     env_cfg.commands.heading_command = False
@@ -296,7 +411,7 @@ def _policy_environment():
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
-    if args.policy == "dwaq":
+    if args.policy in DWAQ_POLICIES:
         runner = DWAQOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -307,27 +422,49 @@ def _policy_environment():
 
 def main() -> None:
     levels = tuple(args.levels)
-    if not levels or any(level < 1 or level > 6 for level in levels) or len(set(levels)) != len(levels):
+    magnitude_mode = args.velocity_magnitudes is not None
+    magnitudes = tuple(sorted(set(args.velocity_magnitudes or ())))
+    if not magnitude_mode and (
+        not levels
+        or any(level < 1 or level > 6 for level in levels)
+        or len(set(levels)) != len(levels)
+    ):
         raise ValueError("--levels must contain unique values from 1 through 6")
+    if magnitude_mode and (not magnitudes or any(value < 0.0 for value in magnitudes)):
+        raise ValueError("--velocity_magnitudes must contain unique non-negative values")
     if args.episodes_per_level <= 0 or args.num_envs <= 0 or args.prepare_steps < 0:
         raise ValueError("episode, environment, and preparation counts are invalid")
-    if args.disturbance_pattern == "cardinal" and args.episodes_per_level % 64 != 0:
+    if not magnitude_mode and args.disturbance_pattern == "cardinal" and args.episodes_per_level % 64 != 0:
         raise ValueError(
             "cardinal episodes_per_level must be divisible by 64 to balance "
             "8 disturbance cases across 8 commands"
         )
     if args.max_recovery_time_s <= 0.0 or args.max_steps <= 0:
         raise ValueError("time and step limits must be positive")
+    if args.survival_horizon_s is not None and args.survival_horizon_s <= 0.0:
+        raise ValueError("survival_horizon_s must be positive")
 
     recovery_cfg, _ = task_registry.get_cfgs("g1_flat_symmetric_stage2_baseline")
     curriculum_cfg = recovery_cfg.push_curriculum
-    plans, plan_hash = _make_plans(
-        levels,
-        args.episodes_per_level,
-        curriculum_cfg.level_ratios,
-        curriculum_cfg.stage1b_abs_delta_v_xy,
-        args.seed,
+    active_commands = (
+        ((0.4, 0.0, 0.0),) if args.command_mode == "slope_forward" else COMMANDS
     )
+    if magnitude_mode:
+        plans, plan_hash = _make_velocity_magnitude_plans(
+            magnitudes,
+            args.episodes_per_level,
+            args.direction_count,
+            active_commands,
+            args.seed,
+        )
+    else:
+        plans, plan_hash = _make_plans(
+            levels,
+            args.episodes_per_level,
+            curriculum_cfg.level_ratios,
+            curriculum_cfg.stage1b_abs_delta_v_xy,
+            args.seed,
+        )
     pending = list(reversed(plans))
     env, runner, checkpoint = _policy_environment()
     extractor = G1PrivilegedStateExtractor(
@@ -339,7 +476,7 @@ def main() -> None:
             slots[env_id] = _new_slot(pending.pop(), args.prepare_steps)
     _set_commands(env, slots)
 
-    if args.policy == "dwaq":
+    if args.policy in DWAQ_POLICIES:
         obs, obs_hist = env.get_observations()
         inference_policy = runner.alg.policy.act_inference
     else:
@@ -352,13 +489,13 @@ def main() -> None:
     for policy_step in range(args.max_steps):
         _set_commands(env, slots)
         with torch.inference_mode():
-            if args.policy == "dwaq":
+            if args.policy in DWAQ_POLICIES:
                 actions = inference_policy(obs, obs_hist)
             else:
                 actions = inference_policy(obs)
             obs, _, dones, extras = env.step(actions)
             state = extractor.extract()
-            if args.policy == "dwaq":
+            if args.policy in DWAQ_POLICIES:
                 obs_hist = extras["observations"]["obs_hist"]
 
         done_mask = dones | state.episode_reset
@@ -373,7 +510,9 @@ def main() -> None:
                     slots[env_id] = None
                 else:
                     nominal_reset_count += 1
-                    slot["prepare_remaining"] = args.prepare_steps
+                    slot["prepare_remaining"] = args.prepare_steps + int(
+                        slot["plan"].get("onset_offset_steps", 0)
+                    )
 
         touchdown_ids = state.touchdown.nonzero(as_tuple=False).flatten().detach().cpu().tolist()
         for env_id in touchdown_ids:
@@ -381,6 +520,8 @@ def main() -> None:
             if slot is None or slot["status"] != "active":
                 continue
             slot["touchdowns"] += 1
+            if args.survival_horizon_s is not None:
+                continue
             sample_count = int(slot["sample_count"])
             has_interval = bool(slot["interval_started"] and sample_count > 0)
             alternating = slot["last_touchdown_foot"] < 0 or (
@@ -415,7 +556,14 @@ def main() -> None:
         for env_id, slot in enumerate(slots):
             if slot is None or slot["status"] != "active":
                 continue
-            if float(state.time[env_id].item()) - float(slot["start_time"]) >= args.max_recovery_time_s:
+            elapsed = float(state.time[env_id].item()) - float(slot["start_time"])
+            if args.survival_horizon_s is not None and elapsed >= args.survival_horizon_s:
+                completed.append(
+                    _complete(slot, "SURVIVED", state, env_id, policy_step, "full_survival_horizon")
+                )
+                slots[env_id] = None
+                continue
+            if args.survival_horizon_s is None and elapsed >= args.max_recovery_time_s:
                 completed.append(
                     _complete(slot, "TIMEOUT", state, env_id, policy_step, "wall_time_limit")
                 )
@@ -444,40 +592,76 @@ def main() -> None:
                 slot["start_time"] = float(state.time[env_id].item())
 
         if (policy_step + 1) % 250 == 0:
-            counts = {
-                level: sum(item["level"] == level for item in completed) for level in levels
-            }
+            if magnitude_mode:
+                counts = {
+                    magnitude: sum(
+                        math.isclose(item["push_magnitude_mps"], magnitude) for item in completed
+                    )
+                    for magnitude in magnitudes
+                }
+            else:
+                counts = {
+                    level: sum(item["level"] == level for item in completed) for level in levels
+                }
             print(
                 f"[policy-level-sweep] policy={args.policy} step={policy_step + 1}/{args.max_steps} "
-                f"completed={len(completed)}/{len(plans)} per_level={counts}",
+                f"completed={len(completed)}/{len(plans)} per_group={counts}",
                 flush=True,
             )
         if len(completed) == len(plans):
             break
 
-    per_level = {
-        str(level): _performance([item for item in completed if item["level"] == level])
-        for level in levels
-    }
+    if magnitude_mode:
+        per_group = {
+            f"{magnitude:g}": _performance(
+                [
+                    item
+                    for item in completed
+                    if math.isclose(item["push_magnitude_mps"], magnitude)
+                ]
+            )
+            for magnitude in magnitudes
+        }
+    else:
+        per_group = {
+            str(level): _performance([item for item in completed if item["level"] == level])
+            for level in levels
+        }
     report = {
         "schema_version": 1,
         "policy": args.policy,
         "native_task": POLICY_TASKS[args.policy],
         "checkpoint": str(checkpoint),
+        "checkpoint_sha256": _sha256_file(checkpoint),
         "inference_only": True,
         "common_protocol": {
-            "levels": list(levels),
+            "levels": None if magnitude_mode else list(levels),
             "level_ratios": list(curriculum_cfg.level_ratios),
             "stage1b_abs_delta_v_xy": list(curriculum_cfg.stage1b_abs_delta_v_xy),
+            "velocity_magnitudes_mps": list(magnitudes) if magnitude_mode else None,
+            "velocity_jump_frame": "world",
+            "direction_count": args.direction_count if magnitude_mode else None,
             "episodes_per_level": args.episodes_per_level,
-            "commands": [list(command) for command in COMMANDS],
+            "commands": [list(command) for command in active_commands],
+            "command_mode": args.command_mode,
+            "slope_degrees": float(args.slope_degrees),
             "seed": args.seed,
-            "disturbance_pattern": args.disturbance_pattern,
+            "disturbance_pattern": (
+                "fixed_magnitude_balanced_directions"
+                if magnitude_mode
+                else args.disturbance_pattern
+            ),
             "trial_plan_sha256": plan_hash,
-            "flat_plane": True,
+            "flat_plane": math.isclose(args.slope_degrees, 0.0, abs_tol=1.0e-12),
+            "terrain_geometry": (
+                "flat plane"
+                if math.isclose(args.slope_degrees, 0.0, abs_tol=1.0e-12)
+                else "continuous x-aligned plane"
+            ),
             "observation_noise": False,
             "physics_randomization": False,
             "max_recovery_touchdowns": curriculum_cfg.max_recovery_touchdowns,
+            "survival_horizon_s": args.survival_horizon_s,
             "mean_velocity_error_threshold": curriculum_cfg.mean_velocity_error_threshold,
             "mean_abs_roll_threshold": curriculum_cfg.mean_abs_roll_threshold,
             "mean_abs_pitch_threshold": curriculum_cfg.mean_abs_pitch_threshold,
@@ -492,7 +676,8 @@ def main() -> None:
         "nominal_reset_count": nominal_reset_count,
         "actor_observation_shape": list(obs.shape),
         "overall_performance": _performance(completed),
-        "performance_by_level": per_level,
+        "performance_by_velocity_magnitude": per_group if magnitude_mode else None,
+        "performance_by_level": None if magnitude_mode else per_group,
         "episodes": completed,
     }
     output = args.output.expanduser().resolve()

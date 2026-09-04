@@ -12,7 +12,13 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from .plane_adapter import Box2D, inverse_project_horizontal
+from .certificate import (
+    CertificateState,
+    HalfspaceRegion2D,
+    RecoverabilityConfig,
+    certify_recoverability,
+)
+from .plane_adapter import Box2D, adapt_flat_capability, inverse_project_horizontal
 from .plane_certificate_runtime import plane_periodic_state
 from .plane_nominal_params import PRACTICAL_METRIC_INTERVAL_MEAN_V1
 from .practical_metrics import practical_interval_means_from_sums
@@ -44,10 +50,101 @@ def _statistics(values: Sequence[float]) -> dict[str, float | int]:
     }
 
 
+def _axis_error_statistics(vectors: Sequence[Sequence[float]]) -> dict[str, dict[str, float]]:
+    array = np.asarray(vectors, dtype=np.float64)
+    if array.ndim != 2 or array.shape[1] != 2 or array.shape[0] == 0:
+        raise ValueError("two-axis diagnostics require at least one finite 2-vector")
+    return {
+        axis: {
+            "median": float(np.median(array[:, index])),
+            "mean": float(np.mean(array[:, index])),
+            "p95_abs": float(np.quantile(np.abs(array[:, index]), 0.95)),
+            "maximum_abs": float(np.max(np.abs(array[:, index]))),
+        }
+        for index, axis in enumerate(("x", "y"))
+    }
+
+
 def _overflow(vector: np.ndarray, box: Box2D) -> np.ndarray:
     lower = np.asarray((box.x[0], box.y[0]))
     upper = np.asarray((box.x[1], box.y[1]))
     return np.maximum(lower - vector, 0.0) + np.maximum(vector - upper, 0.0)
+
+
+def _nominal_certificate_distribution(
+    samples: Sequence[Mapping[str, object]],
+    capability,
+    *,
+    period: float,
+    h_eff: float,
+    omega: float,
+    step_width: float,
+    epsilon: np.ndarray,
+) -> dict[str, object]:
+    """Evaluate measured nominal touchdown states with the unchanged Plane V1 LP."""
+
+    command = np.asarray(samples[0]["command"], dtype=np.float64)
+    theory = plane_periodic_state(
+        command[0], command[1], period, omega, step_width
+    )
+    config = RecoverabilityConfig(
+        gravity=9.81,
+        h_eff=h_eff,
+        step_period=period,
+        max_steps=5,
+        cop_left=HalfspaceRegion2D.box(capability.cop_left.x, capability.cop_left.y),
+        cop_right=HalfspaceRegion2D.box(capability.cop_right.x, capability.cop_right.y),
+        landing_left=HalfspaceRegion2D.box(
+            capability.landing_left.x, capability.landing_left.y
+        ),
+        landing_right=HalfspaceRegion2D.box(
+            capability.landing_right.x, capability.landing_right.y
+        ),
+        swing_velocity_limits=capability.swing_velocity_limits,
+        nominal_cop_left=(0.0, 0.0),
+        nominal_cop_right=(0.0, 0.0),
+        nominal_step_left=theory["landing_left"],
+        nominal_step_right=theory["landing_right"],
+        nominal_b_left=theory["b_left"],
+        nominal_b_right=theory["b_right"],
+        nominal_q_left=theory["q_left"],
+        nominal_q_right=theory["q_right"],
+        epsilon_b=(float(epsilon[0]), float(epsilon[1])),
+        epsilon_q=(float(epsilon[2]), float(epsilon[3])),
+    )
+    counts = {value: 0 for value in range(config.max_steps + 2)}
+    status_counts: dict[str, int] = {}
+    fallback_count = 0
+    for row in samples:
+        support = str(row["support_side"])
+        support_position = np.asarray(row["support_position_H"], dtype=np.float64)
+        com = np.asarray(row["com_position_H"], dtype=np.float64)
+        velocity = np.asarray(row["com_velocity_H"], dtype=np.float64)
+        state = CertificateState(
+            b=com + velocity / omega - support_position,
+            q=np.asarray(row["q_H"], dtype=np.float64),
+            support_side=support,
+            phase=0.0,
+            step_period=period,
+            omega=omega,
+        )
+        result = certify_recoverability(state, config)
+        n_value = config.max_steps + 1 if result.n_min is None else int(result.n_min)
+        counts[n_value] = counts.get(n_value, 0) + 1
+        status = result.status.value
+        status_counts[status] = status_counts.get(status, 0) + 1
+        fallback_count += int(result.solver_fallback or result.margin_fallback)
+    return {
+        "sample_count": len(samples),
+        "N_counts": {str(key): value for key, value in sorted(counts.items())},
+        "N0_fraction": counts.get(0, 0) / len(samples),
+        "N0_or_N1_fraction": (
+            counts.get(0, 0) + counts.get(1, 0)
+        )
+        / len(samples),
+        "status_counts": status_counts,
+        "fallback_count": fallback_count,
+    }
 
 
 def calibrate_nominal_node(
@@ -60,6 +157,7 @@ def calibrate_nominal_node(
     calibration_policy_id: str,
     calibration_fraction: float = 0.8,
     epsilon_floor: float = 1.0e-6,
+    terminal_epsilon_semantics: str = "joint_normalized_max_p95",
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Calibrate one node and return its independent diagnostic report."""
 
@@ -67,6 +165,11 @@ def calibrate_nominal_node(
         raise ValueError("at least ten valid touchdown samples are required")
     if not 0.5 <= calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must lie in [0.5, 1)")
+    if terminal_epsilon_semantics not in (
+        "joint_normalized_max_p95",
+        "per_axis_absolute_p95",
+    ):
+        raise ValueError("unsupported terminal_epsilon_semantics")
     split = max(1, min(len(samples) - 1, int(len(samples) * calibration_fraction)))
     calibration = samples[:split]
     holdout = samples[split:]
@@ -126,10 +229,15 @@ def calibrate_nominal_node(
 
     calibration_errors = errors(calibration)
     holdout_errors = errors(holdout)
-    scales = np.median(np.abs(calibration_errors), axis=0) + epsilon_floor
-    normalized_max = np.max(np.abs(calibration_errors) / scales, axis=1)
-    kappa = float(np.quantile(normalized_max, 0.95))
-    epsilon = np.maximum(kappa * scales, epsilon_floor)
+    if terminal_epsilon_semantics == "per_axis_absolute_p95":
+        epsilon = np.maximum(
+            np.quantile(np.abs(calibration_errors), 0.95, axis=0), epsilon_floor
+        )
+    else:
+        scales = np.median(np.abs(calibration_errors), axis=0) + epsilon_floor
+        normalized_max = np.max(np.abs(calibration_errors) / scales, axis=1)
+        kappa = float(np.quantile(normalized_max, 0.95))
+        epsilon = np.maximum(kappa * scales, epsilon_floor)
     holdout_covered = np.all(np.abs(holdout_errors) <= epsilon, axis=1)
 
     interval_metrics = []
@@ -169,6 +277,7 @@ def calibrate_nominal_node(
         "speed": float(speed),
         "T": period,
         "h_eff": h_eff,
+        "omega": omega,
         "w": step_width,
         "epsilon_b": {"x": float(epsilon[0]), "y": float(epsilon[1])},
         "epsilon_q": {"x": float(epsilon[2]), "y": float(epsilon[3])},
@@ -180,6 +289,7 @@ def calibrate_nominal_node(
         "sample_count": len(samples),
         "calibration_policy_id": calibration_policy_id,
         "practical_metric_version": PRACTICAL_METRIC_INTERVAL_MEAN_V1,
+        "terminal_epsilon_semantics": terminal_epsilon_semantics,
     }
 
     alpha = math.radians(float(slope_degrees))
@@ -219,15 +329,219 @@ def calibrate_nominal_node(
 
     overflow_array = np.asarray(overflow_magnitudes)
     ratio_array = np.asarray(vmax_ratios)
+    actual_velocity_frames = np.concatenate(
+        [
+            np.column_stack(
+                (
+                    np.asarray(row["interval_actual_vx"], dtype=np.float64),
+                    np.asarray(
+                        row.get(
+                            "interval_actual_vy",
+                            [float(row["com_velocity_H"][1])]
+                            * len(row["interval_actual_vx"]),
+                        ),
+                        dtype=np.float64,
+                    ),
+                )
+            )
+            for row in samples
+        ],
+        axis=0,
+    )
+    measured_landing = np.asarray([row["l_H"] for row in samples], dtype=np.float64)
+    command_landing = np.asarray(
+        [
+            np.asarray(row["command"], dtype=np.float64) * float(row["T"])
+            for row in samples
+        ],
+        dtype=np.float64,
+    )
+    landing_delta = measured_landing - command_landing
+    width_aware_landing = command_landing.copy()
+    width_aware_landing[:, 1] += np.asarray(
+        [
+            step_width if row["transition_support"] == "right" else -step_width
+            for row in samples
+        ],
+        dtype=np.float64,
+    )
+    width_aware_landing_delta = measured_landing - width_aware_landing
+    side_periods = {
+        side: np.asarray(
+            [float(row["T"]) for row in samples if row["support_side"] == side],
+            dtype=np.float64,
+        )
+        for side in ("left", "right")
+    }
+    median_t_left = float(np.median(side_periods["left"]))
+    median_t_right = float(np.median(side_periods["right"]))
+    t_side_difference = abs(median_t_left - median_t_right)
+    projected_capability = adapt_flat_capability(flat_parameters, alpha)
     report = {
         "sample_count": len(samples),
         "calibration_count": len(calibration),
         "holdout_count": len(holdout),
         "T": _statistics([float(row["T"]) for row in samples]),
+        "h_eff": _statistics([float(row["h_geom"]) for row in samples]),
+        "omega": omega,
+        "T_left": _statistics(side_periods["left"]),
+        "T_right": _statistics(side_periods["right"]),
+        "T_left_right_median_abs_difference_s": t_side_difference,
+        "T_left_right_relative_asymmetry": t_side_difference / period,
         "w_left": w_left,
         "w_right": w_right,
         "w_abs_side_difference": abs(w_left - w_right),
         "holdout_joint_coverage": float(np.mean(holdout_covered)),
+        "holdout_per_axis_coverage": {
+            name: float(np.mean(np.abs(holdout_errors[:, index]) <= epsilon[index]))
+            for index, name in enumerate(("b_x", "b_y", "q_x", "q_y"))
+        },
+        "terminal_epsilon_semantics": terminal_epsilon_semantics,
+        "epsilon_b": {"x": float(epsilon[0]), "y": float(epsilon[1])},
+        "epsilon_q": {"x": float(epsilon[2]), "y": float(epsilon[3])},
+        "gait_speed_diagnostic": {
+            "actual_mean_vx_m_per_s": float(
+                np.mean(actual_velocity_frames[:, 0])
+            ),
+            "actual_mean_vy_m_per_s": float(np.mean(actual_velocity_frames[:, 1])),
+            "actual_velocity_xy_statistics": {
+                axis: _statistics(actual_velocity_frames[:, index])
+                for index, axis in enumerate(("x", "y"))
+            },
+            "median_T_left_s": float(
+                np.median(
+                    [float(row["T"]) for row in samples if row["support_side"] == "left"]
+                )
+            ),
+            "median_T_right_s": float(
+                np.median(
+                    [float(row["T"]) for row in samples if row["support_side"] == "right"]
+                )
+            ),
+            "measured_median_landing_left_xy_m": np.median(
+                np.asarray(
+                    [row["l_H"] for row in samples if row["support_side"] == "left"],
+                    dtype=np.float64,
+                ),
+                axis=0,
+            ).tolist(),
+            "measured_median_landing_right_xy_m": np.median(
+                np.asarray(
+                    [row["l_H"] for row in samples if row["support_side"] == "right"],
+                    dtype=np.float64,
+                ),
+                axis=0,
+            ).tolist(),
+            "median_command_vx_times_T_left_m": float(
+                np.median(
+                    [
+                        float(row["command"][0]) * float(row["T"])
+                        for row in samples
+                        if row["support_side"] == "left"
+                    ]
+                )
+            ),
+            "median_command_vx_times_T_right_m": float(
+                np.median(
+                    [
+                        float(row["command"][0]) * float(row["T"])
+                        for row in samples
+                        if row["support_side"] == "right"
+                    ]
+                )
+            ),
+            "median_delta_l_x_left_m": float(
+                np.median(
+                    [
+                        float(row["l_H"][0])
+                        - float(row["command"][0]) * float(row["T"])
+                        for row in samples
+                        if row["support_side"] == "left"
+                    ]
+                )
+            ),
+            "median_delta_l_x_right_m": float(
+                np.median(
+                    [
+                        float(row["l_H"][0])
+                        - float(row["command"][0]) * float(row["T"])
+                        for row in samples
+                        if row["support_side"] == "right"
+                    ]
+                )
+            ),
+            "command_times_T_landing_left_xy_m": np.median(
+                command_landing[
+                    np.asarray(
+                        [row["support_side"] == "left" for row in samples],
+                        dtype=np.bool_,
+                    )
+                ],
+                axis=0,
+            ).tolist(),
+            "command_times_T_landing_right_xy_m": np.median(
+                command_landing[
+                    np.asarray(
+                        [row["support_side"] == "right" for row in samples],
+                        dtype=np.bool_,
+                    )
+                ],
+                axis=0,
+            ).tolist(),
+            "landing_delta_xy_statistics": _axis_error_statistics(landing_delta),
+            "landing_delta_semantics": (
+                "measured relative touchdown minus command_velocity*T; the raw y "
+                "delta therefore retains the alternating step width"
+            ),
+            "width_aware_landing_delta_xy_statistics": _axis_error_statistics(
+                width_aware_landing_delta
+            ),
+            "width_aware_landing_delta_semantics": (
+                "measured relative touchdown minus (command_velocity*T plus the "
+                "node-level alternating lateral step width)"
+            ),
+            "landing_delta_left_xy_statistics": _axis_error_statistics(
+                landing_delta[
+                    np.asarray(
+                        [row["support_side"] == "left" for row in samples],
+                        dtype=np.bool_,
+                    )
+                ]
+            ),
+            "landing_delta_right_xy_statistics": _axis_error_statistics(
+                landing_delta[
+                    np.asarray(
+                        [row["support_side"] == "right" for row in samples],
+                        dtype=np.bool_,
+                    )
+                ]
+            ),
+        },
+        "practical_nominal_error_statistics": {
+            "interval_mean_velocity_error": _statistics(velocity_errors),
+            "interval_mean_abs_roll_error": _statistics(roll_errors),
+            "interval_mean_abs_pitch_error": _statistics(pitch_errors),
+        },
+        "projected_C": {
+            "nominal_reference_checked": True,
+            "nominal_reference_contained": projected_capability.nominal_cop_valid,
+            "actual_cop_samples_available": False,
+            "actual_cop_violation_rate": None,
+            "reason": (
+                "The configured Isaac Lab ContactSensor exposes net body force but "
+                "not contact-point/pressure truth; actual CoP cannot be inferred "
+                "without changing the measurement setup."
+            ),
+        },
+        "nominal_certificate_distribution": _nominal_certificate_distribution(
+            samples,
+            projected_capability,
+            period=period,
+            h_eff=h_eff,
+            omega=omega,
+            step_width=step_width,
+            epsilon=epsilon,
+        ),
         "projected_L": {
             "containment_rate": float(np.mean(containment)),
             "overflow_p90_m": float(np.quantile(overflow_array, 0.90)),

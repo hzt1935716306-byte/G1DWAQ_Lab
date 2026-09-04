@@ -97,3 +97,33 @@ def test_vertical_height_is_not_normal_distance() -> None:
     normal = np.asarray((-math.sin(alpha), 0.0, math.cos(alpha)))
     point = np.asarray((2.0, 0.0, math.tan(alpha) * 2.0 + 0.7))
     assert vertical_height_above_plane(normal, (0.0, 0.0, 0.0), point) == pytest.approx(0.7)
+
+
+def test_parallel_plane_3d_dynamics_reduce_to_horizontal_lipm() -> None:
+    """A COM constrained parallel to a plane has no extra horizontal gravity term."""
+
+    rng = np.random.default_rng(20260903)
+    gravity = 9.81
+    for _ in range(500):
+        alpha = rng.uniform(math.radians(-15.0), math.radians(15.0))
+        height = rng.uniform(0.55, 0.85)
+        position = rng.uniform((-1.5, -1.0), (1.5, 1.0))
+        cop = rng.uniform((-0.8, -0.5), (0.8, 0.5))
+        delta_xy = position - cop
+        slope = np.asarray((math.tan(alpha), 0.0))
+        delta_z = float(slope @ delta_xy + height)
+        acceleration_3d = (
+            gravity / height * np.asarray((*delta_xy, delta_z))
+            - np.asarray((0.0, 0.0, gravity))
+        )
+
+        expected_horizontal = gravity / height * delta_xy
+        np.testing.assert_allclose(
+            acceleration_3d[:2], expected_horizontal, rtol=0.0, atol=1.0e-10
+        )
+        np.testing.assert_allclose(
+            acceleration_3d[2],
+            slope @ acceleration_3d[:2],
+            rtol=0.0,
+            atol=1.0e-10,
+        )

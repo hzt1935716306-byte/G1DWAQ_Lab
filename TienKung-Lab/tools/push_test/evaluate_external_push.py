@@ -18,7 +18,12 @@ from isaaclab.app import AppLauncher
 
 CONTROL_DT = 0.02
 DEFAULT_UNITREE_ROOT = Path("/home/zt/project/g1_base/unitree_rl_lab")
-POLICY_TASKS = {"ours": "g1_flat_symmetric", "unitree": "Unitree-G1-29dof-Velocity"}
+POLICY_TASKS = {
+    "ours": "g1_flat_symmetric",
+    "stage2_input": "g1_flat_symmetric_stage2_ours",
+    "dwaq": "g1_dwaq",
+    "unitree": "Unitree-G1-29dof-Velocity",
+}
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--policy", choices=tuple(POLICY_TASKS), required=True)
@@ -56,7 +61,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from torch import nn  # noqa: E402
 from isaaclab.utils.math import euler_xyz_from_quat, quat_apply, yaw_quat  # noqa: E402
-from rsl_rl.runners import OnPolicyRunner  # noqa: E402
+from rsl_rl.runners import DWAQOnPolicyRunner, OnPolicyRunner  # noqa: E402
 
 from legged_lab.envs import *  # noqa: E402,F401,F403
 from legged_lab.recovery.state_extractor import (  # noqa: E402
@@ -289,7 +294,8 @@ def _policy_environment(num_envs: int):
             raise RuntimeError("Unitree observation/checkpoint mismatch")
         return env, _UnitreeRunnerAdapter(actor), checkpoint
 
-    env_cfg, agent_cfg = task_registry.get_cfgs("g1_flat_symmetric")
+    task = POLICY_TASKS[args.policy]
+    env_cfg, agent_cfg = task_registry.get_cfgs(task)
     env_cfg.scene.num_envs = num_envs
     env_cfg.scene.seed = args.seed
     env_cfg.scene.max_episode_length_s = 1000.0
@@ -303,10 +309,20 @@ def _policy_environment(num_envs: int):
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.action_delay.enable = False
     _disable_non_reset_randomization(env_cfg.domain_rand.events)
+    if hasattr(env_cfg, "stage2_reward"):
+        # The Input-context actor still needs its certificate evaluator, but no
+        # reward term is evaluated or added during this inference-only test.
+        env_cfg.stage2_reward.enabled = False
+        env_cfg.stage2_reward.enable_shared_event_reward = False
+        env_cfg.stage2_reward.enable_certificate_reward = False
+        env_cfg.stage2_reward.certificate_workers = min(8, num_envs)
     env_cfg.sim.device = args.device
     agent_cfg.device = args.device
-    env = task_registry.get_task_class("g1_flat_symmetric")(env_cfg, args.headless)
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    env = task_registry.get_task_class(task)(env_cfg, args.headless)
+    if args.policy == "dwaq":
+        runner = DWAQOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    else:
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     runner.load(str(checkpoint), load_optimizer=False)
     runner.eval_mode()
     return env, runner, checkpoint
@@ -456,8 +472,13 @@ def main() -> None:
     settle_hold_steps = max(1, math.ceil(args.settle_hold_time / CONTROL_DT))
     total_steps = stabilization_steps + force_steps + post_steps
 
-    obs, _ = env.get_observations()
-    inference_policy = runner.get_inference_policy(device=env.device)
+    if args.policy == "dwaq":
+        obs, obs_hist = env.get_observations()
+        inference_policy = runner.alg.policy.act_inference
+    else:
+        obs, _ = env.get_observations()
+        obs_hist = None
+        inference_policy = runner.get_inference_policy(device=env.device)
     _set_standing_command(env)
     previous_state = extractor.extract()
 
@@ -506,8 +527,13 @@ def main() -> None:
                 force_sample_count[alive] += 1
 
             with torch.inference_mode():
-                actions = inference_policy(obs)
-                obs, _, dones, _ = env.step(actions)
+                if args.policy == "dwaq":
+                    actions = inference_policy(obs, obs_hist)
+                else:
+                    actions = inference_policy(obs)
+                obs, _, dones, extras = env.step(actions)
+                if args.policy == "dwaq":
+                    obs_hist = extras["observations"]["obs_hist"]
                 state = extractor.extract()
 
             done_mask = (dones | state.episode_reset).detach().cpu().numpy().astype(bool)

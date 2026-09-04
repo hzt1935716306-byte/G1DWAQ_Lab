@@ -13,6 +13,7 @@ seeds=(42 123 2026)
 # saved checkpoint is already after that run's L2 -> L3 transition.
 labels=(
   input_context_l2
+  input_context_final
   baseline_original_l2
   baseline_shared020_l2
   ours_shared_cert020_l2
@@ -23,9 +24,10 @@ labels=(
   dwaq_new
   dwaq_old
 )
-policies=(stage2_input baseline baseline ours ours ours baseline ours dwaq dwaq)
+policies=(stage2_input stage2_input baseline baseline ours ours ours baseline ours dwaq dwaq)
 checkpoints=(
   "$project_dir/logs/g1_flat_symmetric/2026-09-02_10-41-16_pilot_input_only_256_seed42/model_3500.pt"
+  "$project_dir/logs/g1_flat_symmetric/2026-09-02_14-56-46_input_only_4096_resume_L3_to_10000/model_9998.pt"
   "$project_dir/logs/g1_flat_symmetric/2026-08-30_02-35-28_stage2_baseline_original_from4999/model_7700.pt"
   "$project_dir/logs/g1_flat_symmetric/2026-08-29_13-15-09_stage2_baseline_scale02_solverfix_resume/model_6400.pt"
   "$project_dir/logs/g1_flat_symmetric/2026-08-29_13-12-16_stage2_ours_scale02_solverfix_resume/model_8400.pt"

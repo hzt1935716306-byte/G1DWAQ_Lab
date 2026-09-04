@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, patterns
+from isaaclab.sensors import ContactSensorCfg, ImuCfg, patterns
 from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
@@ -66,6 +66,9 @@ class SceneCfg(InteractiveSceneCfg):
         self.contact_sensor = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, update_period=physics_dt
         )
+
+        if config.imu is not None:
+            self.imu: ImuCfg = config.imu
 
         self.light = AssetBaseCfg(
             prim_path="/World/light",
