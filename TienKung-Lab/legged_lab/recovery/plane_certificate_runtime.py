@@ -108,6 +108,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         failure_window_size: int = 4096,
         failure_rate_threshold: float = 0.01,
         z_sole: float = -0.045,
+        use_state_b: bool = False,
     ) -> None:
         # Initialize all legacy diagnostics without starting the legacy pool.
         super().__init__(
@@ -120,6 +121,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         self.nominal_parameters_path = Path(nominal_parameters_path).expanduser().resolve()
         self.nominal_table = PlaneNominalParameterTable.from_yaml(self.nominal_parameters_path)
         self.z_sole = float(z_sole)
+        self.use_state_b = bool(use_state_b)
         self.workers = max(1, int(workers))
         self.executor_type = str(executor_type)
         if self.executor_type == "subprocess":
@@ -243,10 +245,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         left_positions = state.left_foot_position[env_ids, :2].detach().cpu().numpy()
         right_positions = state.right_foot_position[env_ids, :2].detach().cpu().numpy()
         q_values = state.q[env_ids].detach().cpu().numpy()
+        state_b_values = state.b[env_ids].detach().cpu().numpy()
         support_left = state.support_is_left[env_ids].detach().cpu().numpy()
 
         queries = []
-        for command, alpha, plane_valid, com, velocity, left, right, q, is_left in zip(
+        for command, alpha, plane_valid, com, velocity, left, right, q, state_b, is_left in zip(
             commands,
             alphas,
             geometry_valid,
@@ -255,6 +258,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             left_positions,
             right_positions,
             q_values,
+            state_b_values,
             support_left,
         ):
             lookup = self.lookup_nominal(command, float(alpha)) if plane_valid else None
@@ -280,7 +284,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 support = left if is_left else right
                 # b and q remain measured heading-horizontal quantities.  In
                 # particular, neither is multiplied by P_alpha.
-                b = com + velocity / nominal.omega - support
+                b = (
+                    np.asarray(state_b, dtype=np.float64)
+                    if self.use_state_b
+                    else com + velocity / nominal.omega - support
+                )
             else:
                 b = np.asarray(state.b[ids[len(queries)]].detach().cpu(), dtype=np.float64)
             query = PlaneCertificateQuery(

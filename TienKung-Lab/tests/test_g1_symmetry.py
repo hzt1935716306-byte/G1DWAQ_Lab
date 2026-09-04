@@ -141,3 +141,19 @@ def test_actor_recovery_context_is_mirror_invariant(fake_env):
         fake_env, obs=augmented[4:], obs_type="policy"
     )
     torch.testing.assert_close(mirrored_twice[4:], observations)
+
+
+def test_five_frame_actor_history_with_context_is_mirror_invariant(fake_env):
+    fake_env.cfg.robot.actor_obs_history_length = 5
+    fake_env.cfg.recovery_context = SimpleNamespace(enabled=True, mode="certificate")
+    observations = torch.randn(6, 5 * 96 + 3)
+    observations[:, -3:] = torch.tensor([0.6, -0.2, 1.0])
+
+    augmented, _ = compute_symmetric_states(fake_env, obs=observations, obs_type="policy")
+
+    assert augmented.shape == (12, 483)
+    torch.testing.assert_close(augmented[6:, -3:], observations[:, -3:])
+    mirrored_twice, _ = compute_symmetric_states(
+        fake_env, obs=augmented[6:], obs_type="policy"
+    )
+    torch.testing.assert_close(mirrored_twice[6:], observations)

@@ -33,7 +33,11 @@ class G1ComVelocityEstimatorV2EnvCfg(G1SlopeSysDEnvCfg):
         self.scene.imu = ImuCfg(
             prim_path="{ENV_REGEX_NS}/Robot/pelvis",
             offset=ImuCfg.OffsetCfg(pos=(0.04525, 0.0, -0.08339)),
-            update_period=self.sim.decimation * self.sim.dt,
+            # Update at every physics step, then sample once per policy step.  A
+            # nominal 20 ms sensor period can occasionally miss an update when
+            # the accumulated floating-point simulation time lands just below
+            # the threshold, yielding a stale IMU frame.
+            update_period=0.0,
             gravity_bias=(0.0, 0.0, 9.81),
         )
 

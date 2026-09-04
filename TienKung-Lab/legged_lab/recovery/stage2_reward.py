@@ -22,6 +22,173 @@ CERTIFICATE_MARGIN_WEIGHT = 0.25
 
 
 @dataclass(frozen=True)
+class PlaneV1RewardParameters:
+    """Final Plane V1 touchdown-event reward parameters."""
+
+    certificate_progress_weight: float = 0.25
+    certificate_delta_phi_clip: float = 2.0
+    unrecovered_touchdown_cost: float = -0.05
+    td5_unrecovered_penalty: float = -0.25
+    certificate_target_n_max: int = 1
+    certificate_horizon_touchdowns: int = 5
+
+    def __post_init__(self) -> None:
+        if self.certificate_progress_weight < 0.0:
+            raise ValueError("certificate_progress_weight must be non-negative")
+        if self.certificate_delta_phi_clip <= 0.0:
+            raise ValueError("certificate_delta_phi_clip must be positive")
+        if self.unrecovered_touchdown_cost > 0.0 or self.td5_unrecovered_penalty > 0.0:
+            raise ValueError("Plane V1 costs and penalties must be non-positive")
+        if self.certificate_target_n_max != 1:
+            raise ValueError("Plane V1 recovery target is fixed at N <= 1")
+        if self.certificate_horizon_touchdowns != 5:
+            raise ValueError("Plane V1 recovery horizon is fixed at TD5")
+
+
+@dataclass(frozen=True)
+class PlaneV1RewardResult:
+    """One final Plane V1 event and its potential-state transition."""
+
+    progress: float = 0.0
+    step_cost: float = 0.0
+    td5_penalty: float = 0.0
+    phi_current: float | None = None
+    update_previous_phi: bool = False
+
+    @property
+    def total(self) -> float:
+        return self.progress + self.step_cost + self.td5_penalty
+
+
+def plane_v1_touchdown_reward(
+    previous_phi: float | None,
+    n_min: int,
+    margin: float,
+    *,
+    touchdown_index: int,
+    terrain_plane_valid: bool,
+    solver_valid: bool,
+    enabled: bool,
+    parameters: PlaneV1RewardParameters | None = None,
+) -> PlaneV1RewardResult:
+    """Compute the final Plane V1 reward for TD0--TD5.
+
+    TD0 initializes the potential without reward.  An invalid terrain geometry
+    is treated as uncertified recovery, while a solver/transport failure on an
+    otherwise valid geometry produces no reward and leaves the previous
+    potential untouched.
+    """
+
+    cfg = parameters or PlaneV1RewardParameters()
+    if not 0 <= touchdown_index <= cfg.certificate_horizon_touchdowns:
+        raise ValueError("touchdown_index must be in [0, 5]")
+
+    if not terrain_plane_valid:
+        if touchdown_index == 0 or not enabled:
+            return PlaneV1RewardResult()
+        return PlaneV1RewardResult(
+            step_cost=cfg.unrecovered_touchdown_cost,
+            td5_penalty=(
+                cfg.td5_unrecovered_penalty
+                if touchdown_index == cfg.certificate_horizon_touchdowns
+                else 0.0
+            ),
+        )
+
+    # A numerical/transport failure must never become a policy penalty and
+    # must not corrupt the last successfully resolved potential.
+    if not solver_valid:
+        return PlaneV1RewardResult()
+
+    phi_current = certificate_potential(n_min, margin)
+    if touchdown_index == 0:
+        return PlaneV1RewardResult(
+            phi_current=phi_current,
+            update_previous_phi=True,
+        )
+
+    if not enabled:
+        return PlaneV1RewardResult(
+            phi_current=phi_current,
+            update_previous_phi=True,
+        )
+
+    delta_phi = 0.0 if previous_phi is None else phi_current - previous_phi
+    delta_phi = max(-cfg.certificate_delta_phi_clip, min(cfg.certificate_delta_phi_clip, delta_phi))
+    unrecovered = n_min > cfg.certificate_target_n_max
+    return PlaneV1RewardResult(
+        progress=cfg.certificate_progress_weight * delta_phi,
+        step_cost=cfg.unrecovered_touchdown_cost if unrecovered else 0.0,
+        td5_penalty=(
+            cfg.td5_unrecovered_penalty
+            if touchdown_index == cfg.certificate_horizon_touchdowns and unrecovered
+            else 0.0
+        ),
+        phi_current=phi_current,
+        update_previous_phi=True,
+    )
+
+
+class PlaneV1RecoveryRewardChannel:
+    """Reference TD0--TD5 state machine used by unit tests and diagnostics."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        parameters: PlaneV1RewardParameters | None = None,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.parameters = parameters or PlaneV1RewardParameters()
+        self.active = False
+        self.touchdown_index = -1
+        self.previous_phi: float | None = None
+
+    def on_push(self) -> None:
+        if self.active:
+            raise RuntimeError("cannot push an active Plane V1 reward episode")
+        self.active = True
+        self.touchdown_index = -1
+        self.previous_phi = None
+
+    def on_touchdown(
+        self,
+        n_min: int,
+        margin: float,
+        *,
+        terrain_plane_valid: bool = True,
+        solver_valid: bool = True,
+        practical_entered: bool = False,
+    ) -> PlaneV1RewardResult:
+        if not self.active:
+            return PlaneV1RewardResult()
+        # Practical recovery is diagnostic only and deliberately cannot close
+        # the formal TD0--TD5 reward episode.
+        del practical_entered
+        self.touchdown_index += 1
+        result = plane_v1_touchdown_reward(
+            self.previous_phi,
+            n_min,
+            margin,
+            touchdown_index=self.touchdown_index,
+            terrain_plane_valid=terrain_plane_valid,
+            solver_valid=solver_valid,
+            enabled=self.enabled,
+            parameters=self.parameters,
+        )
+        if result.update_previous_phi:
+            self.previous_phi = result.phi_current
+        if self.touchdown_index == self.parameters.certificate_horizon_touchdowns:
+            self.active = False
+        return result
+
+    def on_fall(self) -> None:
+        self.active = False
+        self.touchdown_index = -1
+        self.previous_phi = None
+
+
+@dataclass(frozen=True)
 class RecoveryEventReward:
     """One policy-step event reward, consumed exactly once by the caller."""
 

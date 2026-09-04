@@ -293,6 +293,34 @@ def test_plane_mirror_uses_exact_submit_query_instead_of_state_b() -> None:
     assert mirrored.alpha == query.alpha
 
 
+def test_plane_v1_can_explicitly_use_recomputed_state_b_without_changing_legacy_default() -> None:
+    evaluator = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=1,
+        executor_type="sequential",
+        use_state_b=True,
+    )
+    state_b = torch.tensor([[0.123, -0.456]])
+    state = SimpleNamespace(
+        command_velocity=torch.tensor([[0.40, 0.0, 0.0]]),
+        signed_slope=torch.tensor([0.0]),
+        terrain_plane_valid=torch.tensor([True]),
+        com_position=torch.tensor([[9.0, 9.0]]),
+        com_velocity=torch.tensor([[8.0, 8.0]]),
+        left_foot_position=torch.tensor([[7.0, 7.0]]),
+        right_foot_position=torch.zeros(1, 2),
+        q=torch.tensor([[-0.18, 0.22]]),
+        support_is_left=torch.tensor([True]),
+        b=state_b,
+    )
+    try:
+        pending = evaluator.submit(state, torch.tensor([0]))
+        np.testing.assert_array_equal(pending.queries[0].b, state_b.numpy()[0])
+    finally:
+        evaluator.close()
+
+
 def test_plane_config_failure_is_logged_without_secondary_exception(monkeypatch) -> None:
     evaluator = PlaneCalibratedG1CertificateEvaluator(
         FLAT, NOMINAL, workers=1, executor_type="sequential"

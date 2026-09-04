@@ -58,6 +58,17 @@ from legged_lab.envs.g1.g1_plane_recovery_config import (
     G1PlaneSymmetricStage2OursEnvCfg,
 )
 from legged_lab.envs.g1.g1_plane_recovery_env import G1PlaneRecoveryEnv
+from legged_lab.envs.g1.g1_plane_v1_config import (
+    G1PlaneV1EstimatorContextNoRewardAgentCfg,
+    G1PlaneV1EstimatorContextNoRewardEnvCfg,
+    G1PlaneV1EstimatorContextRewardAgentCfg,
+    G1PlaneV1EstimatorContextRewardEnvCfg,
+    G1PlaneV1PrivilegedContextNoRewardAgentCfg,
+    G1PlaneV1PrivilegedContextNoRewardEnvCfg,
+    G1PlaneV1PrivilegedContextRewardAgentCfg,
+    G1PlaneV1PrivilegedContextRewardEnvCfg,
+)
+from legged_lab.envs.g1.g1_plane_v1_env import G1PlaneV1Env
 
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
 from legged_lab.envs.g1.g1_dwaq_config import (
@@ -157,6 +168,30 @@ task_registry.register(
     G1PlaneRecoveryEnv,
     G1PlaneSymmetricStage2OursEnvCfg(),
     G1PlaneSymmetricStage2OursAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_estimator_context_no_reward",
+    G1PlaneV1Env,
+    G1PlaneV1EstimatorContextNoRewardEnvCfg(),
+    G1PlaneV1EstimatorContextNoRewardAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_estimator_context_reward",
+    G1PlaneV1Env,
+    G1PlaneV1EstimatorContextRewardEnvCfg(),
+    G1PlaneV1EstimatorContextRewardAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_privileged_context_no_reward",
+    G1PlaneV1Env,
+    G1PlaneV1PrivilegedContextNoRewardEnvCfg(),
+    G1PlaneV1PrivilegedContextNoRewardAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_privileged_context_reward",
+    G1PlaneV1Env,
+    G1PlaneV1PrivilegedContextRewardEnvCfg(),
+    G1PlaneV1PrivilegedContextRewardAgentCfg(),
 )
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())

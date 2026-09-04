@@ -68,6 +68,20 @@ parser.add_argument(
         "model weights are loaded and the Stage2 optimizer starts fresh."
     ),
 )
+parser.add_argument(
+    "--estimator_checkpoint_path",
+    type=str,
+    default=None,
+    help=(
+        "Strict V2 CoM-estimator checkpoint for Plane V1 estimator-source tasks. "
+        "The formal config default is intentionally empty."
+    ),
+)
+parser.add_argument(
+    "--plane_v1_smoke",
+    action="store_true",
+    help="Use short integration-only Plane V1 push/terrain timing for a 3-iteration smoke.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -107,6 +121,18 @@ def train():
 
     if args_cli.num_envs is not None:
         env_cfg.scene.num_envs = args_cli.num_envs
+    if args_cli.estimator_checkpoint_path is not None:
+        if not hasattr(env_cfg, "estimator_checkpoint_path"):
+            raise ValueError("--estimator_checkpoint_path requires a Plane V1 task")
+        env_cfg.estimator_checkpoint_path = args_cli.estimator_checkpoint_path
+    if args_cli.plane_v1_smoke:
+        if not hasattr(env_cfg, "plane_v1_reward"):
+            raise ValueError("--plane_v1_smoke requires a final Plane V1 task")
+        env_cfg.domain_rand.events.push_robot.interval_range_s = (0.10, 0.20)
+        env_cfg.stage2_reward.certificate_executor = "sequential"
+        env_cfg.stage2_reward.certificate_workers = 1
+        env_cfg.terrain_level_1_iteration = 1
+        env_cfg.terrain_level_2_iteration = 2
     if args_cli.certificate_event_scale is not None:
         if not math.isfinite(args_cli.certificate_event_scale) or args_cli.certificate_event_scale <= 0.0:
             raise ValueError("--certificate_event_scale must be finite and positive")

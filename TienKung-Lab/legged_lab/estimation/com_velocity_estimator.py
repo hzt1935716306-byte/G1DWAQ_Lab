@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -67,6 +69,13 @@ class ComVelocityEstimatorV2TrainCfg(ComVelocityEstimatorTrainCfg):
     recovery_window_s: float = 0.5
     policy_dt: float = 0.02
     transient_weight: float = 1.0
+    learning_rate: float = 1.0e-3
+    max_iterations: int = 5000
+    num_steps_per_iteration: int = 24
+    mini_batch_size: int = 16384
+    num_learning_epochs: int = 1
+    validation_interval_iterations: int = 50
+    save_interval_iterations: int = 100
 
     @property
     def estimator_frame_dim(self) -> int:
@@ -84,6 +93,14 @@ class ComVelocityEstimatorV2TrainCfg(ComVelocityEstimatorTrainCfg):
     def recovery_window_steps(self) -> int:
         return max(1, round(self.recovery_window_s / self.policy_dt))
 
+    @property
+    def total_expected_policy_steps(self) -> int:
+        return self.max_iterations * self.num_steps_per_iteration
+
+    @property
+    def expected_train_samples(self) -> int:
+        return self.train_envs * self.total_expected_policy_steps
+
     def validate(self) -> None:
         super().validate()
         if self.imu_input_dim != 3 or self.estimator_frame_dim != 99 or self.input_dim != 495:
@@ -95,6 +112,12 @@ class ComVelocityEstimatorV2TrainCfg(ComVelocityEstimatorTrainCfg):
         lower, upper = self.recovery_push_interval_s
         if lower <= 0.0 or upper < lower or self.recovery_window_s <= 0.0:
             raise ValueError("invalid recovery-heavy timing configuration")
+        if self.max_iterations <= 0 or self.num_steps_per_iteration <= 0:
+            raise ValueError("iteration and rollout lengths must be positive")
+        if self.mini_batch_size <= 0 or self.num_learning_epochs <= 0:
+            raise ValueError("mini-batch size and learning epochs must be positive")
+        if self.validation_interval_iterations <= 0 or self.save_interval_iterations <= 0:
+            raise ValueError("validation and save intervals must be positive")
 
 
 class ComVelocityEstimator(nn.Module):
@@ -194,6 +217,384 @@ class EstimatorFrameHistory:
         )
         self.buffer[:, -1] = frame
         return self.buffer.reshape(self.buffer.shape[0], -1)
+
+
+class EstimatorRolloutBuffer:
+    """Small preallocated GPU rollout used once by supervised iteration updates."""
+
+    def __init__(
+        self,
+        num_steps: int,
+        num_train_envs: int,
+        input_dim: int,
+        *,
+        device: str | torch.device,
+    ) -> None:
+        if num_steps <= 0 or num_train_envs <= 0 or input_dim <= 0:
+            raise ValueError("rollout buffer dimensions must be positive")
+        shape = (num_steps, num_train_envs)
+        self.inputs = torch.empty((*shape, input_dim), dtype=torch.float32, device=device)
+        self.targets = torch.empty((*shape, 2), dtype=torch.float32, device=device)
+        self.eligible = torch.empty(shape, dtype=torch.bool, device=device)
+        self.transient = torch.empty(shape, dtype=torch.bool, device=device)
+        self.recovery_window = torch.empty(shape, dtype=torch.bool, device=device)
+        self.touchdown = torch.empty(shape, dtype=torch.bool, device=device)
+        self.td0 = torch.empty(shape, dtype=torch.bool, device=device)
+        self.td1 = torch.empty(shape, dtype=torch.bool, device=device)
+        self.num_steps = int(num_steps)
+        self.num_train_envs = int(num_train_envs)
+        self.input_dim = int(input_dim)
+        self.position = 0
+
+    @property
+    def full(self) -> bool:
+        return self.position == self.num_steps
+
+    @property
+    def allocated_bytes(self) -> int:
+        tensors = (
+            self.inputs,
+            self.targets,
+            self.eligible,
+            self.transient,
+            self.recovery_window,
+            self.touchdown,
+            self.td0,
+            self.td1,
+        )
+        return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
+    def clear(self) -> None:
+        self.position = 0
+
+    def add(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        eligible: torch.Tensor,
+        transient: torch.Tensor,
+        recovery_window: torch.Tensor,
+        touchdown: torch.Tensor,
+        td0: torch.Tensor,
+        td1: torch.Tensor,
+    ) -> None:
+        if self.full:
+            raise RuntimeError("rollout buffer is already full")
+        expected_inputs = (self.num_train_envs, self.input_dim)
+        expected_targets = (self.num_train_envs, 2)
+        expected_mask = (self.num_train_envs,)
+        if inputs.shape != expected_inputs or targets.shape != expected_targets:
+            raise ValueError("rollout input or target shape mismatch")
+        masks = (eligible, transient, recovery_window, touchdown, td0, td1)
+        if any(mask.shape != expected_mask for mask in masks):
+            raise ValueError("rollout mask shape mismatch")
+        index = self.position
+        self.inputs[index].copy_(inputs.detach())
+        self.targets[index].copy_(targets.detach())
+        for destination, source in zip(
+            (
+                self.eligible,
+                self.transient,
+                self.recovery_window,
+                self.touchdown,
+                self.td0,
+                self.td1,
+            ),
+            masks,
+        ):
+            destination[index].copy_(source.detach())
+        self.position += 1
+
+    def eligible_count(self) -> int:
+        if not self.full:
+            raise RuntimeError("rollout buffer must be full before training")
+        return int(self.eligible.sum().item())
+
+    def iter_minibatches(
+        self,
+        mini_batch_size: int,
+        num_epochs: int,
+        *,
+        generator: torch.Generator | None = None,
+    ):
+        """Yield each eligible sample exactly once per shuffled learning epoch."""
+
+        if not self.full:
+            raise RuntimeError("rollout buffer must be full before training")
+        if mini_batch_size <= 0 or num_epochs <= 0:
+            raise ValueError("mini-batch size and epoch count must be positive")
+        flat_eligible = self.eligible.reshape(-1)
+        eligible_indices = flat_eligible.nonzero(as_tuple=False).flatten()
+        flat_inputs = self.inputs.reshape(-1, self.input_dim)
+        flat_targets = self.targets.reshape(-1, 2)
+        for epoch in range(num_epochs):
+            order = torch.randperm(
+                eligible_indices.numel(),
+                device=eligible_indices.device,
+                generator=generator,
+            )
+            shuffled = eligible_indices[order]
+            for start in range(0, shuffled.numel(), mini_batch_size):
+                indices = shuffled[start : start + mini_batch_size]
+                yield epoch, indices, flat_inputs[indices], flat_targets[indices]
+
+    def counts(self) -> dict[str, int]:
+        if not self.full:
+            raise RuntimeError("rollout buffer must be full before reading counts")
+        eligible = self.eligible
+        return {
+            "eligible_train_samples": int(eligible.sum().item()),
+            "transient_samples": int((eligible & self.transient).sum().item()),
+            "recovery_window_samples": int((eligible & self.recovery_window).sum().item()),
+            "touchdown_samples": int((eligible & self.touchdown).sum().item()),
+            "TD0_samples": int((eligible & self.td0).sum().item()),
+            "TD1_samples": int((eligible & self.td1).sum().item()),
+        }
+
+
+class ManualPushAlignmentDiagnostic:
+    """Record that observation, IMU and target are all read after the pushed step."""
+
+    def __init__(self, max_records: int = 32) -> None:
+        self.max_records = int(max_records)
+        self.records: list[dict[str, int | float | bool]] = []
+
+    def record(
+        self,
+        *,
+        pushed_env_count: int,
+        global_policy_step: int,
+        push_sim_step: int,
+        post_step_sim_step: int,
+        sim_decimation: int,
+        observation_frame_sim_step: int,
+        imu_frame_sim_step: int,
+        target_frame_sim_step: int,
+        imu_timestamp_s: float,
+        imu_current_timestamp_s: float,
+    ) -> None:
+        if pushed_env_count <= 0:
+            return
+        timestamp_aligned = math.isclose(
+            imu_timestamp_s,
+            imu_current_timestamp_s,
+            rel_tol=1.0e-6,
+            abs_tol=1.0e-6,
+        )
+        aligned = bool(
+            post_step_sim_step - push_sim_step == sim_decimation
+            and observation_frame_sim_step == post_step_sim_step
+            and imu_frame_sim_step == post_step_sim_step
+            and target_frame_sim_step == post_step_sim_step
+            and timestamp_aligned
+        )
+        if not aligned:
+            raise RuntimeError(
+                "manual recovery push produced a one-frame alignment mismatch: "
+                f"global_policy_step={global_policy_step}, "
+                f"push_sim_step={push_sim_step}, post_step_sim_step={post_step_sim_step}, "
+                f"observation_frame_sim_step={observation_frame_sim_step}, "
+                f"imu_frame_sim_step={imu_frame_sim_step}, "
+                f"target_frame_sim_step={target_frame_sim_step}, "
+                f"imu_timestamp_s={imu_timestamp_s:.9f}, "
+                f"imu_current_timestamp_s={imu_current_timestamp_s:.9f}, "
+                f"timestamp_delta_s={abs(imu_timestamp_s - imu_current_timestamp_s):.9g}"
+            )
+        if len(self.records) < self.max_records:
+            self.records.append(
+                {
+                    "global_policy_step": int(global_policy_step),
+                    "pushed_env_count": int(pushed_env_count),
+                    "push_sim_step": int(push_sim_step),
+                    "post_step_sim_step": int(post_step_sim_step),
+                    "observation_frame_sim_step": int(observation_frame_sim_step),
+                    "imu_frame_sim_step": int(imu_frame_sim_step),
+                    "target_frame_sim_step": int(target_frame_sim_step),
+                    "imu_timestamp_s": float(imu_timestamp_s),
+                    "imu_current_timestamp_s": float(imu_current_timestamp_s),
+                    "imu_sensor_is_current": True,
+                    "aligned": True,
+                }
+            )
+
+
+@dataclass
+class EstimatorResumeInfo:
+    """Result of loading either a legacy warm-start or iteration checkpoint."""
+
+    mode: str
+    start_iteration: int
+    global_policy_steps: int
+    best_selection_score: float
+    best_iteration: int
+    optimizer_updates: int
+    optimizer_restarted: bool
+    payload: dict[str, Any]
+
+
+def _validate_v2_checkpoint_semantics(payload: dict[str, Any], teacher_hash: str) -> None:
+    expected = {
+        "input_dim": 495,
+        "per_frame_obs_dim": 99,
+        "actor_per_frame_obs_dim": 96,
+        "imu_input_dim": 3,
+        "history_length": 5,
+        "hidden_dims": [256, 128, 64],
+        "output_dim": 2,
+        "output_frame": "heading",
+        "output_quantity": "whole_body_com_velocity_xy",
+        "output_unit": "m/s",
+        "teacher_checkpoint_hash": teacher_hash,
+    }
+    mismatch = {
+        key: {"actual": payload.get(key), "expected": value}
+        for key, value in expected.items()
+        if payload.get(key) != value
+    }
+    if mismatch:
+        raise RuntimeError(f"V2 checkpoint semantic mismatch: {mismatch}")
+
+
+def load_com_velocity_estimator_for_inference(
+    path: str | Path,
+    *,
+    device: str | torch.device = "cpu",
+) -> tuple[ComVelocityEstimator, dict[str, Any]]:
+    """Strictly load the deployable 5x99 Plane V1 estimator contract.
+
+    Training-only identity (for example the teacher checkpoint hash) is kept
+    in the returned metadata but is intentionally not coupled to the final
+    policy.  Every field that defines the estimator I/O semantics is checked.
+    """
+
+    if not str(path).strip():
+        raise RuntimeError(
+            "estimator_checkpoint_path is empty; provide a trained V2 estimator checkpoint"
+        )
+    checkpoint_path = Path(path).expanduser().resolve()
+    if not checkpoint_path.is_file():
+        raise RuntimeError(f"estimator checkpoint does not exist: {checkpoint_path}")
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise RuntimeError("estimator checkpoint must contain a metadata dictionary")
+    expected = {
+        "input_dim": 495,
+        "history_length": 5,
+        "actor_per_frame_obs_dim": 96,
+        "per_frame_obs_dim": 99,
+        "imu_input_dim": 3,
+        "hidden_dims": [256, 128, 64],
+        "output_dim": 2,
+        "output_frame": "heading",
+        "output_quantity": "whole_body_com_velocity_xy",
+        "output_unit": "m/s",
+    }
+    mismatch = {
+        key: {"actual": payload.get(key), "expected": value}
+        for key, value in expected.items()
+        if payload.get(key) != value
+    }
+    if mismatch:
+        raise RuntimeError(f"estimator checkpoint semantic mismatch: {mismatch}")
+    if "model_state_dict" not in payload:
+        raise RuntimeError("estimator checkpoint is missing model_state_dict")
+    acceleration_scale = payload.get("imu_acceleration_scale")
+    if not isinstance(acceleration_scale, (int, float)) or acceleration_scale <= 0.0:
+        raise RuntimeError("estimator checkpoint has invalid imu_acceleration_scale metadata")
+
+    model = ComVelocityEstimator(
+        input_dim=495,
+        hidden_dims=[256, 128, 64],
+        output_dim=2,
+    )
+    model.load_state_dict(payload["model_state_dict"], strict=True)
+    model.to(device)
+    model.eval()
+    model.requires_grad_(False)
+    return model, payload
+
+
+def load_v2_training_checkpoint(
+    path: str | Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    *,
+    teacher_hash: str,
+    restore_rng: bool = True,
+) -> EstimatorResumeInfo:
+    """Resume a formal iteration checkpoint, including optimizer and iteration state."""
+
+    payload = torch.load(Path(path), map_location="cpu", weights_only=False)
+    _validate_v2_checkpoint_semantics(payload, teacher_hash)
+    has_optimizer = "optimizer_state_dict" in payload
+    has_iteration = "current_iteration" in payload
+    if has_optimizer != has_iteration:
+        raise RuntimeError("iteration checkpoint is incomplete")
+    if not has_optimizer:
+        raise RuntimeError(
+            "--resume_checkpoint requires a formal iteration checkpoint with optimizer and "
+            "iteration state; legacy V2 checkpoints are comparison-only and cannot warm-start "
+            "the formal long run"
+        )
+
+    required = (
+        "global_policy_steps",
+        "best_selection_score",
+        "best_iteration",
+        "training_configuration",
+        "optimizer_updates",
+        "torch_rng_state",
+        "cuda_rng_state",
+    )
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise RuntimeError(f"iteration checkpoint missing fields: {missing}")
+    model.load_state_dict(payload["model_state_dict"], strict=True)
+    optimizer.load_state_dict(payload["optimizer_state_dict"])
+    if restore_rng:
+        torch.set_rng_state(payload["torch_rng_state"].cpu())
+        if torch.cuda.is_available() and payload["cuda_rng_state"]:
+            torch.cuda.set_rng_state_all(payload["cuda_rng_state"])
+    return EstimatorResumeInfo(
+        mode="iteration_resume",
+        start_iteration=int(payload["current_iteration"]),
+        global_policy_steps=int(payload["global_policy_steps"]),
+        best_selection_score=float(payload["best_selection_score"]),
+        best_iteration=int(payload["best_iteration"]),
+        optimizer_updates=int(payload["optimizer_updates"]),
+        optimizer_restarted=False,
+        payload=payload,
+    )
+
+
+def iteration_checkpoint_filename(iteration: int) -> str:
+    if iteration <= 0:
+        raise ValueError("checkpoint iteration must be positive")
+    return f"checkpoint_iteration_{iteration:04d}.pt"
+
+
+def fixed_length_rollout_indices(num_steps: int) -> range:
+    """Return the exact number of policy-step slots in one training iteration."""
+
+    if num_steps <= 0:
+        raise ValueError("rollout length must be positive")
+    return range(num_steps)
+
+
+def velocity_estimator_selection_score(metrics: dict[str, Any]) -> float:
+    """Compute the fixed TD0/TD1/overall validation selection objective."""
+
+    weighted = (("td0", 0.50), ("td1", 0.25), ("overall", 0.25))
+    available = [
+        (float(metrics[name]["vector_rmse"]), weight)
+        for name, weight in weighted
+        if metrics[name]["vector_rmse"] is not None
+    ]
+    if not available:
+        return float("inf")
+    return sum(value * weight for value, weight in available) / sum(
+        weight for _, weight in available
+    )
 
 
 def latest_actor_frame(

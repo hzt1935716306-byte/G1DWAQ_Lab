@@ -341,3 +341,26 @@ def curriculum_push_by_setting_velocity(
         dtype=torch.float32,
         device=env.device,
     )
+
+
+def fixed_full_range_push_by_setting_velocity(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Apply the fixed full-range Plane V1 velocity jump and known-push hook."""
+
+    if not hasattr(env, "push_curriculum"):
+        raise RuntimeError("fixed Plane V1 push requires the recovery push controller")
+    controller = env.push_curriculum
+    if (
+        controller.enabled
+        or controller.adaptive_upgrades_enabled
+        or controller.easy_sample_probability != 0.0
+        or controller.level_ratio != 1.0
+        or tuple(controller.current_abs_delta_v_xy) != (1.0, 1.0)
+    ):
+        raise RuntimeError(
+            "Plane V1 push must remain fixed at delta-v x/y in [-1, 1] with no curriculum"
+        )
+    curriculum_push_by_setting_velocity(env, env_ids, asset_cfg=asset_cfg)
