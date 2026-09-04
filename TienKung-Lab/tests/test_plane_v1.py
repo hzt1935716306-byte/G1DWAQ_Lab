@@ -29,6 +29,11 @@ from legged_lab.recovery.stage2_reward import (
 )
 
 
+@pytest.mark.parametrize("device", [torch.device("cuda:0"), "cuda:0"])
+def test_plane_v1_profiling_device_normalization_accepts_string_and_torch_device(device) -> None:
+    assert torch.device(device).type == "cuda"
+
+
 def _event(previous_n: int, current_n: int, *, touchdown_index: int = 1):
     return plane_v1_touchdown_reward(
         certificate_potential(previous_n, 0.0),

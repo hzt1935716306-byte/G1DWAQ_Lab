@@ -68,6 +68,7 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             raise ValueError("com_velocity_source must be 'estimator' or 'privileged'")
 
         super().__init__(cfg, headless)
+        self._torch_device = torch.device(self.device)
         self.com_velocity_source = source
         self._estimator = estimator.to(self.device) if estimator is not None else None
         self._estimator_metadata = estimator_metadata
@@ -140,8 +141,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         """Enable synchronized timing only for a short, explicit throughput smoke."""
 
         self._plane_v1_profiling_enabled = True
-        if self.device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats(self.device)
+        if self._torch_device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self._torch_device)
 
     def set_num_steps_per_learning_iteration(self, steps: int) -> None:
         super().set_num_steps_per_learning_iteration(steps)
@@ -272,13 +273,13 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             torch.ones_like(self._estimator_history_count),
             torch.clamp(self._estimator_history_count + 1, max=5),
         )
-        if self._plane_v1_profiling_enabled and self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
+        if self._plane_v1_profiling_enabled and self._torch_device.type == "cuda":
+            torch.cuda.synchronize(self._torch_device)
         started = time.perf_counter()
         with torch.inference_mode():
             self._estimator_prediction.copy_(self._estimator(estimator_input))
-        if self._plane_v1_profiling_enabled and self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
+        if self._plane_v1_profiling_enabled and self._torch_device.type == "cuda":
+            torch.cuda.synchronize(self._torch_device)
         elapsed = time.perf_counter() - started
         self._estimator_forward_count += 1
         if self._plane_v1_profiling_enabled:
@@ -621,9 +622,9 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         )
         gpu_peak_allocated = 0
         gpu_peak_reserved = 0
-        if self.device.type == "cuda":
-            gpu_peak_allocated = int(torch.cuda.max_memory_allocated(self.device))
-            gpu_peak_reserved = int(torch.cuda.max_memory_reserved(self.device))
+        if self._torch_device.type == "cuda":
+            gpu_peak_allocated = int(torch.cuda.max_memory_allocated(self._torch_device))
+            gpu_peak_reserved = int(torch.cuda.max_memory_reserved(self._torch_device))
         return {
             "policy_steps": int(self._policy_step_count),
             "total_env_step_wall_seconds": float(self._policy_step_total_seconds),
