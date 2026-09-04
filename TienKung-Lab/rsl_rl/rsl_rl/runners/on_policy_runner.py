@@ -146,6 +146,8 @@ class OnPolicyRunner:
         self.git_status_repos = [rsl_rl.__file__]
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
+        if getattr(self.env, "_plane_v1_profiling_enabled", False):
+            self.plane_v1_iteration_timings = []
         # initialize writer
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
@@ -320,6 +322,13 @@ class OnPolicyRunner:
 
             stop = time.time()
             learn_time = stop - start
+            if getattr(self.env, "_plane_v1_profiling_enabled", False):
+                self.plane_v1_iteration_timings.append(
+                    {
+                        "rollout_seconds": float(collection_time),
+                        "update_seconds": float(learn_time),
+                    }
+                )
             self.current_learning_iteration = it
             # log info
             if self.log_dir is not None and not self.disable_logs:

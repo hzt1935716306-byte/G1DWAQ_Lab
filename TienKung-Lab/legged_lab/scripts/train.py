@@ -17,6 +17,7 @@
 # and is distributed under the BSD-3-Clause license.
 
 import argparse
+import hashlib
 import math
 
 from isaaclab.app import AppLauncher
@@ -82,6 +83,11 @@ parser.add_argument(
     action="store_true",
     help="Use short integration-only Plane V1 push/terrain timing for a 3-iteration smoke.",
 )
+parser.add_argument(
+    "--plane_v1_profile",
+    action="store_true",
+    help="Collect lightweight synchronized timing for a short Plane V1 throughput smoke.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -97,6 +103,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 import os
 from datetime import datetime
+from pathlib import Path
 
 import torch
 from isaaclab.utils.io import dump_yaml
@@ -110,6 +117,59 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _estimator_run_record(env, checkpoint_path: str) -> dict:
+    """Build the small, immutable estimator identity stored with a PPO run."""
+
+    path = Path(checkpoint_path).expanduser().resolve()
+    metadata = getattr(env, "_estimator_metadata", None)
+    if not isinstance(metadata, dict):
+        raise RuntimeError("estimator task did not expose loaded checkpoint metadata")
+    semantic_keys = (
+        "schema_version",
+        "training_format",
+        "best_iteration",
+        "git_commit",
+        "input_dim",
+        "history_length",
+        "actor_per_frame_obs_dim",
+        "per_frame_obs_dim",
+        "imu_input_dim",
+        "imu_acceleration_scale",
+        "hidden_dims",
+        "activation",
+        "output_dim",
+        "output_frame",
+        "output_quantity",
+        "output_unit",
+        "input_frame_layout",
+        "imu_quantity",
+        "imu_unit_before_scaling",
+        "teacher_task",
+        "teacher_checkpoint",
+        "teacher_checkpoint_hash",
+        "data_generation",
+    )
+    record = {
+        "checkpoint_absolute_path": str(path),
+        "checkpoint_sha256": _sha256_file(path),
+        "best_iteration": int(metadata["best_iteration"]),
+        "metadata": {key: metadata[key] for key in semantic_keys if key in metadata},
+        "loaded_eval_mode": not bool(env._estimator.training),
+        "all_parameters_frozen": all(
+            not parameter.requires_grad for parameter in env._estimator.parameters()
+        ),
+    }
+    return record
 
 
 def train():
@@ -218,6 +278,11 @@ def train():
         agent_cfg.seed = seed
 
     env = env_class(env_cfg, args_cli.headless)
+    if args_cli.plane_v1_profile:
+        enable_profiling = getattr(env, "enable_plane_v1_profiling", None)
+        if enable_profiling is None:
+            raise ValueError("--plane_v1_profile requires a final Plane V1 task")
+        enable_profiling()
     if hasattr(env, "set_num_steps_per_learning_iteration"):
         env.set_num_steps_per_learning_iteration(agent_cfg.num_steps_per_env)
 
@@ -231,6 +296,17 @@ def train():
     log_dir = os.path.join(log_root_path, log_dir)
     if hasattr(env, "configure_curriculum_logging"):
         env.configure_curriculum_logging(log_dir)
+
+    estimator_record = None
+    if getattr(env, "com_velocity_source", None) == "estimator":
+        estimator_record = _estimator_run_record(env, env_cfg.estimator_checkpoint_path)
+        print(
+            "[INFO] Plane V1 estimator identity: "
+            f"path={estimator_record['checkpoint_absolute_path']}, "
+            f"sha256={estimator_record['checkpoint_sha256']}, "
+            f"best_iteration={estimator_record['best_iteration']}, "
+            f"frozen={estimator_record['all_parameters_frozen']}"
+        )
 
     runner_class = eval(agent_cfg.runner_class_name)
     runner = runner_class(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
@@ -254,8 +330,33 @@ def train():
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    if estimator_record is not None:
+        dump_yaml(os.path.join(log_dir, "params", "estimator.yaml"), estimator_record)
 
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    if args_cli.plane_v1_profile:
+        profile = env.plane_v1_profile_summary()
+        iteration_timings = getattr(runner, "plane_v1_iteration_timings", [])
+        rollout_seconds = sum(item["rollout_seconds"] for item in iteration_timings)
+        update_seconds = sum(item["update_seconds"] for item in iteration_timings)
+        total_seconds = rollout_seconds + update_seconds
+        total_transitions = env.num_envs * agent_cfg.num_steps_per_env * len(iteration_timings)
+        profile["ppo"] = {
+            "iterations": len(iteration_timings),
+            "rollout_wall_seconds": rollout_seconds,
+            "update_wall_seconds": update_seconds,
+            "total_wall_seconds": total_seconds,
+            "environment_steps_per_second_including_ppo": (
+                total_transitions / total_seconds if total_seconds > 0.0 else 0.0
+            ),
+            "policy_steps_per_second_including_ppo": (
+                agent_cfg.num_steps_per_env * len(iteration_timings) / total_seconds
+                if total_seconds > 0.0
+                else 0.0
+            ),
+        }
+        dump_yaml(os.path.join(log_dir, "params", "throughput_profile.yaml"), profile)
+        print(f"[PlaneV1Profile] {profile}", flush=True)
 
 
 if __name__ == "__main__":

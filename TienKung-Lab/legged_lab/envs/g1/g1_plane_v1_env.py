@@ -72,6 +72,9 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._estimator = estimator.to(self.device) if estimator is not None else None
         self._estimator_metadata = estimator_metadata
         self._estimator_forward_count = 0
+        self._estimator_forward_total_seconds = 0.0
+        self._estimator_forward_latencies_s: deque[float] = deque(maxlen=4096)
+        self._plane_v1_profiling_enabled = False
         self._estimator_history = None
         self._estimator_history_count = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -129,7 +132,16 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_solver_failure_count = 0
         self._v1_completed_episodes: list[dict[str, float | str]] = []
         self._v1_reward_ratios: deque[float] = deque(maxlen=4096)
+        self._v1_reward_ratios_initial_n_gt_1: deque[float] = deque(maxlen=4096)
         self._v1_touchdown_intervals: deque[float] = deque(maxlen=16384)
+        self._v1_touchdown_index_counts = torch.zeros(6, dtype=torch.long, device=device)
+
+    def enable_plane_v1_profiling(self) -> None:
+        """Enable synchronized timing only for a short, explicit throughput smoke."""
+
+        self._plane_v1_profiling_enabled = True
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
 
     def set_num_steps_per_learning_iteration(self, steps: int) -> None:
         super().set_num_steps_per_learning_iteration(steps)
@@ -260,9 +272,18 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             torch.ones_like(self._estimator_history_count),
             torch.clamp(self._estimator_history_count + 1, max=5),
         )
+        if self._plane_v1_profiling_enabled and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        started = time.perf_counter()
         with torch.inference_mode():
             self._estimator_prediction.copy_(self._estimator(estimator_input))
+        if self._plane_v1_profiling_enabled and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        elapsed = time.perf_counter() - started
         self._estimator_forward_count += 1
+        if self._plane_v1_profiling_enabled:
+            self._estimator_forward_total_seconds += elapsed
+            self._estimator_forward_latencies_s.append(elapsed)
         return self._estimator_history_count >= 5
 
     def _certificate_state(self, physical_state):
@@ -392,6 +413,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         recovery = float(self._v1_cumulative_reward[env_id].item())
         ratio = abs(recovery) / (abs(locomotion) + 1.0e-8)
         self._v1_reward_ratios.append(ratio)
+        if int(self._v1_initial_n[env_id].item()) > 1:
+            self._v1_reward_ratios_initial_n_gt_1.append(ratio)
         self._v1_completed_episodes.append(
             {
                 "outcome": outcome,
@@ -415,6 +438,10 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         if env_ids.numel() == 0:
             return
         self._v1_touchdown_index[env_ids] += 1
+        indices = self._v1_touchdown_index[env_ids]
+        self._v1_touchdown_index_counts += torch.bincount(
+            torch.clamp(indices, min=0, max=5), minlength=6
+        )
         self._recovery_touchdowns[env_ids] = torch.clamp(
             self._v1_touchdown_index[env_ids], min=0
         )
@@ -524,6 +551,23 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             log["RecoveryReward/abs_ratio_median"] = 0.0
             log["RecoveryReward/abs_ratio_P75"] = 0.0
             log["RecoveryReward/abs_ratio_P90"] = 0.0
+        if self._v1_reward_ratios_initial_n_gt_1:
+            values = torch.tensor(
+                tuple(self._v1_reward_ratios_initial_n_gt_1), dtype=torch.float32
+            )
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_median"] = float(
+                torch.quantile(values, 0.50)
+            )
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_P75"] = float(
+                torch.quantile(values, 0.75)
+            )
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_P90"] = float(
+                torch.quantile(values, 0.90)
+            )
+        else:
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_median"] = 0.0
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_P75"] = 0.0
+            log["RecoveryReward/initial_N_gt_1_abs_ratio_P90"] = 0.0
         if self._v1_touchdown_intervals:
             intervals = tuple(self._v1_touchdown_intervals)
             log["RecoveryReward/touchdown_interval_mean"] = float(statistics.mean(intervals))
@@ -550,7 +594,108 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         extras["plane_v1_recovery_episodes"] = list(self._v1_completed_episodes)
         extras["push_mode"] = "fixed_full_range"
 
+    @staticmethod
+    def _quantiles(values: deque[float]) -> dict[str, float]:
+        if not values:
+            return {"median": 0.0, "p75": 0.0, "p90": 0.0, "p95": 0.0}
+        tensor = torch.tensor(tuple(values), dtype=torch.float64)
+        return {
+            "median": float(torch.quantile(tensor, 0.50)),
+            "p75": float(torch.quantile(tensor, 0.75)),
+            "p90": float(torch.quantile(tensor, 0.90)),
+            "p95": float(torch.quantile(tensor, 0.95)),
+        }
+
+    def plane_v1_profile_summary(self) -> dict:
+        """Return cumulative diagnostics collected by an explicit short smoke."""
+
+        certificate_latencies = self._quantiles(self._context_refresh_latencies_s)
+        estimator_latencies = self._quantiles(self._estimator_forward_latencies_s)
+        valid_total = max(int(self._context_valid_evaluations), 1)
+        batch_count = max(int(self._context_refresh_batches), 1)
+        batch_sizes = tuple(self._context_refresh_batch_sizes)
+        certificate_stats = (
+            dict(self._certificate_evaluator.statistics)
+            if self._certificate_evaluator is not None
+            else {}
+        )
+        gpu_peak_allocated = 0
+        gpu_peak_reserved = 0
+        if self.device.type == "cuda":
+            gpu_peak_allocated = int(torch.cuda.max_memory_allocated(self.device))
+            gpu_peak_reserved = int(torch.cuda.max_memory_reserved(self.device))
+        return {
+            "policy_steps": int(self._policy_step_count),
+            "total_env_step_wall_seconds": float(self._policy_step_total_seconds),
+            "environment_steps_per_second_excluding_ppo": (
+                self.num_envs * self._policy_step_count / self._policy_step_total_seconds
+                if self._policy_step_total_seconds > 0.0
+                else 0.0
+            ),
+            "policy_steps_per_second_excluding_ppo": (
+                self._policy_step_count / self._policy_step_total_seconds
+                if self._policy_step_total_seconds > 0.0
+                else 0.0
+            ),
+            "estimator": {
+                "forward_calls": int(self._estimator_forward_count),
+                "wall_seconds": float(self._estimator_forward_total_seconds),
+                "mean_latency_ms": (
+                    1000.0 * self._estimator_forward_total_seconds / self._estimator_forward_count
+                    if self._estimator_forward_count > 0
+                    else 0.0
+                ),
+                "p95_latency_ms": 1000.0 * estimator_latencies["p95"],
+                "calls_per_second": (
+                    self._estimator_forward_count / self._estimator_forward_total_seconds
+                    if self._estimator_forward_total_seconds > 0.0
+                    else 0.0
+                ),
+            },
+            "certificate": {
+                "evaluations": int(self._context_refresh_evaluations),
+                "valid_evaluations": int(self._context_valid_evaluations),
+                "batches": int(self._context_refresh_batches),
+                "mean_batch_size": sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0,
+                "wall_seconds": float(self._context_refresh_total_seconds),
+                "mean_batch_latency_ms": 1000.0 * self._context_refresh_total_seconds / batch_count,
+                "p95_batch_latency_ms": 1000.0 * certificate_latencies["p95"],
+                "evaluations_per_second": (
+                    self._context_refresh_evaluations / self._context_refresh_total_seconds
+                    if self._context_refresh_total_seconds > 0.0
+                    else 0.0
+                ),
+                "wall_time_fraction": (
+                    self._context_refresh_total_seconds / self._policy_step_total_seconds
+                    if self._policy_step_total_seconds > 0.0
+                    else 0.0
+                ),
+                "N_fraction": {
+                    str(index): float(self._context_n_counts[index].item()) / valid_total
+                    for index in range(7)
+                },
+                "solve_depth_reached": {
+                    f"F{index}": int(certificate_stats.get(f"reached_F{index}", 0))
+                    for index in range(1, 6)
+                },
+                "solver_failures": int(self._v1_solver_failure_count),
+            },
+            "touchdown_counts": {
+                f"TD{index}": int(self._v1_touchdown_index_counts[index].item())
+                for index in range(6)
+            },
+            "reward_ratio_all_episodes": self._quantiles(self._v1_reward_ratios),
+            "reward_ratio_initial_N_gt_1": self._quantiles(
+                self._v1_reward_ratios_initial_n_gt_1
+            ),
+            "gpu_peak_memory_bytes": {
+                "allocated": gpu_peak_allocated,
+                "reserved": gpu_peak_reserved,
+            },
+        }
+
     def step(self, actions: torch.Tensor):
+        policy_step_started = time.perf_counter()
         context_before_step = self._recovery_context.clone()
         recovery_before_step = self.recovery_active.clone()
         self._v1_completed_episodes = []
@@ -597,6 +742,10 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             or not torch.all(torch.isfinite(locomotion_reward))
         ):
             raise RuntimeError("Plane V1 step produced NaN or Inf")
+        policy_step_elapsed = time.perf_counter() - policy_step_started
+        self._policy_step_total_seconds += policy_step_elapsed
+        self._policy_step_count += 1
+        self._policy_step_latencies_s.append(policy_step_elapsed)
         return actor_with_context, locomotion_reward, dones, extras
 
 

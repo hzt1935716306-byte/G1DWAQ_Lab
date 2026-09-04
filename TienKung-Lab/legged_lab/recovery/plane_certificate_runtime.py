@@ -122,6 +122,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         self.nominal_table = PlaneNominalParameterTable.from_yaml(self.nominal_parameters_path)
         self.z_sole = float(z_sole)
         self.use_state_b = bool(use_state_b)
+        self._solve_depth_reached_counts = np.zeros(5, dtype=np.int64)
         self.workers = max(1, int(workers))
         self.executor_type = str(executor_type)
         if self.executor_type == "subprocess":
@@ -421,6 +422,9 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 results.append(self._invalid_result(query.invalid_reason))
                 valid_results.append(False)
                 continue
+            attempted_depth = min(max(len(result.feasible_horizons) - 1, 0), 5)
+            if attempted_depth:
+                self._solve_depth_reached_counts[:attempted_depth] += 1
             normal = (
                 result.status in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
                 and result.n_min is not None
@@ -451,6 +455,13 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             torch.tensor([result.margin for result in results], dtype=torch.float32, device=pending.device),
             torch.tensor(valid_results, dtype=torch.bool, device=pending.device),
         )
+
+    @property
+    def statistics(self) -> dict[str, float | int]:
+        statistics = dict(super().statistics)
+        for horizon, count in enumerate(self._solve_depth_reached_counts, start=1):
+            statistics[f"reached_F{horizon}"] = int(count)
+        return statistics
 
 
 __all__ = [
