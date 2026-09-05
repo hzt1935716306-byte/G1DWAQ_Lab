@@ -69,6 +69,17 @@ from legged_lab.envs.g1.g1_plane_v1_config import (
     G1PlaneV1PrivilegedContextRewardEnvCfg,
 )
 from legged_lab.envs.g1.g1_plane_v1_env import G1PlaneV1Env
+from legged_lab.envs.g1.g1_plane_v1_matched_config import (
+    G1PlaneV1EstimatorContextNoRewardMatchedAgentCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedEnvCfg,
+    G1PlaneV1EstimatorContextRewardMatchedAgentCfg,
+    G1PlaneV1EstimatorContextRewardMatchedEnvCfg,
+    G1PlaneV1PrivilegedContextNoRewardMatchedAgentCfg,
+    G1PlaneV1PrivilegedContextNoRewardMatchedEnvCfg,
+    G1PlaneV1PrivilegedContextRewardMatchedAgentCfg,
+    G1PlaneV1PrivilegedContextRewardMatchedEnvCfg,
+)
+from legged_lab.envs.g1.g1_plane_v1_matched_env import G1PlaneV1BaselineMatchedEnv
 
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
 from legged_lab.envs.g1.g1_dwaq_config import (
@@ -92,6 +103,18 @@ from legged_lab.envs.g1.g1_slope_training_config import (
     G1SlopeSysDEnvCfg,
     G1SlopeSysNdAgentCfg,
     G1SlopeSysNdEnvCfg,
+)
+from legged_lab.envs.g1.g1_slope_matched_config import (
+    G1DwaqSlopeNoSysDMatchedAgentCfg,
+    G1DwaqSlopeNoSysDMatchedEnvCfg,
+    G1SlopeNoSysDMatchedAgentCfg,
+    G1SlopeNoSysDMatchedEnvCfg,
+    G1SlopeSysDMatchedAgentCfg,
+    G1SlopeSysDMatchedEnvCfg,
+)
+from legged_lab.envs.g1.g1_slope_matched_env import (
+    G1DwaqSlopeBaselineMatchedEnv,
+    G1SlopeBaselineMatchedEnv,
 )
 from legged_lab.envs.g1.g1_com_velocity_estimator_config import (
     G1ComVelocityEstimatorAgentCfg,
@@ -193,6 +216,30 @@ task_registry.register(
     G1PlaneV1PrivilegedContextRewardEnvCfg(),
     G1PlaneV1PrivilegedContextRewardAgentCfg(),
 )
+task_registry.register(
+    "g1_plane_v1_estimator_context_no_reward_matched",
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1EstimatorContextNoRewardMatchedEnvCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_estimator_context_reward_matched",
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1EstimatorContextRewardMatchedEnvCfg(),
+    G1PlaneV1EstimatorContextRewardMatchedAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_privileged_context_no_reward_matched",
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1PrivilegedContextNoRewardMatchedEnvCfg(),
+    G1PlaneV1PrivilegedContextNoRewardMatchedAgentCfg(),
+)
+task_registry.register(
+    "g1_plane_v1_privileged_context_reward_matched",
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1PrivilegedContextRewardMatchedEnvCfg(),
+    G1PlaneV1PrivilegedContextRewardMatchedAgentCfg(),
+)
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())
 task_registry.register(
@@ -242,4 +289,22 @@ task_registry.register(
     G1DwaqEnv,
     G1DwaqSlopeNoSysDEnvCfg(),
     G1DwaqSlopeNoSysDAgentCfg(),
+)
+task_registry.register(
+    "g1_slope_nosys_d_matched",
+    G1SlopeBaselineMatchedEnv,
+    G1SlopeNoSysDMatchedEnvCfg(),
+    G1SlopeNoSysDMatchedAgentCfg(),
+)
+task_registry.register(
+    "g1_slope_sys_d_matched",
+    G1SlopeBaselineMatchedEnv,
+    G1SlopeSysDMatchedEnvCfg(),
+    G1SlopeSysDMatchedAgentCfg(),
+)
+task_registry.register(
+    "g1_dwaq_slope_nosys_d_matched",
+    G1DwaqSlopeBaselineMatchedEnv,
+    G1DwaqSlopeNoSysDMatchedEnvCfg(),
+    G1DwaqSlopeNoSysDMatchedAgentCfg(),
 )

@@ -15,9 +15,24 @@ from isaaclab.terrains import TerrainGeneratorCfg
 from isaaclab.terrains.sub_terrain_cfg import SubTerrainBaseCfg
 from isaaclab.utils import configclass
 
+from legged_lab.recovery.plane_terrain_math import (
+    MATCHED_COLS,
+    MATCHED_ROWS,
+    MATCHED_SEED,
+    MATCHED_SLOPE_RANGE,
+    column_types as _column_types,
+    slope_coefficient as _slope_coefficient,
+    slope_table as _slope_table,
+)
+
 
 PLANE_RECOVERY_SLOPES_DEG = (-15.0, -10.0, -5.0, 0.0, 5.0, 10.0, 15.0)
 PLANE_RECOVERY_TILE_SIZE = (64.0, 32.0)
+PLANE_BASELINE_MATCHED_TILE_SIZE = PLANE_RECOVERY_TILE_SIZE
+PLANE_BASELINE_MATCHED_ROWS = MATCHED_ROWS
+PLANE_BASELINE_MATCHED_COLS = MATCHED_COLS
+PLANE_BASELINE_MATCHED_SEED = MATCHED_SEED
+PLANE_BASELINE_MATCHED_SLOPE_RANGE = MATCHED_SLOPE_RANGE
 
 
 def x_sloped_plane_terrain(
@@ -59,6 +74,95 @@ class MeshXSlopedPlaneTerrainCfg(SubTerrainBaseCfg):
     slope_degrees: float = 0.0
 
 
+def baseline_slope_coefficient(
+    difficulty: float,
+    slope_range: tuple[float, float] = PLANE_BASELINE_MATCHED_SLOPE_RANGE,
+    *,
+    inverted: bool = False,
+) -> float:
+    """Reproduce Isaac Lab's ``HfPyramidSlopedTerrain`` slope mapping exactly."""
+
+    return _slope_coefficient(difficulty, slope_range, inverted=inverted)
+
+
+def x_curriculum_sloped_plane_terrain(
+    difficulty: float,
+    cfg: "MeshXCurriculumSlopedPlaneTerrainCfg",
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Generate one coplanar tile using the baseline difficulty-to-slope rule."""
+
+    coefficient = baseline_slope_coefficient(
+        difficulty, cfg.slope_range, inverted=cfg.inverted
+    )
+    fixed = MeshXSlopedPlaneTerrainCfg(
+        proportion=cfg.proportion,
+        size=cfg.size,
+        slope_degrees=math.degrees(math.atan(coefficient)),
+    )
+    return x_sloped_plane_terrain(difficulty, fixed)
+
+
+@configclass
+class MeshXCurriculumSlopedPlaneTerrainCfg(SubTerrainBaseCfg):
+    """Continuous plane counterpart of Isaac Lab's pyramid-slope config."""
+
+    function = x_curriculum_sloped_plane_terrain
+    slope_range: tuple[float, float] = PLANE_BASELINE_MATCHED_SLOPE_RANGE
+    inverted: bool = False
+
+
+def baseline_matched_column_types(num_cols: int = PLANE_BASELINE_MATCHED_COLS) -> tuple[str, ...]:
+    """Return Isaac Lab's deterministic curriculum column assignment."""
+
+    return _column_types(num_cols)
+
+
+def make_plane_baseline_matched_slope_table(
+    seed: int = PLANE_BASELINE_MATCHED_SEED,
+    *,
+    num_rows: int = PLANE_BASELINE_MATCHED_ROWS,
+    num_cols: int = PLANE_BASELINE_MATCHED_COLS,
+    difficulty_range: tuple[float, float] = (0.0, 1.0),
+) -> np.ndarray:
+    """Replay TerrainGenerator's RNG order and return exact signed alpha radians."""
+
+    return _slope_table(
+        seed,
+        num_rows=num_rows,
+        num_cols=num_cols,
+        difficulty_range=difficulty_range,
+    )
+
+
+def make_plane_baseline_matched_terrain_cfg(
+    seed: int = PLANE_BASELINE_MATCHED_SEED,
+) -> TerrainGeneratorCfg:
+    """Build the 8-flat/6-uphill/6-downhill continuous-plane curriculum."""
+
+    return TerrainGeneratorCfg(
+        seed=int(seed),
+        curriculum=True,
+        size=PLANE_BASELINE_MATCHED_TILE_SIZE,
+        border_width=20.0,
+        num_rows=PLANE_BASELINE_MATCHED_ROWS,
+        num_cols=PLANE_BASELINE_MATCHED_COLS,
+        use_cache=False,
+        sub_terrains={
+            "flat": MeshXSlopedPlaneTerrainCfg(proportion=0.4, slope_degrees=0.0),
+            "uphill": MeshXCurriculumSlopedPlaneTerrainCfg(
+                proportion=0.3,
+                slope_range=PLANE_BASELINE_MATCHED_SLOPE_RANGE,
+                inverted=False,
+            ),
+            "downhill": MeshXCurriculumSlopedPlaneTerrainCfg(
+                proportion=0.3,
+                slope_range=PLANE_BASELINE_MATCHED_SLOPE_RANGE,
+                inverted=True,
+            ),
+        },
+    )
+
+
 def make_plane_recovery_terrain_cfg(
     slopes_degrees: tuple[float, ...] = PLANE_RECOVERY_SLOPES_DEG,
 ) -> TerrainGeneratorCfg:
@@ -91,13 +195,26 @@ def make_plane_recovery_terrain_cfg(
 
 
 PLANE_RECOVERY_TERRAINS_CFG = make_plane_recovery_terrain_cfg()
+PLANE_BASELINE_MATCHED_TERRAINS_CFG = make_plane_baseline_matched_terrain_cfg()
 
 
 __all__ = [
     "MeshXSlopedPlaneTerrainCfg",
+    "MeshXCurriculumSlopedPlaneTerrainCfg",
+    "PLANE_BASELINE_MATCHED_COLS",
+    "PLANE_BASELINE_MATCHED_ROWS",
+    "PLANE_BASELINE_MATCHED_SEED",
+    "PLANE_BASELINE_MATCHED_SLOPE_RANGE",
+    "PLANE_BASELINE_MATCHED_TERRAINS_CFG",
+    "PLANE_BASELINE_MATCHED_TILE_SIZE",
     "PLANE_RECOVERY_SLOPES_DEG",
     "PLANE_RECOVERY_TILE_SIZE",
     "PLANE_RECOVERY_TERRAINS_CFG",
     "make_plane_recovery_terrain_cfg",
+    "baseline_matched_column_types",
+    "baseline_slope_coefficient",
+    "make_plane_baseline_matched_slope_table",
+    "make_plane_baseline_matched_terrain_cfg",
+    "x_curriculum_sloped_plane_terrain",
     "x_sloped_plane_terrain",
 ]

@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 
-DIRECTIONS = ("+x", "-x", "+y", "-y")
+DIRECTIONS = ("standing", "+x", "-x", "+y", "-y")
 PRACTICAL_METRIC_LEGACY_V0 = "touchdown_instantaneous_legacy_v0"
 PRACTICAL_METRIC_INTERVAL_MEAN_V1 = "interval_mean_v1"
 PRACTICAL_METRIC_VERSIONS = (
@@ -69,8 +69,9 @@ def command_direction(
     x_active = abs(vx_cmd) > tolerance
     y_active = abs(vy_cmd) > tolerance
     if x_active == y_active:
-        reason = "diagonal command is unsupported" if x_active else "standing command has no direction"
-        return None, math.hypot(vx_cmd, vy_cmd), reason
+        if x_active:
+            return None, math.hypot(vx_cmd, vy_cmd), "diagonal command is unsupported"
+        return "standing", 0.0, ""
     if x_active:
         return ("+x" if vx_cmd > 0.0 else "-x"), abs(vx_cmd), ""
     return ("+y" if vy_cmd > 0.0 else "-y"), abs(vy_cmd), ""
@@ -111,7 +112,6 @@ def _node_from_mapping(node: Mapping[str, object]) -> PlaneNominalGait:
         ),
     )
     positive = (
-        value.speed,
         value.step_period,
         value.h_eff,
         value.step_width,
@@ -120,7 +120,13 @@ def _node_from_mapping(node: Mapping[str, object]) -> PlaneNominalGait:
         value.mean_abs_pitch_error_threshold,
     )
     if any(item <= 0.0 or not math.isfinite(item) for item in positive):
-        raise ValueError("nominal speed, gait values, and practical thresholds must be positive")
+        raise ValueError("nominal gait values and practical thresholds must be positive")
+    if (
+        not math.isfinite(value.speed)
+        or value.speed < 0.0
+        or (value.direction == "standing" and value.speed != 0.0)
+    ):
+        raise ValueError("standing nodes require speed 0 and all nominal speeds must be non-negative")
     if value.sample_count <= 0:
         raise ValueError("nominal sample_count must be positive")
     if value.practical_metric_version not in PRACTICAL_METRIC_VERSIONS:

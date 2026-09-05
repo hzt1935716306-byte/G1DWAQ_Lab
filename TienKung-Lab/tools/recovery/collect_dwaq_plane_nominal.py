@@ -27,7 +27,7 @@ parser.add_argument("--slopes_degrees", type=float, nargs="+", required=True)
 parser.add_argument(
     "--directions",
     nargs="+",
-    choices=("+x", "-x", "+y", "-y", "px", "nx", "py", "ny"),
+    choices=("standing", "+x", "-x", "+y", "-y", "px", "nx", "py", "ny"),
     default=("+x", "-x", "+y", "-y"),
     help="Cardinal commands; px/nx/py/ny aliases avoid argparse treating -x/-y as options.",
 )
@@ -77,6 +77,12 @@ parser.add_argument(
     "--anchor_nominal",
     type=Path,
     default=Path("tools/recovery/generated/g1_plane_nominal_params.yaml"),
+)
+parser.add_argument(
+    "--bootstrap_nominal",
+    type=Path,
+    default=None,
+    help="Optional candidate table whose valid nodes are preserved before adding this grid.",
 )
 parser.add_argument(
     "--preserve_official_flat_anchor",
@@ -187,6 +193,7 @@ def _disable_randomization(cfg) -> None:
 
 def _command(direction: str, speed: float) -> tuple[float, float, float]:
     return {
+        "standing": (0.0, 0.0, 0.0),
         "+x": (speed, 0.0, 0.0),
         "-x": (-speed, 0.0, 0.0),
         "+y": (0.0, speed, 0.0),
@@ -196,6 +203,7 @@ def _command(direction: str, speed: float) -> tuple[float, float, float]:
 
 def _normalize_direction(direction: str) -> str:
     return {
+        "standing": "standing",
         "+x": "+x",
         "-x": "-x",
         "+y": "+y",
@@ -707,8 +715,8 @@ def main() -> None:
         raise ValueError("slip_consecutive_frames must be positive")
     if any(abs(slope) >= 45.0 for slope in args.slopes_degrees):
         raise ValueError("collector slopes must satisfy abs(alpha) < 45 degrees")
-    if any(speed <= 0.0 for speed in args.speeds):
-        raise ValueError("collector speeds must be positive")
+    if any(speed < 0.0 for speed in args.speeds):
+        raise ValueError("collector speeds must be non-negative")
     if len(set(args.slopes_degrees)) != len(args.slopes_degrees):
         raise ValueError("collector slopes must be unique")
     if len(set(args.speeds)) != len(args.speeds):
@@ -729,6 +737,11 @@ def main() -> None:
     flat_parameters = _load_yaml(flat_path)
     anchor = _load_yaml(anchor_path)
     existing_documents = [anchor]
+    if args.bootstrap_nominal is not None:
+        bootstrap_path = args.bootstrap_nominal.expanduser().resolve()
+        if not bootstrap_path.is_file():
+            raise FileNotFoundError(bootstrap_path)
+        existing_documents.append(_load_yaml(bootstrap_path))
     if output.is_file() and output != anchor_path:
         existing_documents.append(_load_yaml(output))
     existing_nodes = [
@@ -757,6 +770,8 @@ def main() -> None:
     directions = tuple(_normalize_direction(value) for value in args.directions)
     if len(set(directions)) != len(directions):
         raise ValueError("collector directions must be unique")
+    if "standing" in directions and tuple(args.speeds) != (0.0,):
+        raise ValueError("collect standing separately with --speeds 0")
     assignments = _build_node_assignments(
         slopes, directions, tuple(args.speeds), args.envs_per_node
     )
@@ -1519,6 +1534,7 @@ def main() -> None:
             args.preserve_official_flat_anchor
             and abs(key[0]) <= 1.0e-9
             and key[1] == "+x"
+            and any(abs(float(node["speed"]) - key[2]) <= 1.0e-9 for node in anchor_nodes)
         )
         acceptance_ratio = _acceptance_ratio(len(rows), candidate_cycles[key])
         common_report = {
