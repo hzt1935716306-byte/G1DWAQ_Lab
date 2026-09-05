@@ -67,6 +67,16 @@ class G1Stage2RewardCfg:
     certificate_workers: int = 8
     certificate_failure_window_size: int = 4096
     certificate_failure_rate_threshold: float = 0.01
+    # Runtime-only engineering controls.  False/1 preserves the legacy
+    # single-query round-robin executor exactly.
+    certificate_profile_enabled: bool = False
+    certificate_query_record_enabled: bool = False
+    certificate_query_record_path: str = ""
+    certificate_ipc_batch_enabled: bool = False
+    certificate_ipc_chunk_size: int = 1
+    certificate_dynamic_dispatch: bool = False
+    certificate_exact_alpha_cache: bool = False
+    certificate_exact_alpha_cache_max_entries: int = 8192
     soft_reward_min_multipliers: dict[str, float] = {
         "joint_deviation_arms": 0.25,
         "joint_deviation_hip": 0.40,

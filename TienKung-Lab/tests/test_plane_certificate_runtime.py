@@ -255,6 +255,48 @@ def test_submit_does_not_project_heading_horizontal_measurements() -> None:
         evaluator.close()
 
 
+def test_batched_gather_constructs_bitwise_identical_queries() -> None:
+    legacy = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=1, executor_type="sequential", use_state_b=True
+    )
+    optimized = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=1,
+        executor_type="sequential",
+        use_state_b=True,
+        ipc_batch_enabled=True,
+    )
+    count = 8
+    state = SimpleNamespace(
+        command_velocity=torch.tensor([[0.4, 0.0, 0.0]] * count),
+        signed_slope=torch.tensor([0.0] * count),
+        terrain_plane_valid=torch.tensor([True] * count),
+        com_position=torch.randn(count, 2),
+        com_velocity=torch.randn(count, 2),
+        left_foot_position=torch.randn(count, 2),
+        right_foot_position=torch.randn(count, 2),
+        q=torch.randn(count, 2),
+        support_is_left=torch.tensor([True, False] * (count // 2)),
+        b=torch.randn(count, 2),
+    )
+    ids = torch.arange(count)
+    try:
+        old = legacy.submit(state, ids).queries
+        new = optimized.submit(state, ids).queries
+    finally:
+        legacy.close()
+        optimized.close()
+    for before, after in zip(old, new):
+        assert before.alpha == after.alpha
+        assert before.support_side == after.support_side
+        assert before.adapter_valid == after.adapter_valid
+        assert before.invalid_reason == after.invalid_reason
+        assert np.array_equal(before.command, after.command)
+        assert np.array_equal(before.b, after.b)
+        assert np.array_equal(before.q, after.q)
+
+
 def test_plane_mirror_uses_exact_submit_query_instead_of_state_b() -> None:
     evaluator = PlaneCalibratedG1CertificateEvaluator(
         FLAT, NOMINAL, workers=1, executor_type="sequential"
@@ -457,3 +499,159 @@ def test_plane_query_mirror_smoke_preserves_certificate() -> None:
     assert valid.tolist() == [True, True]
     assert n_min[0].item() == n_min[1].item()
     assert margin[0].item() == pytest.approx(margin[1].item(), abs=1.0e-8)
+
+
+def test_exact_alpha_cache_is_bitwise_equal_and_not_mutated() -> None:
+    fresh = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=1, executor_type="sequential"
+    )
+    cached = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=1,
+        executor_type="sequential",
+        exact_alpha_cache=True,
+    )
+    query = _valid_slope_query()
+    try:
+        expected_config = fresh._plane_config(query.command, query.alpha)
+        first = cached._plane_config(query.command, query.alpha)
+        for _ in range(100):
+            actual = cached._plane_config(query.command, query.alpha)
+        expected = fresh._solve(query)
+        result = cached._solve(query)
+    finally:
+        fresh.close()
+        cached.close()
+    for candidate in (first, actual):
+        assert candidate.step_period == expected_config.step_period
+        assert candidate.h_eff == expected_config.h_eff
+        assert candidate.swing_velocity_limits == expected_config.swing_velocity_limits
+        for name in ("cop_left", "cop_right", "landing_left", "landing_right"):
+            candidate_region = getattr(candidate, name)
+            expected_region = getattr(expected_config, name)
+            assert np.array_equal(candidate_region.normals, expected_region.normals)
+            assert np.array_equal(candidate_region.offsets, expected_region.offsets)
+            assert np.array_equal(candidate_region.scales, expected_region.scales)
+    assert result.status == expected.status
+    assert result.n_min == expected.n_min
+    assert result.margin == expected.margin
+    stats = cached.capability_cache_statistics
+    assert stats["size"] == 1
+    assert stats["hits"] >= 100
+
+
+def test_batched_subprocess_is_exactly_equivalent_to_legacy_order() -> None:
+    queries = tuple(
+        replace(_valid_slope_query(), b=np.asarray((0.08 + index * 0.002, -0.07)))
+        for index in range(24)
+    )
+    legacy = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=4, executor_type="subprocess"
+    )
+    optimized = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=4,
+        executor_type="subprocess",
+        ipc_batch_enabled=True,
+        ipc_chunk_size=4,
+        dynamic_dispatch=True,
+        exact_alpha_cache=True,
+    )
+    try:
+        old = legacy.resolve_raw_results(legacy.submit_queries(queries, torch.device("cpu")))
+        new = optimized.resolve_raw_results(
+            optimized.submit_queries(queries, torch.device("cpu"))
+        )
+    finally:
+        legacy.close()
+        optimized.close()
+    assert [item.status for item in new] == [item.status for item in old]
+    assert [item.n_min for item in new] == [item.n_min for item in old]
+    assert [item.margin for item in new] == [item.margin for item in old]
+
+
+def test_batched_path_preserves_invalid_and_solver_failure_semantics() -> None:
+    valid = _valid_slope_query()
+    invalid = replace(valid, adapter_valid=False, invalid_reason="synthetic invalid")
+    unsupported = replace(valid, command=np.asarray((-0.4, 0.0, 0.0)), alpha=0.0)
+    queries = (invalid, unsupported, valid)
+    legacy = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=2, executor_type="subprocess"
+    )
+    optimized = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=2,
+        executor_type="subprocess",
+        ipc_batch_enabled=True,
+        ipc_chunk_size=2,
+        dynamic_dispatch=True,
+        exact_alpha_cache=True,
+    )
+    try:
+        old = legacy.resolve_raw_results(legacy.submit_queries(queries, torch.device("cpu")))
+        new = optimized.resolve_raw_results(
+            optimized.submit_queries(queries, torch.device("cpu"))
+        )
+    finally:
+        legacy.close()
+        optimized.close()
+    assert [item.status for item in old] == [item.status for item in new]
+    assert [item.n_min for item in old] == [item.n_min for item in new]
+    assert [item.margin for item in old] == [item.margin for item in new]
+    assert [item.message for item in old] == [item.message for item in new]
+    assert [item.diagnostic for item in old] == [item.diagnostic for item in new]
+    assert old[0].status == CertificateStatus.INVALID_INPUT
+    assert old[1].status == CertificateStatus.SOLVER_FAILURE
+
+
+def test_exact_alpha_cache_is_bounded_without_rounding() -> None:
+    evaluator = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=1,
+        executor_type="sequential",
+        exact_alpha_cache=True,
+        exact_alpha_cache_max_entries=3,
+    )
+    alphas = tuple(float(np.float64(value)) for value in (0.001, 0.002, 0.003, 0.004))
+    try:
+        expected = [evaluator._capability_at(alpha) for alpha in alphas]
+        assert tuple(evaluator._capability_cache) == alphas[-3:]
+        actual = evaluator._capability_at(alphas[0])
+    finally:
+        evaluator.close()
+    fresh = PlaneCalibratedG1CertificateEvaluator(
+        FLAT, NOMINAL, workers=1, executor_type="sequential"
+    )
+    try:
+        reference = fresh._capability_at(alphas[0])
+    finally:
+        fresh.close()
+    assert actual == reference == expected[0]
+
+
+def test_batched_all_invalid_batch_does_not_enter_worker() -> None:
+    evaluator = PlaneCalibratedG1CertificateEvaluator(
+        FLAT,
+        NOMINAL,
+        workers=2,
+        executor_type="subprocess",
+        ipc_batch_enabled=True,
+        ipc_chunk_size=4,
+        dynamic_dispatch=True,
+    )
+    query = replace(
+        _valid_slope_query(), adapter_valid=False, invalid_reason="all invalid"
+    )
+    try:
+        pending = evaluator.submit_queries((query, query), torch.device("cpu"))
+        results = evaluator.resolve_raw_results(pending)
+    finally:
+        evaluator.close()
+    assert [result.status for result in results] == [
+        CertificateStatus.INVALID_INPUT,
+        CertificateStatus.INVALID_INPUT,
+    ]

@@ -33,6 +33,16 @@ class G1PlaneV1BaselineMatchedEnvCfg(G1PlaneV1EnvCfg):
         self.plane_recovery.minimum_command_speed = 0.2
         configure_matched_command_and_reset(self)
 
+        # Exact-math runtime selected by the matched production-corpus and
+        # 4096-env performance gates. The legacy single-query executor remains
+        # available by setting batch/cache back to False.
+        self.stage2_reward.certificate_workers = 16
+        self.stage2_reward.certificate_ipc_batch_enabled = True
+        self.stage2_reward.certificate_ipc_chunk_size = 16
+        self.stage2_reward.certificate_dynamic_dispatch = True
+        self.stage2_reward.certificate_exact_alpha_cache = True
+        self.stage2_reward.certificate_exact_alpha_cache_max_entries = 8192
+
         # Coplanar geometry tolerates baseline x/y spawn offsets.  Yaw remains
         # the one theory-required exception to baseline randomization.
         reset_base = self.domain_rand.events.reset_base

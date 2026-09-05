@@ -54,6 +54,17 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             failure_rate_threshold=cfg.certificate_failure_rate_threshold,
             z_sole=plane_cfg.z_sole,
             use_state_b=True,
+            profile_enabled=cfg.certificate_profile_enabled,
+            query_record_path=(
+                cfg.certificate_query_record_path
+                if cfg.certificate_query_record_enabled
+                else None
+            ),
+            ipc_batch_enabled=cfg.certificate_ipc_batch_enabled,
+            ipc_chunk_size=cfg.certificate_ipc_chunk_size,
+            dynamic_dispatch=cfg.certificate_dynamic_dispatch,
+            exact_alpha_cache=cfg.certificate_exact_alpha_cache,
+            exact_alpha_cache_max_entries=cfg.certificate_exact_alpha_cache_max_entries,
         )
 
     def __init__(self, cfg, headless):
@@ -147,6 +158,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         """Enable synchronized timing only for a short, explicit throughput smoke."""
 
         self._plane_v1_profiling_enabled = True
+        if self._certificate_evaluator is not None:
+            self._certificate_evaluator.profile_enabled = True
         if self._torch_device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self._torch_device)
 
@@ -327,6 +340,7 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         dones: torch.Tensor,
         estimator_ready: torch.Tensor,
     ) -> None:
+        collection_started = time.perf_counter_ns()
         touchdown_mask = certificate_state.touchdown & ~dones
         self._context_touchdown_mask.copy_(touchdown_mask)
         self._context_refresh_mask.zero_()
@@ -361,6 +375,11 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_geometry_invalid_count += int(geometry_invalid.sum().item())
 
         solve_ids = moving_ids[estimator_ready[moving_ids]]
+        if self._certificate_evaluator is not None:
+            self._certificate_evaluator._record_profile(
+                "touchdown_moving_collect_ms",
+                (time.perf_counter_ns() - collection_started) / 1.0e6,
+            )
         if solve_ids.numel() == 0:
             return
         assert self._certificate_evaluator is not None
@@ -369,6 +388,10 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             certificate_state, solve_ids
         )
         elapsed = time.perf_counter() - started
+        self._certificate_evaluator._record_profile(
+            "total_certificate_batch_ms", elapsed * 1000.0
+        )
+        scatter_started = time.perf_counter_ns()
         self._context_refresh_mask[solve_ids] = True
         self._touchdown_certificate_cache_n[solve_ids] = n_min
         self._touchdown_certificate_cache_margin[solve_ids] = margin
@@ -393,6 +416,9 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._context_refresh_last_seconds = elapsed
         self._context_refresh_latencies_s.append(elapsed)
         self._context_refresh_batch_sizes.append(int(solve_ids.numel()))
+        self._certificate_evaluator._record_profile(
+            "result_scatter_ms", (time.perf_counter_ns() - scatter_started) / 1.0e6
+        )
 
     def _update_practical_diagnostic(self, state, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
@@ -651,13 +677,14 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
     @staticmethod
     def _quantiles(values: deque[float]) -> dict[str, float]:
         if not values:
-            return {"median": 0.0, "p75": 0.0, "p90": 0.0, "p95": 0.0}
+            return {"median": 0.0, "p75": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
         tensor = torch.tensor(tuple(values), dtype=torch.float64)
         return {
             "median": float(torch.quantile(tensor, 0.50)),
             "p75": float(torch.quantile(tensor, 0.75)),
             "p90": float(torch.quantile(tensor, 0.90)),
             "p95": float(torch.quantile(tensor, 0.95)),
+            "p99": float(torch.quantile(tensor, 0.99)),
         }
 
     def plane_v1_profile_summary(self) -> dict:
@@ -714,6 +741,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
                 "wall_seconds": float(self._context_refresh_total_seconds),
                 "mean_batch_latency_ms": 1000.0 * self._context_refresh_total_seconds / batch_count,
                 "p95_batch_latency_ms": 1000.0 * certificate_latencies["p95"],
+                "p50_batch_latency_ms": 1000.0 * certificate_latencies["median"],
+                "p99_batch_latency_ms": 1000.0 * certificate_latencies["p99"],
                 "evaluations_per_second": (
                     self._context_refresh_evaluations / self._context_refresh_total_seconds
                     if self._context_refresh_total_seconds > 0.0
@@ -733,6 +762,11 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
                     for index in range(1, 6)
                 },
                 "solver_failures": int(self._v1_solver_failure_count),
+                "fine_grained": (
+                    self._certificate_evaluator.profile_statistics
+                    if self._certificate_evaluator is not None
+                    else {}
+                ),
             },
             "touchdown_counts": {
                 f"TD{index}": int(self._v1_touchdown_index_counts[index].item())

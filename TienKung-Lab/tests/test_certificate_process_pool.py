@@ -81,3 +81,28 @@ def test_timeout_fails_current_future_and_replaces_worker(monkeypatch) -> None:
         assert result.status in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
     finally:
         pool.close()
+
+
+def test_dynamic_micro_batches_restore_original_query_order() -> None:
+    pool = CertificateProcessPool(
+        FLAT,
+        4,
+        worker_mode="plane",
+        nominal_parameters_path=NOMINAL,
+        exact_alpha_cache=True,
+    )
+    queries = tuple(
+        (index, _query()) for index in (8, 1, 9, 2, 7, 3, 6, 4, 5, 0)
+    )
+    try:
+        response, chunks = pool.submit_batches(
+            queries, chunk_size=2, profile_enabled=True, dynamic_dispatch=True
+        ).result(timeout=30.0)
+    finally:
+        pool.close()
+    assert [index for index, _ in response.items] == sorted(index for index, _ in queries)
+    assert len(chunks) == 5
+    assert all(
+        result.status in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
+        for _, result in response.items
+    )

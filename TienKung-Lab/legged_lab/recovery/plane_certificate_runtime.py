@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections import OrderedDict
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import time
 from typing import Sequence
 
 import numpy as np
@@ -20,6 +22,11 @@ from .certificate import (
     certify_recoverability,
 )
 from .certificate_process_pool import CertificateProcessPool
+from .certificate_ipc import CertificateBatchResponse
+from .certificate_query_corpus import (
+    PlaneCertificateQueryRecorder,
+    RecordedPlaneCertificateQuery,
+)
 from .g1_certificate_runtime import CalibratedG1CertificateEvaluator, PendingCertificateBatch
 from .plane_adapter import adapt_flat_capability
 from .plane_nominal_params import PlaneNominalGait, PlaneNominalParameterTable
@@ -63,6 +70,7 @@ def mirror_plane_certificate_query(query: PlaneCertificateQuery) -> PlaneCertifi
 @dataclass(frozen=True)
 class PendingPlaneCertificateBatch(PendingCertificateBatch):
     queries: tuple[PlaneCertificateQuery, ...]
+    batch_job: Future | None = None
 
 
 def plane_periodic_state(
@@ -109,6 +117,13 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         failure_rate_threshold: float = 0.01,
         z_sole: float = -0.045,
         use_state_b: bool = False,
+        profile_enabled: bool = False,
+        query_record_path: str | Path | None = None,
+        ipc_batch_enabled: bool = False,
+        ipc_chunk_size: int = 1,
+        dynamic_dispatch: bool = False,
+        exact_alpha_cache: bool = False,
+        exact_alpha_cache_max_entries: int = 8192,
     ) -> None:
         # Initialize all legacy diagnostics without starting the legacy pool.
         super().__init__(
@@ -122,6 +137,26 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         self.nominal_table = PlaneNominalParameterTable.from_yaml(self.nominal_parameters_path)
         self.z_sole = float(z_sole)
         self.use_state_b = bool(use_state_b)
+        self.profile_enabled = bool(profile_enabled)
+        self.ipc_batch_enabled = bool(ipc_batch_enabled)
+        self.ipc_chunk_size = int(ipc_chunk_size)
+        self.dynamic_dispatch = bool(dynamic_dispatch)
+        self.exact_alpha_cache = bool(exact_alpha_cache)
+        self.exact_alpha_cache_max_entries = int(exact_alpha_cache_max_entries)
+        if self.exact_alpha_cache_max_entries <= 0:
+            raise ValueError("exact-alpha cache maximum entries must be positive")
+        if self.ipc_chunk_size <= 0:
+            raise ValueError("certificate IPC chunk size must be positive")
+        self._capability_cache = OrderedDict()
+        self._capability_cache_hits = 0
+        self._capability_cache_misses = 0
+        self._profile_totals: dict[str, float] = {}
+        self._profile_counts: dict[str, int] = {}
+        self._profile_samples: dict[str, list[float]] = {}
+        self._query_record_index = 0
+        self._query_recorder = (
+            PlaneCertificateQueryRecorder(query_record_path) if query_record_path else None
+        )
         self._solve_depth_reached_counts = np.zeros(5, dtype=np.int64)
         self.workers = max(1, int(workers))
         self.executor_type = str(executor_type)
@@ -132,6 +167,8 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 worker_mode="plane",
                 nominal_parameters_path=self.nominal_parameters_path,
                 z_sole=self.z_sole,
+                exact_alpha_cache=self.exact_alpha_cache,
+                exact_alpha_cache_max_entries=self.exact_alpha_cache_max_entries,
             )
         elif self.executor_type == "thread" and self.workers > 1:
             self._executor = ThreadPoolExecutor(max_workers=self.workers)
@@ -145,6 +182,38 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
     def lookup_nominal(self, command: Sequence[float], alpha: float):
         return self.nominal_table.lookup_command(alpha, command)
 
+    def _record_profile(self, name: str, milliseconds: float, count: int = 1) -> None:
+        if not self.profile_enabled:
+            return
+        self._profile_totals[name] = self._profile_totals.get(name, 0.0) + float(milliseconds)
+        self._profile_counts[name] = self._profile_counts.get(name, 0) + int(count)
+        self._profile_samples.setdefault(name, []).append(float(milliseconds))
+
+    def _capability_at(self, alpha: float):
+        key = float(alpha)
+        if self.exact_alpha_cache and key in self._capability_cache:
+            self._capability_cache_hits += 1
+            self._capability_cache.move_to_end(key)
+            return self._capability_cache[key]
+        capability = adapt_flat_capability(self.parameters, key, self.z_sole)
+        self._capability_cache_misses += 1
+        if self.exact_alpha_cache:
+            self._capability_cache[key] = capability
+            self._capability_cache.move_to_end(key)
+            if len(self._capability_cache) > self.exact_alpha_cache_max_entries:
+                self._capability_cache.popitem(last=False)
+        return capability
+
+    @property
+    def capability_cache_statistics(self) -> dict[str, int | float]:
+        requests = self._capability_cache_hits + self._capability_cache_misses
+        return {
+            "size": len(self._capability_cache),
+            "hits": self._capability_cache_hits,
+            "misses": self._capability_cache_misses,
+            "hit_rate": self._capability_cache_hits / max(requests, 1),
+        }
+
     def _plane_config(
         self,
         command: Sequence[float],
@@ -156,7 +225,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             if not lookup.valid or lookup.value is None:
                 raise ValueError(lookup.reason)
             nominal = lookup.value
-        capability = adapt_flat_capability(self.parameters, alpha, self.z_sole)
+        capability = self._capability_at(alpha)
         if not capability.nominal_cop_valid:
             raise ValueError("nominal CoP [0,0] lies outside projected C")
         theory = plane_periodic_state(
@@ -237,19 +306,64 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
     def submit(self, state, env_ids: torch.Tensor) -> PendingPlaneCertificateBatch:
         if env_ids.numel() == 0:
             return PendingPlaneCertificateBatch((), (), (), env_ids.device)
+        d2h_started = time.perf_counter_ns()
         ids = tuple(int(value) for value in env_ids.detach().cpu().tolist())
-        commands = state.command_velocity[env_ids].detach().cpu().numpy()
-        alphas = state.signed_slope[env_ids].detach().cpu().numpy()
-        geometry_valid = state.terrain_plane_valid[env_ids].detach().cpu().numpy()
-        com_positions = state.com_position[env_ids, :2].detach().cpu().numpy()
-        com_velocities = state.com_velocity[env_ids, :2].detach().cpu().numpy()
-        left_positions = state.left_foot_position[env_ids, :2].detach().cpu().numpy()
-        right_positions = state.right_foot_position[env_ids, :2].detach().cpu().numpy()
-        q_values = state.q[env_ids].detach().cpu().numpy()
-        state_b_values = state.b[env_ids].detach().cpu().numpy()
-        support_left = state.support_is_left[env_ids].detach().cpu().numpy()
+        if self.ipc_batch_enabled:
+            gather_started = time.perf_counter_ns()
+            gathered_values = torch.cat(
+                (
+                    state.command_velocity[env_ids],
+                    state.signed_slope[env_ids, None],
+                    state.com_position[env_ids, :2],
+                    state.com_velocity[env_ids, :2],
+                    state.left_foot_position[env_ids, :2],
+                    state.right_foot_position[env_ids, :2],
+                    state.q[env_ids],
+                    state.b[env_ids],
+                ),
+                dim=1,
+            ).detach()
+            gathered_flags = torch.stack(
+                (
+                    state.terrain_plane_valid[env_ids],
+                    state.support_is_left[env_ids],
+                ),
+                dim=1,
+            ).detach()
+            if self.profile_enabled and gathered_values.device.type == "cuda":
+                torch.cuda.synchronize(gathered_values.device)
+            self._record_profile("tensor_gather_ms", (time.perf_counter_ns() - gather_started) / 1.0e6)
+            transfer_started = time.perf_counter_ns()
+            values = gathered_values.cpu().numpy()
+            flags = gathered_flags.cpu().numpy()
+            self._record_profile("d2h_ms", (time.perf_counter_ns() - transfer_started) / 1.0e6)
+            commands = values[:, 0:3]
+            alphas = values[:, 3]
+            com_positions = values[:, 4:6]
+            com_velocities = values[:, 6:8]
+            left_positions = values[:, 8:10]
+            right_positions = values[:, 10:12]
+            q_values = values[:, 12:14]
+            state_b_values = values[:, 14:16]
+            geometry_valid = flags[:, 0]
+            support_left = flags[:, 1]
+        else:
+            commands = state.command_velocity[env_ids].detach().cpu().numpy()
+            alphas = state.signed_slope[env_ids].detach().cpu().numpy()
+            geometry_valid = state.terrain_plane_valid[env_ids].detach().cpu().numpy()
+            com_positions = state.com_position[env_ids, :2].detach().cpu().numpy()
+            com_velocities = state.com_velocity[env_ids, :2].detach().cpu().numpy()
+            left_positions = state.left_foot_position[env_ids, :2].detach().cpu().numpy()
+            right_positions = state.right_foot_position[env_ids, :2].detach().cpu().numpy()
+            q_values = state.q[env_ids].detach().cpu().numpy()
+            state_b_values = state.b[env_ids].detach().cpu().numpy()
+            support_left = state.support_is_left[env_ids].detach().cpu().numpy()
+            self._record_profile("d2h_ms", (time.perf_counter_ns() - d2h_started) / 1.0e6)
 
         queries = []
+        nominal_ms = 0.0
+        capability_ms = 0.0
+        query_build_ms = 0.0
         for command, alpha, plane_valid, com, velocity, left, right, q, state_b, is_left in zip(
             commands,
             alphas,
@@ -262,16 +376,18 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             state_b_values,
             support_left,
         ):
+            nominal_started = time.perf_counter_ns()
             lookup = self.lookup_nominal(command, float(alpha)) if plane_valid else None
+            nominal_ms += (time.perf_counter_ns() - nominal_started) / 1.0e6
             valid = bool(plane_valid and lookup is not None and lookup.valid and lookup.value is not None)
             reason = "" if valid else (
                 lookup.reason if lookup is not None else "invalid terrain plane"
             )
             if valid:
                 try:
-                    capability = adapt_flat_capability(
-                        self.parameters, float(alpha), self.z_sole
-                    )
+                    capability_started = time.perf_counter_ns()
+                    capability = self._capability_at(float(alpha))
+                    capability_ms += (time.perf_counter_ns() - capability_started) / 1.0e6
                 except ValueError as exc:
                     valid = False
                     reason = str(exc)
@@ -291,7 +407,8 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                     else com + velocity / nominal.omega - support
                 )
             else:
-                b = np.asarray(state.b[ids[len(queries)]].detach().cpu(), dtype=np.float64)
+                b = np.asarray(state_b, dtype=np.float64)
+            query_started = time.perf_counter_ns()
             query = PlaneCertificateQuery(
                 command=np.asarray(command, dtype=np.float64),
                 b=np.asarray(b, dtype=np.float64),
@@ -302,7 +419,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 adapter_valid=valid,
                 invalid_reason=reason,
             )
+            query_build_ms += (time.perf_counter_ns() - query_started) / 1.0e6
             queries.append(query)
+        self._record_profile("nominal_lookup_ms", nominal_ms)
+        self._record_profile("parent_capability_ms", capability_ms)
+        self._record_profile("query_build_ms", query_build_ms)
         return self.submit_queries(tuple(queries), env_ids.device, env_ids=ids)
 
     def submit_queries(
@@ -317,6 +438,35 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         ids = tuple(range(len(queries))) if env_ids is None else tuple(env_ids)
         if len(ids) != len(queries):
             raise ValueError("env_ids and plane queries must have the same length")
+        if self._query_recorder is not None:
+            records = []
+            for env_id, query in zip(ids, queries):
+                records.append(
+                    RecordedPlaneCertificateQuery(self._query_record_index, int(env_id), query)
+                )
+                self._query_record_index += 1
+            self._query_recorder.append(records)
+
+        if (
+            self.ipc_batch_enabled
+            and self.executor_type == "subprocess"
+            and self._executor is not None
+        ):
+            jobs = []
+            indexed_valid = []
+            for index, query in enumerate(queries):
+                if query.adapter_valid:
+                    jobs.append(None)
+                    indexed_valid.append((index, query))
+                else:
+                    jobs.append(self._invalid_result(query.invalid_reason))
+            batch_job = self._executor.submit_batches(
+                tuple(indexed_valid),
+                chunk_size=self.ipc_chunk_size,
+                profile_enabled=self.profile_enabled,
+                dynamic_dispatch=self.dynamic_dispatch,
+            )
+            return PendingPlaneCertificateBatch(ids, tuple(queries), tuple(jobs), device, batch_job)
         jobs = []
         for query in queries:
             valid = query.adapter_valid
@@ -329,6 +479,52 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             else:
                 jobs.append(self._executor.submit(self._solve, query))
         return PendingPlaneCertificateBatch(ids, tuple(queries), tuple(jobs), device)
+
+    def _raw_results(self, pending: PendingPlaneCertificateBatch) -> list[CertificateResult]:
+        if pending.batch_job is not None:
+            try:
+                response, chunk_responses = pending.batch_job.result()
+                assert isinstance(response, CertificateBatchResponse)
+                indexed = dict(response.items)
+                raw_results = []
+                for index, job in enumerate(pending.jobs):
+                    raw_results.append(job if isinstance(job, CertificateResult) else indexed[index])
+                for chunk_response in chunk_responses:
+                    worker = chunk_response.worker_profile
+                    transport = chunk_response.transport_profile
+                    if worker is not None:
+                        self._record_profile("worker_wait_ms", worker.worker_wait_ms)
+                        self._record_profile("worker_solve_ms", worker.worker_solve_ms)
+                        self._record_profile("result_serialize_ms", worker.result_serialize_ms)
+                        self._record_profile("worker_cache_size", worker.capability_cache_size)
+                        self._record_profile("worker_cache_hits", worker.capability_cache_hits)
+                        self._record_profile("worker_cache_misses", worker.capability_cache_misses)
+                    if transport is not None:
+                        self._record_profile("serialize_ms", transport.serialize_ms)
+                        self._record_profile("ipc_dispatch_ms", transport.ipc_dispatch_ms)
+                        self._record_profile("ipc_receive_ms", transport.ipc_receive_ms)
+                        self._record_profile("result_rebuild_ms", transport.result_rebuild_ms)
+                        self._record_profile("request_bytes", transport.request_bytes)
+                        self._record_profile("response_bytes", transport.response_bytes)
+                return raw_results
+            except Exception as exc:
+                fallback = self._transport_failure_result(exc)
+                return [job if isinstance(job, CertificateResult) else fallback for job in pending.jobs]
+        raw_results = []
+        for job in pending.jobs:
+            if not isinstance(job, Future):
+                raw_results.append(job)
+                continue
+            try:
+                raw_results.append(job.result())
+            except Exception as exc:
+                raw_results.append(self._transport_failure_result(exc))
+        return raw_results
+
+    def resolve_raw_results(self, pending: PendingPlaneCertificateBatch) -> tuple[CertificateResult, ...]:
+        """Resolve in original query order without applying runtime fallback transforms."""
+
+        return tuple(self._raw_results(pending))
 
     def _failure_record(self, env_id, query, result):
         period = None
@@ -399,15 +595,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 torch.empty(0, dtype=torch.float32, device=pending.device),
                 torch.empty(0, dtype=torch.bool, device=pending.device),
             )
-        raw_results: list[CertificateResult] = []
-        for job in pending.jobs:
-            if not isinstance(job, Future):
-                raw_results.append(job)
-                continue
-            try:
-                raw_results.append(job.result())
-            except Exception as exc:
-                raw_results.append(self._transport_failure_result(exc))
+        raw_results = self._raw_results(pending)
         results = []
         valid_results = []
         for env_id, query, result in zip(pending.env_ids, pending.queries, raw_results):
@@ -450,11 +638,45 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             results.append(result)
             valid_results.append(normal)
         self._check_failure_rate()
-        return (
-            torch.tensor([result.n_min for result in results], dtype=torch.long, device=pending.device),
-            torch.tensor([result.margin for result in results], dtype=torch.float32, device=pending.device),
-            torch.tensor(valid_results, dtype=torch.bool, device=pending.device),
+        h2d_started = time.perf_counter_ns()
+        n_tensor = torch.tensor(
+            [result.n_min for result in results], dtype=torch.long, device=pending.device
         )
+        margin_tensor = torch.tensor(
+            [result.margin for result in results], dtype=torch.float32, device=pending.device
+        )
+        valid_tensor = torch.tensor(valid_results, dtype=torch.bool, device=pending.device)
+        self._record_profile("h2d_ms", (time.perf_counter_ns() - h2d_started) / 1.0e6)
+        return n_tensor, margin_tensor, valid_tensor
+
+    @property
+    def profile_statistics(self) -> dict[str, object]:
+        stages = {}
+        for name, total in self._profile_totals.items():
+            values = np.asarray(self._profile_samples.get(name, ()), dtype=np.float64)
+            stages[name] = {
+                "total": total,
+                "count": self._profile_counts.get(name, 0),
+                "mean": total / max(self._profile_counts.get(name, 0), 1),
+                "p50": float(np.quantile(values, 0.50)) if values.size else 0.0,
+                "p95": float(np.quantile(values, 0.95)) if values.size else 0.0,
+                "p99": float(np.quantile(values, 0.99)) if values.size else 0.0,
+            }
+        worker_hits = self._profile_totals.get("worker_cache_hits", 0.0)
+        worker_misses = self._profile_totals.get("worker_cache_misses", 0.0)
+        return {
+            "enabled": self.profile_enabled,
+            "stages": stages,
+            "parent_capability_cache": self.capability_cache_statistics,
+            "worker_capability_cache": {
+                "max_size": max(self._profile_samples.get("worker_cache_size", [0.0])),
+                "hits": int(worker_hits),
+                "misses": int(worker_misses),
+                "hit_rate": worker_hits / max(worker_hits + worker_misses, 1.0),
+            },
+            "query_record_count": self._query_recorder.count if self._query_recorder else 0,
+            "query_record_valid_count": self._query_recorder.valid_count if self._query_recorder else 0,
+        }
 
     @property
     def statistics(self) -> dict[str, float | int]:
@@ -462,6 +684,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         for horizon, count in enumerate(self._solve_depth_reached_counts, start=1):
             statistics[f"reached_F{horizon}"] = int(count)
         return statistics
+
+    def close(self) -> None:
+        if self._query_recorder is not None:
+            self._query_recorder.close()
+        super().close()
 
 
 __all__ = [

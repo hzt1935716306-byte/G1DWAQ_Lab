@@ -8,7 +8,7 @@ blocking pipe I/O; no LP is solved in a thread.
 
 from __future__ import annotations
 
-from concurrent.futures import Future
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 import os
 import pickle
 from pathlib import Path
@@ -20,6 +20,13 @@ import sys
 import threading
 import time
 from typing import Any
+
+from .certificate_ipc import (
+    CertificateBatchRequest,
+    CertificateBatchResponse,
+    CertificateTransportProfile,
+    IndexedCertificateQuery,
+)
 
 
 _HEADER = struct.Struct("!Q")
@@ -45,6 +52,8 @@ class _Worker:
         worker_mode: str = "flat",
         nominal_parameters_path: Path | None = None,
         z_sole: float = -0.045,
+        exact_alpha_cache: bool = False,
+        exact_alpha_cache_max_entries: int = 8192,
     ) -> None:
         # Do not pass Isaac/Kit's dynamic-library environment into the clean
         # solver interpreter.  In particular, inherited LD_LIBRARY_PATH values
@@ -74,6 +83,8 @@ class _Worker:
         self._worker_mode = worker_mode
         self._nominal_parameters_path = nominal_parameters_path
         self._z_sole = float(z_sole)
+        self._exact_alpha_cache = bool(exact_alpha_cache)
+        self._exact_alpha_cache_max_entries = int(exact_alpha_cache_max_entries)
         self._process_lock = threading.Lock()
         self._closing = False
         self._thread_generation = 0
@@ -107,6 +118,9 @@ class _Worker:
             command.extend(("--nominal-parameters", str(self._nominal_parameters_path)))
         if self._worker_mode == "plane":
             command.extend(("--z-sole", str(self._z_sole)))
+            if self._exact_alpha_cache:
+                command.append("--exact-alpha-cache")
+                command.extend(("--exact-alpha-cache-max-entries", str(self._exact_alpha_cache_max_entries)))
         return subprocess.Popen(
             tuple(command),
             stdin=subprocess.PIPE,
@@ -190,10 +204,14 @@ class _Worker:
                     process = self.process
                 assert process.stdin is not None
                 assert process.stdout is not None
+                serialize_started = time.perf_counter_ns()
                 request = pickle.dumps(query, protocol=pickle.HIGHEST_PROTOCOL)
+                serialize_ended = time.perf_counter_ns()
+                dispatch_started = time.perf_counter_ns()
                 process.stdin.write(_HEADER.pack(len(request)))
                 process.stdin.write(request)
                 process.stdin.flush()
+                dispatch_ended = time.perf_counter_ns()
                 readable, _, _ = select.select(
                     (process.stdout,), (), (), _RESPONSE_TIMEOUT_S
                 )
@@ -202,9 +220,31 @@ class _Worker:
                         "clean certificate worker did not respond within "
                         f"{_RESPONSE_TIMEOUT_S:.0f}s"
                     )
+                receive_started = time.perf_counter_ns()
                 response_size = _HEADER.unpack(_read_exact(process.stdout, _HEADER.size))[0]
-                success, payload = pickle.loads(_read_exact(process.stdout, response_size))
+                response_bytes = _read_exact(process.stdout, response_size)
+                receive_ended = time.perf_counter_ns()
+                rebuild_started = time.perf_counter_ns()
+                success, payload = pickle.loads(response_bytes)
+                rebuild_ended = time.perf_counter_ns()
                 if success:
+                    if (
+                        isinstance(payload, CertificateBatchResponse)
+                        and isinstance(query, CertificateBatchRequest)
+                        and query.profile_enabled
+                    ):
+                        payload = CertificateBatchResponse(
+                            items=payload.items,
+                            worker_profile=payload.worker_profile,
+                            transport_profile=CertificateTransportProfile(
+                                serialize_ms=(serialize_ended - serialize_started) / 1.0e6,
+                                ipc_dispatch_ms=(dispatch_ended - dispatch_started) / 1.0e6,
+                                ipc_receive_ms=(receive_ended - receive_started) / 1.0e6,
+                                result_rebuild_ms=(rebuild_ended - rebuild_started) / 1.0e6,
+                                request_bytes=len(request),
+                                response_bytes=len(response_bytes),
+                            ),
+                        )
                     future.set_result(payload)
                 else:
                     future.set_exception(RuntimeError(payload))
@@ -253,6 +293,8 @@ class CertificateProcessPool:
         worker_mode: str = "flat",
         nominal_parameters_path: str | Path | None = None,
         z_sole: float = -0.045,
+        exact_alpha_cache: bool = False,
+        exact_alpha_cache_max_entries: int = 8192,
     ) -> None:
         if workers <= 0:
             raise ValueError("certificate process workers must be positive")
@@ -267,11 +309,89 @@ class CertificateProcessPool:
         if worker_mode == "plane" and nominal_path is None:
             raise ValueError("plane certificate workers require nominal parameters")
         self._workers = tuple(
-            _Worker(path, index, worker_mode, nominal_path, z_sole)
+            _Worker(
+                path,
+                index,
+                worker_mode,
+                nominal_path,
+                z_sole,
+                exact_alpha_cache,
+                exact_alpha_cache_max_entries,
+            )
             for index in range(workers)
         )
         self._next_worker = 0
         self._closed = False
+
+    def submit_batches(
+        self,
+        indexed_queries: tuple[tuple[int, Any], ...],
+        *,
+        chunk_size: int,
+        profile_enabled: bool = False,
+        dynamic_dispatch: bool = True,
+    ) -> Future:
+        """Submit micro-batches and restore results by query index."""
+
+        if self._closed:
+            raise RuntimeError("certificate process pool is closed")
+        if chunk_size <= 0:
+            raise ValueError("certificate IPC chunk size must be positive")
+        aggregate: Future = Future()
+        chunks = [indexed_queries[index : index + chunk_size] for index in range(0, len(indexed_queries), chunk_size)]
+        if not chunks:
+            aggregate.set_result((CertificateBatchResponse(()), ()))
+            return aggregate
+
+        def coordinate() -> None:
+            results: list[tuple[int, Any]] = []
+            profiles = []
+            try:
+                if dynamic_dispatch:
+                    available = list(self._workers)
+                    inflight: dict[Future, _Worker] = {}
+                    next_chunk = 0
+                    while available and next_chunk < len(chunks):
+                        worker = available.pop()
+                        request = self._batch_request(chunks[next_chunk], profile_enabled)
+                        inflight[worker.submit(request)] = worker
+                        next_chunk += 1
+                    while inflight:
+                        completed, _ = wait(tuple(inflight), return_when=FIRST_COMPLETED)
+                        for future in completed:
+                            worker = inflight.pop(future)
+                            response = future.result()
+                            results.extend(response.items)
+                            profiles.append(response)
+                            if next_chunk < len(chunks):
+                                request = self._batch_request(chunks[next_chunk], profile_enabled)
+                                inflight[worker.submit(request)] = worker
+                                next_chunk += 1
+                else:
+                    futures = []
+                    for chunk in chunks:
+                        worker = self._workers[self._next_worker]
+                        self._next_worker = (self._next_worker + 1) % len(self._workers)
+                        futures.append(worker.submit(self._batch_request(chunk, profile_enabled)))
+                    for future in futures:
+                        response = future.result()
+                        results.extend(response.items)
+                        profiles.append(response)
+                results.sort(key=lambda item: item[0])
+                aggregate.set_result((CertificateBatchResponse(tuple(results)), tuple(profiles)))
+            except BaseException as exc:
+                aggregate.set_exception(exc)
+
+        threading.Thread(target=coordinate, name="certificate-batch-dispatch", daemon=True).start()
+        return aggregate
+
+    @staticmethod
+    def _batch_request(chunk, profile_enabled: bool) -> CertificateBatchRequest:
+        return CertificateBatchRequest(
+            tuple(IndexedCertificateQuery(int(index), query) for index, query in chunk),
+            enqueued_ns=time.perf_counter_ns(),
+            profile_enabled=bool(profile_enabled),
+        )
 
     def submit(self, query) -> Future:
         if self._closed:

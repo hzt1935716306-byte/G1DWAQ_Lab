@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -145,3 +146,16 @@ def test_push_sampling_matches_baseline_uniform_distribution() -> None:
     assert torch.all(sample.mean(dim=0).abs() < 0.025)
     expected_std = 1.0 / math.sqrt(3.0)
     assert torch.all((sample.std(dim=0) - expected_std).abs() < 0.015)
+
+
+def test_optimized_runtime_defaults_are_plane_matched_only() -> None:
+    root = Path(__file__).resolve().parents[1]
+    plane_source = (root / "legged_lab/envs/g1/g1_plane_v1_matched_config.py").read_text()
+    baseline_source = (root / "legged_lab/envs/g1/g1_slope_matched_config.py").read_text()
+    assert "certificate_workers = 16" in plane_source
+    assert "certificate_ipc_batch_enabled = True" in plane_source
+    assert "certificate_ipc_chunk_size = 16" in plane_source
+    assert "certificate_dynamic_dispatch = True" in plane_source
+    assert "certificate_exact_alpha_cache = True" in plane_source
+    assert "certificate_ipc_batch_enabled" not in baseline_source
+    assert "certificate_exact_alpha_cache" not in baseline_source

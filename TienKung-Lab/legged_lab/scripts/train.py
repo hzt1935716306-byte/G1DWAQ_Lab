@@ -88,6 +88,12 @@ parser.add_argument(
     action="store_true",
     help="Collect lightweight synchronized timing for a short Plane V1 throughput smoke.",
 )
+parser.add_argument("--certificate_workers", type=int, default=None)
+parser.add_argument("--certificate_ipc_batch", action="store_true")
+parser.add_argument("--certificate_ipc_chunk_size", type=int, default=None)
+parser.add_argument("--certificate_dynamic_dispatch", action="store_true")
+parser.add_argument("--certificate_exact_alpha_cache", action="store_true")
+parser.add_argument("--certificate_query_record_path", type=str, default=None)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -185,6 +191,30 @@ def train():
         if not hasattr(env_cfg, "estimator_checkpoint_path"):
             raise ValueError("--estimator_checkpoint_path requires a Plane V1 task")
         env_cfg.estimator_checkpoint_path = args_cli.estimator_checkpoint_path
+    runtime_overrides = (
+        args_cli.certificate_workers is not None
+        or args_cli.certificate_ipc_batch
+        or args_cli.certificate_ipc_chunk_size is not None
+        or args_cli.certificate_dynamic_dispatch
+        or args_cli.certificate_exact_alpha_cache
+        or args_cli.certificate_query_record_path is not None
+    )
+    if runtime_overrides:
+        if not hasattr(env_cfg, "stage2_reward") or not hasattr(env_cfg, "plane_v1_reward"):
+            raise ValueError("certificate runtime overrides require a Plane V1 task")
+        runtime_cfg = env_cfg.stage2_reward
+        if args_cli.certificate_workers is not None:
+            runtime_cfg.certificate_workers = args_cli.certificate_workers
+        if args_cli.certificate_ipc_chunk_size is not None:
+            runtime_cfg.certificate_ipc_chunk_size = args_cli.certificate_ipc_chunk_size
+        runtime_cfg.certificate_ipc_batch_enabled = bool(args_cli.certificate_ipc_batch)
+        runtime_cfg.certificate_dynamic_dispatch = bool(args_cli.certificate_dynamic_dispatch)
+        runtime_cfg.certificate_exact_alpha_cache = bool(args_cli.certificate_exact_alpha_cache)
+        if args_cli.certificate_query_record_path is not None:
+            runtime_cfg.certificate_query_record_enabled = True
+            runtime_cfg.certificate_query_record_path = args_cli.certificate_query_record_path
+    if args_cli.plane_v1_profile and hasattr(env_cfg, "stage2_reward"):
+        env_cfg.stage2_reward.certificate_profile_enabled = True
     if args_cli.plane_v1_smoke:
         if not hasattr(env_cfg, "plane_v1_reward"):
             raise ValueError("--plane_v1_smoke requires a final Plane V1 task")
@@ -337,12 +367,27 @@ def train():
     if args_cli.plane_v1_profile:
         profile = env.plane_v1_profile_summary()
         iteration_timings = getattr(runner, "plane_v1_iteration_timings", [])
-        rollout_seconds = sum(item["rollout_seconds"] for item in iteration_timings)
-        update_seconds = sum(item["update_seconds"] for item in iteration_timings)
+        if iteration_timings:
+            rollout_seconds = sum(item["rollout_seconds"] for item in iteration_timings)
+            update_seconds = sum(item["update_seconds"] for item in iteration_timings)
+            timing_iterations = len(iteration_timings)
+        else:
+            # Some installations resolve rsl_rl from an editable sibling checkout.
+            # Recover the exact timings already emitted by that runner rather than
+            # modifying or monkey-patching its PPO implementation.
+            from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+            events = EventAccumulator(log_dir)
+            events.Reload()
+            collection = events.Scalars("Perf/collection time")
+            learning = events.Scalars("Perf/learning_time")
+            timing_iterations = min(len(collection), len(learning))
+            rollout_seconds = sum(item.value for item in collection[:timing_iterations])
+            update_seconds = sum(item.value for item in learning[:timing_iterations])
         total_seconds = rollout_seconds + update_seconds
-        total_transitions = env.num_envs * agent_cfg.num_steps_per_env * len(iteration_timings)
+        total_transitions = env.num_envs * agent_cfg.num_steps_per_env * timing_iterations
         profile["ppo"] = {
-            "iterations": len(iteration_timings),
+            "iterations": timing_iterations,
             "rollout_wall_seconds": rollout_seconds,
             "update_wall_seconds": update_seconds,
             "total_wall_seconds": total_seconds,
@@ -350,7 +395,7 @@ def train():
                 total_transitions / total_seconds if total_seconds > 0.0 else 0.0
             ),
             "policy_steps_per_second_including_ppo": (
-                agent_cfg.num_steps_per_env * len(iteration_timings) / total_seconds
+                agent_cfg.num_steps_per_env * timing_iterations / total_seconds
                 if total_seconds > 0.0
                 else 0.0
             ),
