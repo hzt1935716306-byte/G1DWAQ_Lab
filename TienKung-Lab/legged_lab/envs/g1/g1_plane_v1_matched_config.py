@@ -49,11 +49,11 @@ class G1PlaneV1BaselineMatchedEnvCfg(G1PlaneV1EnvCfg):
         reset_base.params["pose_range"]["x"] = (-0.5, 0.5)
         reset_base.params["pose_range"]["y"] = (-0.5, 0.5)
 
-        # Ordinary locomotion terms exactly match g1_slope_sys_d_matched.
+        # Keep the original Plane V1 / DWAQ-style locomotion reward weights.
         # Reward-on variants add only the separate touchdown-event channel.
-        self.reward.track_lin_vel_xy_exp.weight = 1.0
-        self.reward.track_ang_vel_z_exp.weight = 1.0
-        self.reward.joint_deviation_hip.weight = -0.15
+        self.reward.track_lin_vel_xy_exp.weight = 2.0
+        self.reward.track_ang_vel_z_exp.weight = 2.0
+        self.reward.joint_deviation_hip.weight = -0.30
 
 
 @configclass
