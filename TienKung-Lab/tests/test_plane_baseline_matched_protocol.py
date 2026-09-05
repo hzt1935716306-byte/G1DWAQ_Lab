@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from legged_lab.recovery.baseline_matched_protocol import (
+    CARDINAL_MIN_SPEED,
+    configure_matched_command_and_reset,
     lookup_matched_slope,
+    matched_command_standing_mask,
     sample_baseline_matched_cardinal_commands,
     terrain_curriculum_decisions,
 )
 from legged_lab.recovery.plane_nominal_params import command_direction
+from legged_lab.recovery.stage2_reward import plane_v1_touchdown_reward
 from legged_lab.recovery.plane_terrain_math import (
     MATCHED_COLS,
     MATCHED_ROWS,
@@ -72,6 +77,61 @@ def test_command_distribution_gate_with_100000_samples() -> None:
     assert float(command[:, 0].max()) <= 1.0
     assert float(command[:, 0].min()) >= -0.6
     assert float(command[:, 1].abs().max()) <= 0.5
+    moving_speed = torch.linalg.vector_norm(command[moving, :2], dim=1)
+    assert float(moving_speed.min()) >= CARDINAL_MIN_SPEED
+
+
+def test_shared_command_and_reset_configuration_contract() -> None:
+    cfg = SimpleNamespace(
+        commands=SimpleNamespace(
+            resampling_time_range=(0.0, 0.0),
+            rel_standing_envs=0.0,
+            rel_heading_envs=1.0,
+            heading_command=True,
+            ranges=SimpleNamespace(),
+        ),
+        domain_rand=SimpleNamespace(
+            events=SimpleNamespace(
+                reset_base=SimpleNamespace(
+                    params={
+                        "pose_range": {"yaw": (-3.14, 3.14)},
+                        "velocity_range": {"yaw": (-0.5, 0.5)},
+                    }
+                )
+            )
+        ),
+    )
+    configure_matched_command_and_reset(cfg)
+    assert cfg.commands.resampling_time_range == (10.0, 10.0)
+    assert cfg.commands.rel_standing_envs == 0.2
+    assert not cfg.commands.heading_command
+    assert cfg.commands.rel_heading_envs == 0.0
+    assert cfg.commands.ranges.lin_vel_x == (-0.6, 1.0)
+    assert cfg.commands.ranges.lin_vel_y == (-0.5, 0.5)
+    assert cfg.commands.ranges.ang_vel_z == (0.0, 0.0)
+    assert cfg.commands.ranges.heading is None
+    reset = cfg.domain_rand.events.reset_base.params
+    assert reset["pose_range"]["yaw"] == (0.0, 0.0)
+    assert reset["velocity_range"]["yaw"] == (0.0, 0.0)
+
+
+def test_standing_is_explicit_certificate_not_applicable() -> None:
+    command = torch.tensor(
+        ((0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, -0.2, 0.0))
+    )
+    assert matched_command_standing_mask(command).tolist() == [True, False, False]
+    result = plane_v1_touchdown_reward(
+        None,
+        6,
+        -3.0,
+        touchdown_index=5,
+        terrain_plane_valid=False,
+        solver_valid=False,
+        enabled=True,
+        intentional_not_applicable=True,
+    )
+    assert result.total == 0.0
+    assert not result.update_previous_phi
 
 
 def test_standing_nominal_lookup_has_explicit_direction() -> None:

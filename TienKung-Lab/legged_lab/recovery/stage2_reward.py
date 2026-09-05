@@ -69,6 +69,7 @@ def plane_v1_touchdown_reward(
     terrain_plane_valid: bool,
     solver_valid: bool,
     enabled: bool,
+    intentional_not_applicable: bool = False,
     parameters: PlaneV1RewardParameters | None = None,
 ) -> PlaneV1RewardResult:
     """Compute the final Plane V1 reward for TD0--TD5.
@@ -82,6 +83,11 @@ def plane_v1_touchdown_reward(
     cfg = parameters or PlaneV1RewardParameters()
     if not 0 <= touchdown_index <= cfg.certificate_horizon_touchdowns:
         raise ValueError("touchdown_index must be in [0, 5]")
+
+    # Standing is outside the periodic-walking certificate domain.  It is not
+    # an unrecoverable state, invalid geometry, or numerical solver failure.
+    if intentional_not_applicable:
+        return PlaneV1RewardResult()
 
     if not terrain_plane_valid:
         if touchdown_index == 0 or not enabled:

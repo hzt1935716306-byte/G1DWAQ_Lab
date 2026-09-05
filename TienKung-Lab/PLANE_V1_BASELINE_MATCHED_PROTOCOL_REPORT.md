@@ -1,204 +1,185 @@
-# Plane V1 Baseline-Matched 正式协议检查报告
+# Plane V1 Baseline-Matched 正式协议收口报告
 
 日期：2026-09-05
 分支：`feat/multi-terrain-walking`
-检查基准 HEAD：`1fdfa88e0777a0488b5108f6cb3a335f7504d4d3`
+本轮基准提交：`a79fc47a71d18ddaee335483bab90df2718c0d41`
 
 ## 结论
 
-新的 ±15° continuous coplanar terrain、baseline performance curriculum、三组 matched baseline 和四组 matched Plane V1 已实现。Gate A、B、C、D、F 通过，32-env 环境直接 step smoke 通过。
+最终 7 个 matched task 的 terrain、command、reset yaw、push 和训练预算已经对齐。Plane V1 的普通 locomotion reward 已与 `g1_slope_sys_d_matched` 完全一致；reward-on 只额外启用独立 recoverability touchdown-event reward，reward-off 的该通道严格为零。
 
-**目前不允许开始 formal 10000-iteration training。** Gate E 的坡度和上限速度已经覆盖，但 `0～0.2 m/s` 低速区以及 20% standing 没有完整、可由严格 gait-cycle 数据支持的 nominal 参数。不能用 clamp、外推或伪造零速步态解决。
+Moving command 的 nominal lookup 覆盖率为 100%，standing 被明确标记为 intentional not-applicable，不提交 LP、不产生恢复奖励，也不计为 geometry/solver/theory failure。因此新的 Gate A–F 全部通过，已经具备开始 formal training 的协议条件。本轮没有启动 10000-iteration 训练。
 
-## 1. 修改和新增文件
+## 1. 最终 7 个 task
 
-- `legged_lab/terrains/plane_terrain_cfg.py`
-  - 保留旧 `PLANE_RECOVERY_TERRAINS_CFG`。
-  - 新增 10×20 continuous coplanar curriculum terrain。
-  - 采用 Isaac Lab 原始 difficulty 插值语义，上限改为 `tan(15°)`。
-- `legged_lab/recovery/plane_terrain_math.py`
-  - 独立复现列分配、difficulty RNG 顺序、signed alpha table 和 plane normal。
-- `legged_lab/recovery/baseline_matched_protocol.py`
-  - 4 m curriculum 判据、cardinal command 采样和 row×col slope lookup。
-- `legged_lab/envs/g1/g1_slope_matched_config.py`
-  - 三个旧 baseline 的 ±15° matched 配置；旧任务不变。
-- `legged_lab/envs/g1/g1_slope_matched_env.py`
-  - 64 m physical plane 与 8 m curriculum reference 解耦。
-- `legged_lab/envs/g1/g1_plane_v1_matched_config.py`
-  - 四个 Plane V1 matched 配置。
-- `legged_lab/envs/g1/g1_plane_v1_matched_env.py`
-  - performance curriculum、20% standing cardinal command、row×col exact geometry。
-- `legged_lab/envs/__init__.py`
-  - 注册七个新 matched task。
-- `legged_lab/recovery/plane_nominal_params.py`
-  - nominal schema/lookup 可显式表达 standing 和 speed-zero calibration node；没有自动生成节点。
-- `tools/recovery/collect_dwaq_plane_nominal.py`
-  - 支持 standing/zero-speed 诊断和从候选 YAML 增量 bootstrap；不覆盖旧 YAML。
-- `tests/test_plane_baseline_matched_protocol.py`
-  - Gate A–D 的协议测试。
+Baseline：
 
-`legged_lab/recovery/certificate.py` 未修改，SHA256 仍为：
+- `g1_slope_nosys_d_matched`：plain PPO，无 symmetry reward/mirror loss。
+- `g1_slope_sys_d_matched`：symmetric PPO，保留 symmetry reward/mirror loss。
+- `g1_dwaq_slope_nosys_d_matched`：DWAQ，保留 encoder/latent/AE 和无固定 gait phase 定义。
 
-`7fbef67ba3faa4bc6fdaa4d6b0de0262f85cb178d0964afe8d2a385c105234ef`
+Plane V1：
 
-## 2. 新增 task
-
-正式主对比候选：
-
-- `g1_slope_nosys_d_matched`
-- `g1_slope_sys_d_matched`
-- `g1_dwaq_slope_nosys_d_matched`
 - `g1_plane_v1_estimator_context_no_reward_matched`
 - `g1_plane_v1_estimator_context_reward_matched`
 - `g1_plane_v1_privileged_context_no_reward_matched`
 - `g1_plane_v1_privileged_context_reward_matched`
 
-七个任务均配置：4096 env、24 steps/env、10000 iterations、10×20 terrain、`max_init_terrain_level=5`、seed 42 默认值。
+所有旧 baseline、旧 Plane V1 task 和旧约 ±20° terrain 均保留，未覆盖。
 
-旧的约 ±20° baseline、旧 Plane terrain 和旧 Plane V1 task 均保留，未覆盖。
+## 2. Terrain 与 curriculum 协议
 
-## 3. 原 baseline recipe 与 matched terrain
+- continuous x-aligned coplanar plane，不使用 pyramid terrain；
+- 10 rows × 20 cols；
+- flat/uphill/downhill = 40%/30%/30%，对应 8/6/6 列；
+- 最大坡度 ±15°，最大 slope coefficient 为 `tan(15°)`；
+- difficulty 到 slope magnitude 的映射与原 baseline 相同；
+- performance-based move-up/move-down curriculum；
+- physical plane 为 64 m，curriculum reference length 显式保持 8 m；
+- move-up threshold 为 4 m；
+- initial max terrain level 为 5。
 
-| 项目 | 旧 baseline | 新 matched 主对比 |
-|---|---:|---:|
-| curriculum | performance-based | performance-based |
-| rows × cols | 10 × 20 | 10 × 20 |
-| flat/up/down | 40/30/30% | 40/30/30% |
-| columns | 8/6/6 | 8/6/6 |
-| slope coefficient | `[0, 0.364]` | `[0, tan(15°)]` |
-| 最大坡度 | 约 ±20° | 理论上限 ±15° |
-| geometry | pyramid heightfield | continuous x-aligned coplanar plane |
-| physical tile | 8×8 m | 64×32 m |
-| curriculum reference | 8 m | 显式 8 m |
-| move-up threshold | 4 m | 4 m |
-| initial max level | 5 | 5 |
+seed 42 的 200 个实际 mesh slope 范围为 `[-14.932512°, +14.945409°]`。mesh normal 与 row×column metadata normal 的最大绝对误差为 `1.11e-16`。
 
-difficulty 映射严格复现 Isaac Lab：
+## 3. Command 协议
 
-`difficulty = (row + U[0,1)) / 10`
+7 个 matched task 现在使用同一个 `BaselineMatchedCardinalVelocityCommand` 实现：
 
-`coefficient = difficulty * tan(15°)`，downhill 取负，`alpha = atan(coefficient)`。
+- command resampling time：10 s；
+- standing：20%，`vx=vy=yaw=0`；
+- moving：80%；
+- moving 内 +x/-x/+y/-y 条件概率各 25%；
+- diagonal probability：0；
+- +x：`U[0.2, 1.0] m/s`；
+- -x：`U[0.2, 0.6] m/s`；
+- ±y：`U[0.2, 0.5] m/s`；
+- moving speed 不低于 0.2 m/s；
+- yaw command 恒为 0，`heading_command=False`，`rel_heading_envs=0`。
 
-## 4. Seed 42 的 exact row × column slope table（degree）
+100000 次 seed-42 采样结果：
 
-列 0–7 为 flat，8–13 为 uphill，14–19 为 downhill。随机抖动是 Isaac TerrainGenerator 原语义，因此同一 row 的六个 slope column 不完全相等。
+- standing：19.8960%；
+- moving 条件概率：+x 25.2147%、-x 24.8564%、+y 24.9813%、-y 24.9476%；
+- diagonal：0%；
+- yaw：严格为 0；
+- moving minimum speed：不低于 0.2 m/s；
+- vx/vy 全部位于上述方向范围内。
 
-| row | c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7 | c8 | c9 | c10 | c11 | c12 | c13 | c14 | c15 | c16 | c17 | c18 | c19 |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +1.020 | +0.234 | +1.395 | +0.700 | +0.897 | +0.262 | -0.747 | -1.268 | -0.165 | -0.447 | -1.367 | -1.438 |
-| 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +2.158 | +2.602 | +2.608 | +1.845 | +2.531 | +2.953 | -2.287 | -2.909 | -2.939 | -2.325 | -2.904 | -1.904 |
-| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +4.312 | +3.750 | +3.474 | +3.536 | +3.197 | +3.956 | -4.501 | -3.282 | -3.420 | -3.459 | -3.861 | -3.255 |
-| 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +4.850 | +5.177 | +6.071 | +5.478 | +5.229 | +5.125 | -5.467 | -5.440 | -4.653 | -6.020 | -5.077 | -5.861 |
-| 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +6.152 | +6.575 | +7.297 | +6.386 | +6.181 | +7.013 | -6.835 | -6.282 | -6.958 | -6.367 | -7.287 | -6.350 |
-| 5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +7.767 | +8.579 | +8.709 | +8.919 | +8.374 | +7.665 | -8.033 | -8.642 | -8.189 | -7.698 | -8.626 | -7.901 |
-| 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +10.211 | +9.674 | +9.804 | +10.265 | +9.626 | +10.562 | -9.629 | -9.554 | -10.371 | -9.783 | -9.692 | -10.028 |
-| 7 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +11.307 | +10.753 | +11.026 | +11.686 | +10.837 | +11.337 | -11.393 | -11.598 | -11.817 | -12.088 | -10.763 | -11.915 |
-| 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +12.335 | +12.272 | +12.240 | +12.731 | +12.250 | +13.243 | -12.741 | -13.162 | -12.563 | -13.401 | -13.190 | -12.387 |
-| 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +14.283 | +14.945 | +14.860 | +14.465 | +14.408 | +13.678 | -13.590 | -14.668 | -14.933 | -14.639 | -13.938 | -14.008 |
+## 4. Standing certificate 语义
 
-实际范围为 `[-14.932512°, +14.945409°]`，不超过 ±15°。
+Moving command（speed ≥ 0.2 m/s）继续使用完整 Plane V1 certificate、N/m context 和可选 recovery reward。
 
-## 5. Command distribution
+Standing command 被定义为 `intentional_not_applicable`：
 
-Plane V1 matched 的 100000 次 seed-42 采样：
+- 不向 LP solver 提交 query；
+- recovery context 固定为 `[0, 0, 0]`；
+- `current_n_min=-1`（N/A）；
+- `current_margin=0`；
+- `current_certificate_valid=False`；
+- 不给 delta-Phi reward；
+- 不给 unrecovered touchdown cost；
+- 不给 TD5 penalty；
+- 不统计为 solver failure、geometry failure 或 theory failure。
 
-- standing：19.8960%
-- moving 条件概率：+x 25.2147%、-x 24.8564%、+y 24.9813%、-y 24.9476%
-- 无条件 moving：+x 20.1980%、-x 19.9110%、+y 20.0110%、-y 19.9840%
-- diagonal：0%
-- 实测范围：vx `[-0.599970, 0.999973]`，vy `[-0.499992, 0.499972]`
-- yaw：恒为 0
-- resampling：10 s
+Standing 环境仍正常接受 velocity-setting push，继续运行普通 locomotion reward、termination 和 PPO。若 moving recovery 期间 command 被重新采样为 standing，只结束 certificate/recovery-reward bookkeeping，不改变物理环境或普通训练。
 
-matched baseline 保留 baseline 自身的 UniformVelocityCommand（可能同时有 vx/vy）；Plane V1 因理论适用域使用 cardinal-only。这是明确的方法必要差异。
+32-env reward-on 集成检查中强制全部 standing 并触发 push：LP submissions=0、recovery reward=0、recovery active=0、context 全零。
 
-## 6. Push
+## 5. Reset yaw 协议
 
-七个 matched task 从 iteration 0 使用：
+7 个 matched task 均为：
 
-- delta-v x/y：独立 `U[-1,1] m/s`
-- interval：`U[10,15] s`
-- 无 push curriculum、adaptive push 或 easy sample
+- reset x/y：`[-0.5, 0.5]`；
+- reset yaw：严格为 0；
+- reset yaw velocity：严格为 0；
+- yaw command：严格为 0。
 
-Plane wrapper 最终仍调用同一个 Isaac Lab `push_by_setting_velocity`，只增加 recovery bookkeeping。
+原有 linear velocity、roll/pitch velocity、joint、friction、mass、observation noise 和 action-delay randomization 未改。
 
-10000 次采样结果：
+## 6. Push 协议
 
-| axis | min | max | mean | std |
-|---|---:|---:|---:|---:|
-| x | -0.999606 | 0.999975 | -0.001155 | 0.578430 |
-| y | -0.999248 | 0.999378 | -0.003823 | 0.580607 |
+7 个 matched task 从 iteration 0 开启：
 
-理论 uniform std 为 `1/sqrt(3)=0.577350`。
+- delta-v x/y 独立 `U[-1, 1] m/s`；
+- interval `U[10, 15] s`；
+- 无 push curriculum；
+- 无 adaptive upgrade；
+- 无 easy-sample mixture。
 
-## 7. Domain randomization 差异
+Plane V1 的 wrapper 只增加 recovery bookkeeping，实际扰动仍为相同的 velocity-setting push。此前 10000 次 push 采样已验证范围、均值和标准差符合独立均匀分布。
 
-完全相同：friction/material、base mass、joint reset、linear/roll/pitch reset velocity、observation noise、action delay 设置、velocity-jump physical operation。
+## 7. Locomotion reward 对齐
 
-Plane V1 已恢复 baseline 的 reset x/y `[-0.5,0.5]`。保留的必要差异：
+自动比较配置对象的完整 `reward.to_dict()`：
 
-- matched baseline：旧 reset yaw/yaw velocity randomization。
-- Plane V1：reset yaw = 0、yaw velocity = 0、yaw command = 0，并保留 5° heading applicability gate。
-- Plane V1 estimator task 多一个 IMU sensor；这是 estimator 输入需要，不改变 baseline。
-- Plane V1 actor history/context 结构保持方法自身定义，不为课程对齐而改变。
+- `g1_slope_sys_d_matched` 与 4 个 Plane V1 matched 的所有普通 locomotion reward term、function、parameters 和 weight 完全一致；
+- `track_lin_vel_xy_exp=1.0`；
+- `track_ang_vel_z_exp=1.0`；
+- `joint_deviation_hip=-0.15`；
+- reward-off 的 recoverability event channel 严格关闭；
+- reward-on 只额外启用 recoverability touchdown-event reward。
 
-## 8. Locomotion reward 差异
+DWAQ 自身的方法性 reward/encoder/latent/AE 定义没有被改成普通 PPO。
 
-`g1_slope_sys_d` 与 Plane V1 的 reward term 集合相同，以下三个权重不同：
-
-| term | g1_slope_sys_d | Plane V1 |
-|---|---:|---:|
-| track_lin_vel_xy_exp | 1.0 | 2.0 |
-| track_ang_vel_z_exp | 1.0 | 2.0 |
-| joint_deviation_hip | -0.15 | -0.30 |
-
-其余普通 locomotion terms 和权重相同：lin_vel_z -1、ang_vel_xy -0.05、energy -0.001、dof_acc -2.5e-7、action_rate -0.01、undesired_contacts -1、fly -1、body_orientation -2、flat_orientation -1、termination -200、feet_air_time 0.15、feet_slide -0.25、feet_force -0.003、feet_too_near -2、feet_stumble -2、dof_pos_limits -2、arms -0.2、legs -0.02，以及三项 symmetry reward -1/-1/-2。
-
-本轮没有修改任何 reward。是否为最严格因果比较统一这三个权重，需要单独决定。
-
-## 9. Certificate/nominal support
-
-当前候选：`tools/recovery/generated/g1_plane_nominal_params_g1_slope_sys_d_candidate.yaml`
-
-- 140 nodes，±15°、四 cardinal directions、0.2–1.0 m/s。
-- 新 terrain 的所有实际 slope 都在候选范围内，可做 bounded interpolation。
-- 正式命令的上限均已覆盖：+x 1.0、-x 0.6、±y 0.5。
-- 不覆盖 moving speed `<0.2` 和 standing。
-
-在新 terrain + 新 command 上随机 20000 次 lookup：
-
-- valid：53.22%
-- moving low-speed 超出标定下界：26.58%
-- standing 无节点：20.20%
-- slope-out-of-bounds：0%
-
-低速实采诊断（flat，0.05/0.10/0.15 m/s，四方向，每节点目标 40 strict cycles）：
-
-- 可采：±x@0.10/0.15、±y@0.15，共 6/12 nodes。
-- 0 cycle：±x@0.05、±y@0.05/0.10，共 6/12 nodes。
-- exact standing：7 slopes×4 labels 在 1000 policy steps 内均为 0 complete gait cycle。
-
-这说明严格周期步态参数在接近零速时并不存在于当前教师轨迹中。必须先决定 standing/near-zero 的 certificate 语义，再生成正式 candidate YAML；不能把 0.2 节点静默外推到 0。
-
-## 10. Gate 结果
+## 8. Gate A–F 结果
 
 | Gate | 结果 | 证据 |
 |---|---|---|
-| A Terrain geometry | PASS | 实际生成 200 meshes；mesh normal vs row×col alpha 最大误差 `1.11e-16` |
-| B Terrain curriculum | PASS | move-up 严格 `distance>4m`；move-down 与 BaseEnv 公式一致且 `&=~move_up` |
-| C Command | PASS | 100000 samples；standing/cardinal/ranges/zero-yaw 全部通过 |
-| D Push | PASS | 10000 samples；range/moments/interval/function 与 baseline 对齐 |
-| E Certificate support | **FAIL** | slope 和 upper speed 通过；near-zero/standing 仅 53.22% overall lookup valid |
-| F Regression | PASS | 80 tests passed；包含 dynamics、F1–F5、margin、flat/plane fixtures；certificate SHA 不变 |
+| A Terrain geometry | PASS | 200 meshes；row×column slope/normal 一致；最大坡度不超过 ±15° |
+| B Terrain curriculum | PASS | performance move-up/down；8 m reference；4 m move-up；initial max level 5 |
+| C Command + reset | PASS | 100000 samples；standing/cardinal/min-speed/ranges/zero-yaw；7/7 reset yaw checks |
+| D Push | PASS | x/y `U[-1,1]`、10–15 s、iteration 0、无 push curriculum |
+| E Certificate support | PASS | standing N/A 单列；moving lookup 100%；OOB 0；representative solver failure 0 |
+| F Reward/regression/smoke | PASS | reward dict 4/4 相等；82 tests；7/7 32-env direct-step smoke |
 
-32-env direct environment smoke：环境成功创建；Actor observation `(32,483)`；一步 simulation 后 observation/reward finite，shape 保持 `(32,483)`。RSL logging smoke 另发现 runner 会扫描另一份旧仓库的 Git diff；这与环境/certificate 无关，direct smoke 已绕开。
+`legged_lab/recovery/certificate.py` 未修改，SHA256 仍为：
 
-## 11. 是否可以开始 formal training
+`7fbef67ba3faa4bc6fdaa4d6b0de0262f85cb178d0964afe8d2a385c105234ef`
 
-**否。** 代码层面的 matched terrain/task 已准备好，但 Gate E 尚未通过。需要用户决定以下其中一种、且必须作为明确协议：
+## 9. Moving certificate support 覆盖率
 
-1. 为 standing/near-zero 定义独立的静态平衡 terminal nominal（需要新的标定与 validation）；或
-2. 明确 certificate 只在有完整步态的 moving support 生效，并规定 standing/near-zero 时 context/reward 的行为；或
-3. 改变 command 支持下界/standing 比例，但这会偏离当前冻结目标，不能由代码自动决定。
+使用正式共享 command sampler、seed-42 真实 row×column slope table 和 candidate nominal YAML，随机检查 100000 个 command/terrain pair：
 
-在该决定完成、正式 candidate YAML 生成且 Gate E 重跑通过之前，不应启动七组 formal 10000-iteration training。
+- standing N/A count：19896；
+- moving count：80104；
+- moving lookup valid：80104/80104 = 100%；
+- geometry invalid rate：0%；
+- speed out-of-bounds rate：0%；
+- slope out-of-bounds rate：0%；
+- other lookup invalid rate：0%。
+
+另对 200 个覆盖实际 slope/direction/speed 的 periodic nominal query 运行 certificate：solver failure 0/200。
+
+使用的 nominal 文件：
+
+`tools/recovery/generated/g1_plane_nominal_params_g1_slope_sys_d_candidate.yaml`
+
+## 10. Standing N/A 比例
+
+- 100000 次正式 command 采样：19.8960%；
+- 目标协议：约 20%；
+- 它不进入 moving lookup valid 分母，也不计为 Gate E failure。
+
+运行时日志已分别提供 intentional-not-applicable、geometry-invalid 和 solver-failure 计数/比例，三种语义不会静默混合。
+
+## 11. 32-env direct-step smoke
+
+7 个 matched task 均完成真实 Isaac Sim 环境创建和一步 simulation：
+
+| task | actor observation | 结果 |
+|---|---:|---|
+| g1_slope_nosys_d_matched | 32×960 | finite PASS |
+| g1_slope_sys_d_matched | 32×960 | finite PASS |
+| g1_dwaq_slope_nosys_d_matched | 32×96 | finite PASS |
+| g1_plane_v1_estimator_context_no_reward_matched | 32×483 | finite PASS |
+| g1_plane_v1_estimator_context_reward_matched | 32×483 | finite PASS |
+| g1_plane_v1_privileged_context_no_reward_matched | 32×483 | finite PASS |
+| g1_plane_v1_privileged_context_reward_matched | 32×483 | finite PASS |
+
+所有 observation、action 和 reward 均为 finite，无 NaN、无 solver crash。Estimator smoke 的第一步仍处于 5-frame warm-up，因此没有提交 certificate；privileged smoke 提交了 11 个 moving touchdown query，standing 环境未提交。
+
+## 12. Formal training readiness
+
+协议与本轮要求的 Gate 已全部通过，代码已具备 formal training 条件。正式冻结配置为：4096 env、24 steps/env、10000 iterations。
+
+本轮没有启动训练、没有 resume 旧 pilot、没有修改 certificate、没有混入 certificate 性能优化。正式长训需等待用户确认后再开始。

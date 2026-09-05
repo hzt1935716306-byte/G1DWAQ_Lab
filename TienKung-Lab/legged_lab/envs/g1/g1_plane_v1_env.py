@@ -19,6 +19,7 @@ from legged_lab.estimation import (
 from legged_lab.recovery.plane_certificate_runtime import (
     PlaneCalibratedG1CertificateEvaluator,
 )
+from legged_lab.recovery.baseline_matched_protocol import matched_command_standing_mask
 from legged_lab.recovery.plane_v1 import (
     plane_v1_allowed_type_indices,
     plane_v1_learning_iteration,
@@ -130,6 +131,11 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_event_total = torch.zeros(count, device=device)
         self._v1_last_geometry_valid = torch.zeros(count, dtype=torch.bool, device=device)
         self._v1_last_solver_valid = torch.zeros(count, dtype=torch.bool, device=device)
+        self._v1_intentional_not_applicable = torch.zeros(
+            count, dtype=torch.bool, device=device
+        )
+        self._v1_intentional_not_applicable_count = 0
+        self._v1_geometry_invalid_count = 0
         self._v1_solver_failure_count = 0
         self._v1_completed_episodes: list[dict[str, float | str]] = []
         self._v1_reward_ratios: deque[float] = deque(maxlen=4096)
@@ -228,6 +234,7 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_cumulative_reward[env_ids] = 0.0
         self._v1_locomotion_reward[env_ids] = 0.0
         self._v1_last_touchdown_time[env_ids] = 0.0
+        self._v1_intentional_not_applicable[env_ids] = False
 
     def _on_curriculum_push(
         self,
@@ -235,19 +242,38 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         delta_v_xy: torch.Tensor,
         sampled_level_indices: torch.Tensor,
     ) -> None:
-        super()._on_curriculum_push(env_ids, delta_v_xy, sampled_level_indices)
-        self._v1_touchdown_index[env_ids] = -1
-        self._v1_previous_phi_valid[env_ids] = False
-        self._v1_last_n[env_ids] = -1
-        self._v1_initial_n[env_ids] = -1
-        self._v1_final_n[env_ids] = -1
-        self._v1_minimum_n[env_ids] = -1
-        self._v1_n_decrease[env_ids] = 0
-        self._v1_n_same[env_ids] = 0
-        self._v1_n_increase[env_ids] = 0
-        self._v1_cumulative_reward[env_ids] = 0.0
-        self._v1_locomotion_reward[env_ids] = 0.0
-        self._v1_last_touchdown_time[env_ids] = 0.0
+        standing = matched_command_standing_mask(
+            self.command_generator.command[env_ids]
+        )
+        moving_ids = env_ids[~standing]
+        if moving_ids.numel():
+            super()._on_curriculum_push(
+                moving_ids,
+                delta_v_xy[~standing],
+                sampled_level_indices[~standing],
+            )
+            self._v1_touchdown_index[moving_ids] = -1
+            self._v1_previous_phi_valid[moving_ids] = False
+            self._v1_last_n[moving_ids] = -1
+            self._v1_initial_n[moving_ids] = -1
+            self._v1_final_n[moving_ids] = -1
+            self._v1_minimum_n[moving_ids] = -1
+            self._v1_n_decrease[moving_ids] = 0
+            self._v1_n_same[moving_ids] = 0
+            self._v1_n_increase[moving_ids] = 0
+            self._v1_cumulative_reward[moving_ids] = 0.0
+            self._v1_locomotion_reward[moving_ids] = 0.0
+            self._v1_last_touchdown_time[moving_ids] = 0.0
+
+        # The physical velocity jump has already been applied by the event.
+        # For standing rows only the certificate/reward channel is disabled.
+        standing_ids = env_ids[standing]
+        if standing_ids.numel():
+            self._clear_plane_v1_episode(standing_ids)
+            self._clear_recovery_context(standing_ids)
+            self._v1_intentional_not_applicable[standing_ids] = True
+            self.last_push_delta_v_xy[standing_ids] = delta_v_xy[standing]
+            self._push_started_this_step[standing_ids] = True
 
     def _update_estimator(
         self,
@@ -322,7 +348,19 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_last_geometry_valid[env_ids] = certificate_state.terrain_plane_valid[env_ids]
         self._v1_last_solver_valid[env_ids] = False
 
-        solve_ids = env_ids[estimator_ready[env_ids]]
+        standing = matched_command_standing_mask(
+            certificate_state.command_velocity[env_ids]
+        )
+        standing_ids = env_ids[standing]
+        self._v1_intentional_not_applicable[env_ids] = False
+        self._v1_intentional_not_applicable[standing_ids] = True
+        self._v1_intentional_not_applicable_count += int(standing_ids.numel())
+
+        moving_ids = env_ids[~standing]
+        geometry_invalid = ~certificate_state.terrain_plane_valid[moving_ids]
+        self._v1_geometry_invalid_count += int(geometry_invalid.sum().item())
+
+        solve_ids = moving_ids[estimator_ready[moving_ids]]
         if solve_ids.numel() == 0:
             return
         assert self._certificate_evaluator is not None
@@ -434,7 +472,13 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._clear_plane_v1_episode(ids)
 
     def _process_plane_v1_touchdowns(self, state, dones: torch.Tensor) -> None:
-        mask = state.touchdown & self.recovery_active & ~dones & ~self._push_started_this_step
+        mask = (
+            state.touchdown
+            & self.recovery_active
+            & ~self._v1_intentional_not_applicable
+            & ~dones
+            & ~self._push_started_this_step
+        )
         env_ids = mask.nonzero(as_tuple=False).flatten()
         if env_ids.numel() == 0:
             return
@@ -523,6 +567,15 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
                 ),
                 "RecoveryReward/enabled": float(self._plane_v1_reward_enabled),
                 "RecoveryReward/solver_failure_count": float(self._v1_solver_failure_count),
+                "RecoveryContext/intentional_not_applicable_fraction": float(
+                    self._v1_intentional_not_applicable.float().mean().item()
+                ),
+                "RecoveryContext/intentional_not_applicable_count": float(
+                    self._v1_intentional_not_applicable_count
+                ),
+                "RecoveryContext/geometry_invalid_count": float(
+                    self._v1_geometry_invalid_count
+                ),
                 "Recovery/active_fraction": float(self.recovery_active.float().mean().item()),
                 "RecoveryContext/refresh_batches": float(self._context_refresh_batches),
                 "RecoveryContext/evaluations": float(self._context_refresh_evaluations),
@@ -717,7 +770,26 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._last_recovery_state = physical_state
         self._last_certificate_state = certificate_state
 
-        active_for_locomotion = (recovery_before_step | self.recovery_active) & ~dones
+        # A command can be resampled to standing during a moving recovery
+        # episode.  End only the certificate/reward bookkeeping; locomotion,
+        # physical pushes, terminations and PPO continue normally.
+        standing_mask = matched_command_standing_mask(
+            certificate_state.command_velocity
+        )
+        newly_standing_active = standing_mask & self.recovery_active
+        standing_active_ids = newly_standing_active.nonzero(as_tuple=False).flatten()
+        if standing_active_ids.numel():
+            self._clear_plane_v1_episode(standing_active_ids)
+        standing_ids = standing_mask.nonzero(as_tuple=False).flatten()
+        self._clear_recovery_context(standing_ids)
+        self._v1_intentional_not_applicable[standing_mask] = True
+        self._v1_intentional_not_applicable[~standing_mask] = False
+
+        active_for_locomotion = (
+            (recovery_before_step | self.recovery_active)
+            & ~standing_mask
+            & ~dones
+        )
         self._v1_locomotion_reward[active_for_locomotion] += locomotion_reward[
             active_for_locomotion
         ]

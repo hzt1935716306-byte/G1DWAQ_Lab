@@ -10,7 +10,10 @@ from legged_lab.envs.g1.g1_slope_training_config import (
     G1SlopeSysDAgentCfg,
     G1SlopeSysDEnvCfg,
 )
-from legged_lab.recovery.baseline_matched_protocol import CURRICULUM_REFERENCE_TILE_LENGTH
+from legged_lab.recovery.baseline_matched_protocol import (
+    CURRICULUM_REFERENCE_TILE_LENGTH,
+    configure_matched_command_and_reset,
+)
 from legged_lab.terrains import make_plane_baseline_matched_terrain_cfg
 
 
@@ -21,6 +24,8 @@ def _configure_matched_plane(cfg) -> None:
     )
     cfg.scene.max_init_terrain_level = 5
     cfg.curriculum_reference_tile_length = CURRICULUM_REFERENCE_TILE_LENGTH
+
+    configure_matched_command_and_reset(cfg)
 
 
 @configclass

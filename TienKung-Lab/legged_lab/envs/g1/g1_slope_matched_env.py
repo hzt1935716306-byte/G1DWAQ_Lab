@@ -6,6 +6,7 @@ import torch
 
 from legged_lab.envs.base.base_env import BaseEnv
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
+from legged_lab.envs.g1.g1_matched_command import BaselineMatchedCardinalVelocityCommand
 from legged_lab.recovery.baseline_matched_protocol import terrain_curriculum_decisions
 from legged_lab.terrains import make_plane_baseline_matched_terrain_cfg
 
@@ -16,6 +17,9 @@ class _MatchedTerrainCurriculumMixin:
             int(cfg.scene.seed)
         )
         super().__init__(cfg, headless)
+
+    def _create_command_generator(self, command_cfg):
+        return BaselineMatchedCardinalVelocityCommand(cfg=command_cfg, env=self)
 
     def update_terrain_levels(self, env_ids):
         ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)

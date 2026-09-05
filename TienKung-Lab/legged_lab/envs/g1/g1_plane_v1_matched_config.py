@@ -11,6 +11,7 @@ from legged_lab.envs.g1.g1_plane_v1_config import (
 )
 from legged_lab.recovery.baseline_matched_protocol import (
     CURRICULUM_REFERENCE_TILE_LENGTH,
+    configure_matched_command_and_reset,
 )
 from legged_lab.terrains import make_plane_baseline_matched_terrain_cfg
 
@@ -29,23 +30,20 @@ class G1PlaneV1BaselineMatchedEnvCfg(G1PlaneV1EnvCfg):
         )
         self.scene.max_init_terrain_level = 5
 
-        self.plane_recovery.minimum_command_speed = 0.0
-        self.commands.resampling_time_range = (10.0, 10.0)
-        self.commands.rel_standing_envs = 0.2
-        self.commands.rel_heading_envs = 0.0
-        self.commands.heading_command = False
-        self.commands.ranges.lin_vel_x = (-0.6, 1.0)
-        self.commands.ranges.lin_vel_y = (-0.5, 0.5)
-        self.commands.ranges.ang_vel_z = (0.0, 0.0)
-        self.commands.ranges.heading = None
+        self.plane_recovery.minimum_command_speed = 0.2
+        configure_matched_command_and_reset(self)
 
         # Coplanar geometry tolerates baseline x/y spawn offsets.  Yaw remains
         # the one theory-required exception to baseline randomization.
         reset_base = self.domain_rand.events.reset_base
         reset_base.params["pose_range"]["x"] = (-0.5, 0.5)
         reset_base.params["pose_range"]["y"] = (-0.5, 0.5)
-        reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
-        reset_base.params["velocity_range"]["yaw"] = (0.0, 0.0)
+
+        # Ordinary locomotion terms exactly match g1_slope_sys_d_matched.
+        # Reward-on variants add only the separate touchdown-event channel.
+        self.reward.track_lin_vel_xy_exp.weight = 1.0
+        self.reward.track_ang_vel_z_exp.weight = 1.0
+        self.reward.joint_deviation_hip.weight = -0.15
 
 
 @configclass

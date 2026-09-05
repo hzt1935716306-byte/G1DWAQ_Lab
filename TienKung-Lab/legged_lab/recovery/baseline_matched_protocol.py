@@ -6,7 +6,25 @@ import torch
 
 
 CURRICULUM_REFERENCE_TILE_LENGTH = 8.0
+CARDINAL_MIN_SPEED = 0.2
 CARDINAL_MAX_SPEEDS = (1.0, 0.6, 0.5, 0.5)
+
+
+def configure_matched_command_and_reset(cfg) -> None:
+    """Apply the shared cardinal command and heading-aligned reset contract."""
+
+    cfg.commands.resampling_time_range = (10.0, 10.0)
+    cfg.commands.rel_standing_envs = 0.2
+    cfg.commands.rel_heading_envs = 0.0
+    cfg.commands.heading_command = False
+    cfg.commands.ranges.lin_vel_x = (-0.6, 1.0)
+    cfg.commands.ranges.lin_vel_y = (-0.5, 0.5)
+    cfg.commands.ranges.ang_vel_z = (0.0, 0.0)
+    cfg.commands.ranges.heading = None
+
+    reset_base = cfg.domain_rand.events.reset_base
+    reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
+    reset_base.params["velocity_range"]["yaw"] = (0.0, 0.0)
 
 
 def terrain_curriculum_decisions(
@@ -57,7 +75,9 @@ def sample_baseline_matched_cardinal_commands(
     standing = torch.rand(count, device=device, generator=generator) < standing_probability
     directions = torch.randint(0, 4, (count,), device=device, generator=generator)
     maxima = torch.tensor(CARDINAL_MAX_SPEEDS, device=device)
-    speed = torch.rand(count, device=device, generator=generator) * maxima[directions]
+    speed = CARDINAL_MIN_SPEED + torch.rand(
+        count, device=device, generator=generator
+    ) * (maxima[directions] - CARDINAL_MIN_SPEED)
     speed = torch.where(standing, torch.zeros_like(speed), speed)
     command = torch.zeros((count, 3), device=device)
     command[:, 0] = torch.where(
@@ -69,10 +89,23 @@ def sample_baseline_matched_cardinal_commands(
     return command, standing, directions
 
 
+def matched_command_standing_mask(
+    command: torch.Tensor, tolerance: float = 1.0e-6
+) -> torch.Tensor:
+    """Return commands for which the moving certificate is intentionally N/A."""
+
+    if command.ndim != 2 or command.shape[1] < 2:
+        raise ValueError("command must have shape [N, >=2]")
+    return torch.linalg.vector_norm(command[:, :2], dim=1) <= float(tolerance)
+
+
 __all__ = [
+    "CARDINAL_MIN_SPEED",
     "CARDINAL_MAX_SPEEDS",
     "CURRICULUM_REFERENCE_TILE_LENGTH",
+    "configure_matched_command_and_reset",
     "sample_baseline_matched_cardinal_commands",
+    "matched_command_standing_mask",
     "lookup_matched_slope",
     "terrain_curriculum_decisions",
 ]
