@@ -10,6 +10,25 @@ import torch
 PLANE_V1_SLOPES_DEG = (-15.0, -10.0, -5.0, 0.0, 5.0, 10.0, 15.0)
 
 
+def plane_v1_context_held_mask(
+    touchdown_mask: torch.Tensor,
+    dones: torch.Tensor,
+    standing_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Select moving rows whose context must remain unchanged under ZOH.
+
+    Standing commands are intentionally certificate-N/A and clear their
+    context immediately, including when a command resample occurs between two
+    touchdowns.
+    """
+
+    if touchdown_mask.shape != dones.shape or touchdown_mask.shape != standing_mask.shape:
+        raise ValueError("touchdown, done, and standing masks must have identical shapes")
+    if any(mask.dtype is not torch.bool for mask in (touchdown_mask, dones, standing_mask)):
+        raise ValueError("touchdown, done, and standing masks must be boolean tensors")
+    return ~touchdown_mask & ~dones & ~standing_mask
+
+
 def plane_v1_learning_iteration(policy_step: int, steps_per_iteration: int) -> int:
     """Map completed policy steps to the rollout iteration currently executing."""
 
@@ -91,6 +110,7 @@ __all__ = [
     "PLANE_V1_SLOPES_DEG",
     "plane_v1_allowed_slopes",
     "plane_v1_allowed_type_indices",
+    "plane_v1_context_held_mask",
     "plane_v1_learning_iteration",
     "plane_v1_terrain_level",
     "replace_com_velocity_for_certificate",

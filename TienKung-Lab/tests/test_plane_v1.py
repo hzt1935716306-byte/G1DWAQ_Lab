@@ -16,6 +16,7 @@ from legged_lab.recovery.plane_v1 import (
     PLANE_V1_SLOPES_DEG,
     plane_v1_allowed_slopes,
     plane_v1_allowed_type_indices,
+    plane_v1_context_held_mask,
     plane_v1_learning_iteration,
     plane_v1_terrain_level,
     replace_com_velocity_for_certificate,
@@ -185,6 +186,24 @@ def test_policy_step_boundary_does_not_advance_terrain_one_step_early() -> None:
     assert plane_v1_learning_iteration(1, 24) == 0
     assert plane_v1_learning_iteration(24, 24) == 0
     assert plane_v1_learning_iteration(25, 24) == 1
+
+
+def test_context_zoh_allows_standing_clear_but_holds_moving_rows() -> None:
+    touchdown = torch.tensor([False, False, False, True])
+    dones = torch.tensor([False, True, False, False])
+    standing = torch.tensor([True, False, False, False])
+    held = plane_v1_context_held_mask(touchdown, dones, standing)
+    assert held.tolist() == [False, False, True, False]
+
+    before = torch.tensor(
+        [[0.5, -0.2, 1.0], [0.4, 0.1, 1.0], [0.3, 0.2, 1.0], [0.2, 0.1, 1.0]]
+    )
+    after = before.clone()
+    after[standing] = 0.0
+    assert torch.equal(after[held], before[held])
+
+    after[2, 0] += 0.1
+    assert not torch.equal(after[held], before[held])
 
 
 def test_disabled_push_curriculum_is_fixed_at_full_range() -> None:

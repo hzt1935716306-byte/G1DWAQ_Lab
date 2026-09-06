@@ -22,6 +22,7 @@ from legged_lab.recovery.plane_certificate_runtime import (
 from legged_lab.recovery.baseline_matched_protocol import matched_command_standing_mask
 from legged_lab.recovery.plane_v1 import (
     plane_v1_allowed_type_indices,
+    plane_v1_context_held_mask,
     plane_v1_learning_iteration,
     plane_v1_terrain_level,
     replace_com_velocity_for_certificate,
@@ -831,7 +832,11 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         done_ids = dones.nonzero(as_tuple=False).flatten()
         self._clear_recovery_context(done_ids)
         self._refresh_plane_v1_context(certificate_state, dones, estimator_ready)
-        held_mask = ~self._context_touchdown_mask & ~dones
+        held_mask = plane_v1_context_held_mask(
+            self._context_touchdown_mask,
+            dones,
+            standing_mask,
+        )
         if not torch.equal(self._recovery_context[held_mask], context_before_step[held_mask]):
             raise RuntimeError("Plane V1 recovery context changed between touchdowns")
         self._process_plane_v1_touchdowns(physical_state, dones)
