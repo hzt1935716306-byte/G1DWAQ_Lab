@@ -1,0 +1,589 @@
+"""Offline protocol, identity and transactional result storage. No simulator imports."""
+from __future__ import annotations
+
+import contextlib
+import csv
+import fcntl
+import hashlib
+import io
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import random
+import shutil
+import subprocess
+import tempfile
+import time
+
+import yaml
+
+LAB = Path(__file__).resolve().parents[2]
+DEFAULT_PROTOCOL = LAB / 'tools/evaluation/configs/g1_recovery_eval_lite_v1.yaml'
+TASKS = {
+    'ppo_plain': 'g1_slope_nosys_d_matched',
+    'ppo_symmetric': 'g1_slope_sys_d_matched',
+    'dwaq': 'g1_dwaq_slope_nosys_d_matched',
+    'rl_only': 'g1_plane_v1_rl_only_matched',
+    'context_only': 'g1_plane_v1_estimator_context_no_reward_matched',
+    'context_reward': 'g1_plane_v1_estimator_context_reward_matched',
+}
+COMPATIBILITY = ('protocol_hash', 'manifest_hash', 'metrics_version', 'metrics_config_hash',
+                 'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode')
+STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED',
+            'FELL', 'OUT_OF_TEST_AREA', 'EVALUATION_ERROR'}
+
+
+def resolve_input_path(path):
+    """Resolve a CLI input relative to the caller's current directory."""
+    resolved = Path(path)
+    if not resolved.is_absolute():
+        resolved = Path.cwd() / resolved
+    return resolved.resolve(strict=True)
+
+
+def project_path(path):
+    """Resolve a user path and require it to stay inside the project checkout."""
+    resolved = resolve_input_path(path)
+    try:
+        resolved.relative_to(LAB)
+    except ValueError as exc:
+        raise ValueError(f'Path must be inside the project directory: {path}') from exc
+    return resolved
+
+
+def portable_path(path):
+    """Return a repository-relative path suitable for persisted metadata."""
+    return project_path(path).relative_to(LAB).as_posix()
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def atomic_write(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = data.encode('utf-8') if isinstance(data, str) else data
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        d = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(d)
+        finally:
+            os.close(d)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def write_json(path, data):
+    atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text())
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+
+
+def jsonl(rows):
+    return ''.join(canonical(row) + '\n' for row in rows)
+
+
+@contextlib.contextmanager
+def lock(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+class ConfigLoader(yaml.SafeLoader):
+    """Read Isaac config snapshots as data; never instantiate Python objects."""
+
+
+def _tagged(loader, tag, node):
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_scalar(node)
+
+
+ConfigLoader.add_multi_constructor('tag:yaml.org,2002:python/', _tagged)
+
+
+def load_yaml(path):
+    return yaml.load(Path(path).read_text(), Loader=ConfigLoader)
+
+
+def method_for(task):
+    for method, name in TASKS.items():
+        if task == name:
+            return method
+    raise ValueError(f'Unsupported task: {task}; privileged tasks are excluded')
+
+
+def nominal_reference(protocol):
+    path = Path(protocol['metrics']['reference'])
+    if not path.is_absolute():
+        path = LAB / path
+    document = load_yaml(path)
+    nodes = document['nominal_plane_gait']['nodes']
+    fields = ('roll_star', 'pitch_star', 'mean_velocity_error_threshold',
+              'mean_abs_roll_error_threshold', 'mean_abs_pitch_error_threshold')
+    table = {}
+    for slope in protocol['slopes_deg']:
+        for direction, command in protocol['commands'].items():
+            if direction == 'standing':
+                continue  # E0 standing uses residuals, never a gait recovery detector.
+            speed = math.hypot(*command[:2])
+            found = [n for n in nodes if n['slope_degrees'] == slope
+                     and n['direction'] == direction and abs(n['speed'] - speed) < 1e-9]
+            if len(found) != 1:
+                raise ValueError(f'Common nominal reference requires one exact node: {slope}/{direction}/{speed}')
+            n = found[0]
+            if n.get('practical_metric_version') != 'interval_mean_v1':
+                raise ValueError('Reference must use interval_mean_v1 frame-error semantics')
+            values = {k: float(n[k]) for k in fields}
+            if not all(math.isfinite(v) for v in values.values()) or any(values[k] <= 0 for k in fields[2:]):
+                raise ValueError('Invalid nominal values/thresholds')
+            table[f'{slope}:{direction}'] = values
+    return path, table
+
+
+def generate_manifest(p):
+    rows = []
+    push_index = 0
+
+    def add(experiment, slope, direction, repeat, push=None):
+        nonlocal push_index
+        idx = len(rows)
+        seed = p['manifest_seed'] + idx
+        rng = random.Random(seed)
+        init = p['initial_state']
+        sample = lambda ranges: {k: rng.uniform(*v) for k, v in ranges.items()}
+        command = p['commands'][direction]
+        condition = f'{experiment}_s{slope:+g}_{direction}'
+        if push:
+            name, magnitude, phase = push
+            condition += f'_{name}_v{magnitude:g}_p{phase:g}'
+        row = dict(trial_id=f'{condition}_r{repeat:02d}', experiment=experiment,
+                   condition_id=condition, repeat_id=repeat, slope_deg=slope,
+                   command_name=direction, command_vx=command[0], command_vy=command[1], command_yaw=command[2],
+                   push_type='additive_root_velocity_jump' if push else 'none',
+                   push_magnitude=push[1] if push else 0,
+                   push_direction=push[0] if push else None,
+                   push_direction_heading=p['e1']['directions'][push[0]] if push else [0, 0],
+                   target_phase=push[2] if push else None,
+                   reference_touchdown_foot=('left' if push_index % 2 == 0 else 'right') if push else None,
+                   reset_seed=seed, initial_pose_parameters=sample(init['pose']),
+                   initial_velocity_parameters=sample(init['velocity']),
+                   initial_joint_parameters={
+                       'position_scale': [rng.uniform(*init['joint_position_scale']) for _ in range(init['joint_count'])],
+                       'velocity': [rng.uniform(*init['joint_velocity']) for _ in range(init['joint_count'])]})
+        rows.append(row)
+        if push:
+            push_index += 1
+
+    for slope in p['slopes_deg']:
+        for direction in p['commands']:
+            for r in range(p['e0']['repeats']):
+                add('E0', slope, direction, r)
+    for slope in p['slopes_deg']:
+        for direction in p['e1']['directions']:
+            for magnitude in p['e1']['magnitudes']:
+                for phase in p['e1']['phases']:
+                    for r in range(p['e1']['repeats']):
+                        add('E1', slope, p['e1']['command'], r, (direction, magnitude, phase))
+    return rows
+
+
+def prepare(root, protocol_path=DEFAULT_PROTOCOL):
+    root = Path(root)
+    p = load_yaml(protocol_path)
+    from g1_recovery_metrics import METRICS_VERSION
+    if p['metrics']['version'] != METRICS_VERSION:
+        raise ValueError('Unsupported metrics definition; implement and test the requested detector first')
+    if p['physics']['observation_noise'] or p['physics']['randomization'] or p['physics']['action_delay_steps'] != 0:
+        raise ValueError('This controlled suite requires noise/randomization/delay disabled')
+    if p['protocol_version'] not in ('1.0-dev', '1.0'):
+        raise ValueError('Unsupported protocol version')
+    reference, table = nominal_reference(p)
+    rows = generate_manifest(p)
+    info = dict(protocol_hash=digest(p), manifest_hash=digest(rows),
+                metrics_version=p['metrics']['version'], metrics_config_hash=digest(p['metrics']),
+                metrics_reference_sha256=sha256(reference), physics_profile_hash=digest(p['physics']),
+                inference_mode=p['physics']['inference_mode'], trials=len(rows))
+    with lock(root / '.prepare.lock'):
+        if (root / 'prepared.json').exists():
+            if read_json(root / 'prepared.json') != info:
+                raise ValueError('Prepared protocol changed; use a new output root/version, never overwrite manifests')
+            load_prepared(root)
+            return info
+        root.mkdir(parents=True, exist_ok=True)
+        atomic_write(root / 'protocol.yaml', yaml.safe_dump(p, allow_unicode=True, sort_keys=False))
+        atomic_write(root / 'metrics_reference.yaml', reference.read_bytes())
+        write_json(root / 'metrics_nodes.json', table)
+        for e, filename in [('E0', 'nominal_lite_v1.jsonl'), ('E1', 'push_lite_v1.jsonl')]:
+            atomic_write(root / 'manifests' / filename, jsonl([r for r in rows if r['experiment'] == e]))
+        balances = {}
+        for r in rows:
+            if r['experiment'] == 'E1':
+                cell = balances.setdefault(r['condition_id'], {'left': 0, 'right': 0})
+                cell[r['reference_touchdown_foot']] += 1
+        write_json(root / 'manifests/reference_foot_counts.json', balances)
+        if not (root / 'models.yaml').exists():
+            atomic_write(root / 'models.yaml', yaml.safe_dump({'models': [dict(method=m, task_name=t,
+                         model_alias=m, checkpoint=None, status='PENDING_CHECKPOINT') for m, t in TASKS.items()]}, sort_keys=False))
+        if not (root / 'registry.json').exists():
+            write_json(root / 'registry.json', {'evaluations': {}})
+        if not (root / 'report/notes.yaml').exists():
+            atomic_write(root / 'report/notes.yaml', 'notes: {}\n')
+        write_json(root / 'prepared.json', info)
+    return info
+
+
+def load_prepared(root):
+    root = Path(root)
+    p = load_yaml(root / 'protocol.yaml')
+    info = read_json(root / 'prepared.json')
+    rows = read_jsonl(root / 'manifests/nominal_lite_v1.jsonl') + read_jsonl(root / 'manifests/push_lite_v1.jsonl')
+    if digest(p) != info['protocol_hash'] or digest(rows) != info['manifest_hash']:
+        raise ValueError('Protocol/manifest integrity mismatch')
+    if sha256(root / 'metrics_reference.yaml') != info['metrics_reference_sha256']:
+        raise ValueError('Metrics reference integrity mismatch')
+    if rows != generate_manifest(p):
+        raise ValueError('Manifest does not match the fixed protocol')
+    # Re-derive nodes from the frozen snapshot, never trust an edited cache.
+    snap_p = json.loads(canonical(p))
+    snap_p['metrics']['reference'] = str((root / 'metrics_reference.yaml').resolve())
+    _, nodes = nominal_reference(snap_p)
+    if read_json(root / 'metrics_nodes.json') != nodes:
+        raise ValueError('Metrics nodes integrity mismatch')
+    return p, rows, info
+
+
+def code_identity():
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(LAB), *args], text=True).strip()
+    return {'evaluation_code_commit': git('rev-parse', 'HEAD'),
+            'evaluation_code_sha256': digest({p.name: sha256(p) for p in Path(__file__).parent.glob('*.py')}),
+            'evaluation_code_dirty': bool(git('status', '--porcelain', '--', 'tools/evaluation'))}
+
+
+def inspect_checkpoint(task, checkpoint, alias, stage='unknown', estimator=None):
+    """CPU-only strict shape/config audit; authoritative native strict load runs again on run."""
+    import torch
+    method = method_for(task)
+    checkpoint = resolve_input_path(checkpoint)
+    agent_path, env_path = checkpoint.parent / 'params/agent.yaml', checkpoint.parent / 'params/env.yaml'
+    a, e = load_yaml(agent_path), load_yaml(env_path)
+    runner = 'DWAQOnPolicyRunner' if method == 'dwaq' else 'OnPolicyRunner'
+    if a['runner_class_name'] != runner:
+        raise ValueError('runner type mismatch')
+    if method in ('ppo_plain', 'ppo_symmetric', 'dwaq'):
+        if a['experiment_name'] != task:
+            raise ValueError('task mismatch in params/agent.yaml')
+    else:
+        expected_run = {'rl_only': 'rl_only_matched', 'context_only': 'estimator_context_no_reward_matched',
+                        'context_reward': 'estimator_context_reward_matched'}[method]
+        # Plane methods share experiment_name; source/reward and run_name distinguish them.
+        if not a.get('run_name', '').startswith(expected_run):
+            raise ValueError('Plane/RL-only run_name does not establish task identity')
+        if method.startswith('context') and (e.get('com_velocity_source') != 'estimator'
+                or e['plane_v1_reward']['enabled'] != (method == 'context_reward')):
+            raise ValueError('Plane source/reward task mismatch')
+        if method == 'rl_only' and 'com_velocity_source' in e:
+            raise ValueError('RL-only must not contain estimator/context configuration')
+    ah, ch = int(e['robot']['actor_obs_history_length']), int(e['robot']['critic_obs_history_length'])
+    expected = {'ppo_plain': (960, 1010, 10, 10), 'ppo_symmetric': (960, 1010, 10, 10),
+                'dwaq': (115, 307, 1, 1), 'rl_only': (480, 1010, 5, 10),
+                'context_only': (483, 1010, 5, 10), 'context_reward': (483, 1010, 5, 10)}[method]
+    before = sha256(checkpoint)
+    c = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    if before != sha256(checkpoint):
+        raise ValueError('Checkpoint changed while being inspected')
+    sd = c['model_state_dict']
+    actor, critic = int(sd['actor.0.weight'].shape[1]), int(sd['critic.0.weight'].shape[1])
+    final = sorted((k for k in sd if k.startswith('actor.') and k.endswith('.weight')), key=lambda k: int(k.split('.')[1]))[-1]
+    actions = int(sd[final].shape[0])
+    if (actor, critic, ah, ch) != expected or actions != 29:
+        raise ValueError(f'Native dimensions/history mismatch: {(actor, critic, ah, ch, actions)}')
+    if method == 'dwaq' and (int(e['robot']['dwaq_obs_history_length']) != 5 or tuple(sd['encoder.0.weight'].shape) != (128, 480)):
+        raise ValueError('DWAQ encoder/history mismatch')
+    if a['empirical_normalization'] and not all(k in c for k in ('obs_norm_state_dict', 'privileged_obs_norm_state_dict')):
+        raise ValueError('Missing normalizer state')
+    if method.startswith('context') and not estimator:
+        raise ValueError('Estimator task requires --estimator_checkpoint')
+    if not method.startswith('context') and estimator:
+        raise ValueError('Baseline/RL-only must not instantiate an estimator')
+    # Strict CPU load of every native tensor catches missing decoder/critic keys
+    # before AppLauncher. No algorithm, optimizer, simulator or GT inputs needed.
+    import sys
+    native_root = str(LAB / 'rsl_rl')
+    if native_root not in sys.path:
+        sys.path.insert(0, native_root)
+    from rsl_rl.modules.actor_critic import ActorCritic
+    from rsl_rl.modules.actor_critic_DWAQ import ActorCritic_DWAQ
+    if method == 'dwaq':
+        model = ActorCritic_DWAQ(actor, critic, actions, 480, 19, 96,
+                                activation=a['policy']['activation'], init_noise_std=a['policy']['init_noise_std'])
+    else:
+        import contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            model = ActorCritic(actor, critic, actions, **{k: v for k, v in a['policy'].items()
+                                if k in ('actor_hidden_dims', 'critic_hidden_dims', 'activation', 'init_noise_std', 'noise_std_type')})
+    model.load_state_dict(sd, strict=True)
+    model.eval()
+    model.requires_grad_(False)
+    if a['empirical_normalization']:
+        from rsl_rl.modules.normalizer import EmpiricalNormalization
+        for key, dimension in [('obs_norm_state_dict', 96 if method == 'dwaq' else actor),
+                               ('privileged_obs_norm_state_dict', critic)]:
+            normalizer = EmpiricalNormalization(shape=[dimension])
+            normalizer.load_state_dict(c[key], strict=True)
+            normalizer.eval()
+    estimator_hash = None
+    if estimator:
+        estimator = resolve_input_path(estimator)
+        estimator_hash = sha256(estimator)
+        # Pure native loader; it verifies schema, dimensions, units and strict weights.
+        import sys
+        if str(LAB) not in sys.path:
+            sys.path.insert(0, str(LAB))
+        from legged_lab.estimation import load_com_velocity_estimator_for_inference
+        load_com_velocity_estimator_for_inference(str(estimator), device='cpu')
+    native = e.get('plane_recovery', {}).get('nominal_parameters_path')
+    native_file = project_path(LAB / native) if native else None
+    native_hash = sha256(native_file) if native_file else None
+    infos = c.get('infos') or {}
+    return dict(task_name=task, method=method, model_alias=alias,
+                checkpoint_path=portable_path(checkpoint),
+                checkpoint_sha256=before, training_commit=infos.get('training_commit', 'unknown'),
+                training_iteration=c.get('iter', 'unknown'), training_seed=a.get('seed', 'unknown'),
+                checkpoint_stage=stage, estimator_sha256=estimator_hash,
+                estimator_path=portable_path(estimator) if estimator else None,
+                native_nominal_sha256=native_hash,
+                native_nominal_path=portable_path(native_file) if native_file else None,
+                actor_input_dimension=actor, critic_input_dimension=critic, action_dimension=actions,
+                actor_history_length=ah, critic_history_length=ch,
+                encoder_history_length=5 if method == 'dwaq' else None,
+                runner_type=runner, empirical_normalization=a['empirical_normalization'],
+                agent_config_sha256=sha256(agent_path), env_config_sha256=sha256(env_path),
+                identity_evidence=['params/agent.yaml', 'params/env.yaml', 'checkpoint tensor shapes and iter'],
+                software={'Python': platform.python_version(), 'Torch': str(torch.__version__), 'IsaacLab': 'unknown', 'IsaacSim': 'unknown'},
+                hardware={'CPU': platform.processor() or platform.machine(), 'GPU': 'unknown'}, **code_identity())
+
+
+def register_model(root, identity):
+    root = Path(root)
+    with lock(root / '.registry.lock'):
+        document = load_yaml(root / 'models.yaml')
+        models = document['models']
+        models[:] = [m for m in models if m.get('model_alias') != identity['model_alias']
+                     and not (m['method'] == identity['method'] and m['status'] == 'PENDING_CHECKPOINT')]
+        models.append({**identity, 'checkpoint': identity['checkpoint_path'], 'status': 'READY_NOT_EVALUATED'})
+        atomic_write(root / 'models.yaml', yaml.safe_dump(document, allow_unicode=True, sort_keys=False))
+
+
+def evaluation_key(identity):
+    keys = COMPATIBILITY + ('task_name', 'checkpoint_sha256', 'estimator_sha256', 'native_nominal_sha256',
+                           'agent_config_sha256', 'env_config_sha256', 'evaluation_code_sha256')
+    return digest({k: identity[k] for k in keys})[:24]
+
+
+def compatible(a, b):
+    return all(k in a and k in b and a[k] == b[k] for k in COMPATIBILITY)
+
+
+def csv_bytes(rows):
+    if not rows:
+        return ''
+    fields = sorted(set().union(*(r.keys() for r in rows)))
+    stream = io.StringIO()
+    writer = csv.DictWriter(stream, fieldnames=fields)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: canonical(v) if isinstance(v, (list, dict)) else v for k, v in row.items()})
+    return stream.getvalue()
+
+
+class RunStore:
+    """Per-trial JSON is the commit record; trace first, then trial, derived CSV last."""
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def records(self):
+        return [read_json(p) for p in sorted((self.path / 'trial_records').glob('*.json'))]
+
+    def save_trial(self, result, trace, events):
+        import numpy as np
+        tid = result['trial_id']
+        if Path(tid).name != tid:
+            raise ValueError('Unsafe trial ID')
+        dest = self.path / 'trial_records' / (tid + '.json')
+        if dest.exists():
+            raise ValueError(f'Trial already committed: {tid}; use a new attempt')
+        if result['status'] not in STATUSES:
+            raise ValueError('Unknown terminal status')
+        buf = io.BytesIO()
+        np.savez_compressed(buf, **trace)
+        atomic_write(self.path / 'traces' / (tid + '.npz'), buf.getvalue())
+        atomic_write(self.path / 'trial_events' / (tid + '.jsonl'), jsonl(events))
+        result = {**result, 'trace_sha256': sha256(self.path / 'traces' / (tid + '.npz'))}
+        write_json(dest, result)
+        self.rebuild_tables()
+
+    def rebuild_tables(self):
+        records = self.records()
+        atomic_write(self.path / 'trials.csv', csv_bytes(records))
+        events = [e for r in records for e in read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))]
+        atomic_write(self.path / 'events.csv', csv_bytes(events))
+
+    def validate(self, require_complete=True, *, allow_synthetic=False):
+        identity = read_json(self.path / 'identity.json')
+        if identity.get('synthetic') and not allow_synthetic:
+            raise ValueError('Synthetic results cannot enter the real registry')
+        manifest = read_jsonl(self.path / 'manifest_snapshot.jsonl')
+        if digest(manifest) != identity['manifest_hash']:
+            raise ValueError('Run manifest mismatch')
+        protocol = load_yaml(self.path / 'protocol_snapshot.yaml')
+        if digest(protocol) != identity['protocol_hash']:
+            raise ValueError('Run protocol mismatch')
+        if sha256(self.path / 'metrics_reference.yaml') != identity['metrics_reference_sha256']:
+            raise ValueError('Run reference mismatch')
+        effective_path = self.path / 'effective_env_config.yaml'
+        if effective_path.exists():
+            effective = load_yaml(effective_path)
+            if digest(effective['actual_physics']) != identity.get('actual_physics_hash'):
+                raise ValueError('Effective physics does not match identity')
+        expected = {r['trial_id']: r for r in manifest}
+        records = self.records()
+        if len({r['trial_id'] for r in records}) != len(records):
+            raise ValueError('Duplicate trial ID')
+        for r in records:
+            if r['trial_id'] not in expected or any(r.get(k) != v for k, v in expected[r['trial_id']].items()):
+                raise ValueError('Trial is not the assigned manifest trial')
+            if r['status'] not in STATUSES:
+                raise ValueError('Invalid status')
+            trace = self.path / 'traces' / (r['trial_id'] + '.npz')
+            if sha256(trace) != r['trace_sha256']:
+                raise ValueError('Corrupt trace')
+            read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))
+            import numpy as np
+            with np.load(trace, allow_pickle=False) as data:
+                required = {'time', 'root_velocity', 'root_velocity_world', 'com_velocity', 'roll_pitch',
+                            'yaw', 'forces', 'root_position', 'fell', 'timeout', 'out_of_test_area', 'plane_json'}
+                if not required.issubset(data.files) or len(data['time']) == 0:
+                    raise ValueError('Missing required trace fields/frames')
+                if any(len(data[k]) != len(data['time']) for k in required):
+                    raise ValueError('Trace frame counts differ')
+                if len(data['time']) > 1 and not np.allclose(np.diff(data['time']), .02, atol=1e-7):
+                    raise ValueError('Trace must contain every 50 Hz frame')
+                if r.get('survived'):
+                    deadline = protocol['e0']['warmup_s'] + protocol['e0']['observation_s'] if r['experiment'] == 'E0' else r['actual_push_time'] + protocol['e1']['observation_s']
+                    if data['time'][-1] < deadline - 1e-7:
+                        raise ValueError('Survival claimed before fixed observation deadline')
+                if r['status'] != 'EVALUATION_ERROR' and any(not np.isfinite(data[k]).all() for k in required - {'plane_json'}):
+                    raise ValueError('Non-finite physical trace without EVALUATION_ERROR')
+            if r['status'] == 'RECOVERED_AND_SURVIVED' and not (r['push_applied'] and r['survived']
+                    and r['recovery_time'] is not None and r['recovery_steps'] is not None):
+                raise ValueError('Inconsistent recovered-and-survived result')
+        if require_complete and (len(records) != len(expected) or any(r['status'] == 'EVALUATION_ERROR' for r in records)):
+            raise ValueError('PARTIAL/INVALID: missing trials or execution errors')
+        if (self.path / 'completion.json').exists():
+            completion = read_json(self.path / 'completion.json')
+            required_files = {'identity.json', 'protocol_snapshot.yaml', 'manifest_snapshot.jsonl',
+                              'metrics_reference.yaml', 'effective_env_config.yaml', 'trials.csv', 'events.csv',
+                              'summary.json', 'run.log'}
+            required_files.update(f'{folder}/{r["trial_id"]}{suffix}' for r in records
+                                  for folder, suffix in [('traces', '.npz'), ('trial_records', '.json'), ('trial_events', '.jsonl')])
+            if completion.get('status') != 'COMPLETE' or not required_files.issubset(completion['files']):
+                raise ValueError('Incomplete completion file index')
+            for rel, sha in completion['files'].items():
+                if Path(rel).is_absolute() or '..' in Path(rel).parts or sha256(self.path / rel) != sha:
+                    raise ValueError(f'Completion integrity mismatch: {rel}')
+        return identity, records
+
+    def complete(self, summary):
+        self.validate()
+        if summary.get('status') != 'COMPLETE':
+            raise ValueError('Summary is not complete')
+        if not (self.path / 'effective_env_config.yaml').exists() or not (self.path / 'run.log').exists():
+            raise ValueError('Missing effective environment or run log')
+        self.rebuild_tables()
+        write_json(self.path / 'summary.json', summary)
+        files = {str(p.relative_to(self.path)): sha256(p) for p in self.path.rglob('*')
+                 if p.is_file() and p.name not in ('completion.json', '.run.lock')}
+        write_json(self.path / 'completion.json', {'status': 'COMPLETE', 'completed_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'files': files})
+
+
+def register_result(root, run):
+    identity, _ = RunStore(run).validate()
+    if not (Path(run) / 'completion.json').exists():
+        raise ValueError('Cannot register incomplete result')
+    with lock(Path(root) / '.registry.lock'):
+        registry = read_json(Path(root) / 'registry.json')
+        registry['evaluations'][Path(run).name] = {'identity': identity, 'completion_sha256': sha256(Path(run) / 'completion.json')}
+        write_json(Path(root) / 'registry.json', registry)
+
+
+def import_results(source, root):
+    source, root = Path(source).resolve(), Path(root).resolve()
+    candidates = [source] if (source / 'completion.json').exists() else sorted(source.rglob('completion.json'))
+    imported = []
+    for candidate in candidates:
+        src = candidate.parent if candidate.is_file() else candidate
+        if any(p.is_symlink() for p in src.rglob('*')):
+            raise ValueError('Imported run contains symlinks')
+        identity, _ = RunStore(src).validate()
+        content = sha256(src / 'completion.json')
+        with lock(root / '.import.lock'):
+            existing = [p.parent for p in (root / 'runs').glob('*/completion.json') if sha256(p) == content]
+            if existing:
+                imported.append(existing[0].name)
+                continue
+            name = evaluation_key(identity) + '-import-' + content[:12]
+            dest = root / 'runs' / name
+            if dest.exists():
+                raise ValueError('Import collision; refusing overwrite')
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = Path(tempfile.mkdtemp(prefix='.import-', dir=dest.parent))
+            try:
+                shutil.copytree(src, tmp, dirs_exist_ok=True)
+                RunStore(tmp).validate()
+                os.replace(tmp, dest)
+            finally:
+                if tmp.exists():
+                    shutil.rmtree(tmp)
+            register_result(root, dest)
+            imported.append(name)
+    if not candidates:
+        raise ValueError('No complete runs found')
+    return imported

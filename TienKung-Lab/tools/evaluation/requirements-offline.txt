@@ -1,0 +1,6 @@
+PyYAML>=6
+numpy>=1.24
+matplotlib>=3.6
+pytest>=7
+# CPU checkpoint auditing additionally uses the training environment's torch.
+# DOCX output uses Python stdlib OOXML. LibreOffice is optional for visual QA.
