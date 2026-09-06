@@ -1,4 +1,4 @@
-"""Shared command generator for all seven baseline-matched tasks."""
+"""Shared command generator for the baseline-matched tasks."""
 
 from __future__ import annotations
 
