@@ -1,0 +1,166 @@
+# Candidate task envelope; not a stability/safety bound. Never tune to one policy.
+protocol_id: G1-Recovery-Eval-Lite
+protocol_version: 2.0-dev
+manifest_seed: 20260906
+slopes_deg:
+- -10
+- 0
+- 10
+commands:
+  +x:
+  - 0.4
+  - 0
+  - 0
+  -x:
+  - -0.4
+  - 0
+  - 0
+  +y:
+  - 0
+  - 0.4
+  - 0
+  -y:
+  - 0
+  - -0.4
+  - 0
+  standing:
+  - 0
+  - 0
+  - 0
+e0:
+  repeats: 10
+  warmup_s: 2
+  observation_s: 10
+e1:
+  repeats: 5
+  command: +x
+  magnitudes:
+  - 0.5
+  - 1.0
+  directions:
+    front:
+    - 1
+    - 0
+    back:
+    - -1
+    - 0
+    left:
+    - 0
+    - 1
+    right:
+    - 0
+    - -1
+  phases:
+  - 0.25
+  - 0.75
+  warmup_s: 2
+  readiness_deadline_s: 6
+  reference_wait_s: 3
+  required_alternating_touchdowns: 4
+  observation_s: 10
+  recovery_deadline_s: 8
+metrics:
+  version: common_task_window_v1
+  contact_force_threshold_n: 5
+  contact_release_threshold_n: 3
+  contact_debounce_s: 0.08
+  contact_stable_frames: 2
+  feet:
+  - left_ankle_roll_link
+  - right_ankle_roll_link
+  termination_force_n: 1.0
+  termination_bodies:
+  - .*torso.*
+  test_area_half_extent_m: 24
+  detector:
+    parameter_status: candidate_unvalidated
+    sampling:
+      nominal_period_s: 0.02
+      time_tolerance_s: 1.0e-09
+    readiness:
+      window_s: 1.2
+      hold_s: 0.2
+      mean_com_velocity_error_max_mps: 0.16
+      peak_com_velocity_error_max_mps: 0.5
+      tilt_rms_max_deg: 10.0
+      tilt_peak_max_deg: 20.0
+      world_z_angular_error_rms_max_radps: 0.4
+      root_vertical_clearance_min_m: 0.5
+      alternating_touchdowns_window_s: 1.2
+      alternating_touchdowns_min: 4
+    recovery:
+      window_s: 0.6
+      hold_s: 0.5
+      mean_com_velocity_error_max_mps: 0.1
+      peak_com_velocity_error_max_mps: 0.3
+      tilt_rms_max_deg: 5.0
+      tilt_peak_max_deg: 15.0
+      world_z_angular_error_rms_max_radps: 0.2
+      root_vertical_clearance_min_m: 0.5
+  validation:
+    status: unvalidated
+    evidence: []
+physics:
+  profile: g1_asset_nominal_controlled_v1
+  tile_size_m:
+  - 64
+  - 64
+  policy_hz: 50
+  observation_noise: false
+  action_delay_steps: 0
+  randomization: false
+  material:
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+  inference_mode: native_eval_no_grad
+initial_state:
+  joint_count: 29
+  pose:
+    x:
+    - -0.5
+    - 0.5
+    y:
+    - -0.5
+    - 0.5
+    z:
+    - 0
+    - 0
+    roll:
+    - 0
+    - 0
+    pitch:
+    - 0
+    - 0
+    yaw:
+    - 0
+    - 0
+  velocity:
+    x:
+    - -0.5
+    - 0.5
+    y:
+    - -0.5
+    - 0.5
+    z:
+    - -0.5
+    - 0.5
+    roll:
+    - -0.5
+    - 0.5
+    pitch:
+    - -0.5
+    - 0.5
+    yaw:
+    - 0
+    - 0
+  joint_position_scale:
+  - 0.5
+  - 1.5
+  joint_velocity:
+  - 0
+  - 0
+  height_convention: default_root_height_above_local_plane
+wandb:
+  project: g1_plane_v1_formal_compare
+  group: eval-lite-v2-candidate

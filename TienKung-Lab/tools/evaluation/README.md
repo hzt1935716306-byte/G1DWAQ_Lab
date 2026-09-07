@@ -163,9 +163,9 @@ python tools/evaluation/g1_recovery_eval.py reanalyze \
   --protocol tools/evaluation/configs/new_metrics_protocol.yaml
 ```
 
-不允许借重算改变实际坡度、扰动或初态。更改指标/阈值需增加协议或指标版本；当前代码只实现 `practical_interval_confirm2_v1` 检测语义，新检测定义必须先开发对应实现。离线分析保留独立身份，不自动冒充一次新的物理评测。
+不允许借重算改变实际坡度、扰动或初态。上面的 `reanalyze` 命令保留 `practical_interval_confirm2_v1` 语义；Common Task v2 的独立诊断与回放见下方说明。离线分析保留独立身份，不自动冒充一次新的物理评测。
 
-## 开发版补充约定
+## V1 开发版补充约定
 
 - 固定 64×64 m 坡面；spawn 高度为默认 root 高度加本地坡面高度，关节采用 matched scale 分布、原生限位裁剪；实际数值记录在 manifest 与 trace。
 - E1 readiness 最多 6 秒；之后等待指定参考脚最多 3 秒，否则 `PRECONDITION_FAILED`。触地力 5 N、释放 3 N、连续 2 帧确认、80 ms 去抖；同脚重复另计诊断，不增加有效落脚数。
@@ -175,3 +175,12 @@ python tools/evaluation/g1_recovery_eval.py reanalyze \
 - 物理参数实际快照含资产、质量、惯量、驱动刚度/阻尼、接触材料和仿真步长。记录 context 的有效性，不因 certificate 理论域退出删除物理 trial。
 - `evaluation_runtime_sha256` 只覆盖显式列出的原生推理、trial 执行、物理判断和恢复指标源文件，并进入 evaluation key 与严格兼容性；`report_code_sha256` 覆盖报告、文档和测试，仅记录 provenance，不触发 390 条物理 trial 重跑。
 - 冻结版必须另附 `detector_validation.json`：`status: PASSED`、reviewer、至少 20 条来自两个 baseline 的真实 reviewed trace SHA，以及 protocol、metrics、reference、physics、inference 和 evaluation runtime 身份。每个 source evaluation ID、subset、manifest hash 和实际物理 hash 都会重新打开归档验证；开发子集必须逐项等于当前 prepared full manifest 中 E0/E1 各自确定的前 N 条。1.0-dev 到 1.0 只允许这个精确的协议版本冻结差异。本框架不会自动把开发测试标成实测验收通过。
+
+## Common Task v2 (candidate development)
+
+The independent `common_task_window_v1` implementation and full predeclared
+parameters are documented in [COMMON_TASK_V2.md](docs/COMMON_TASK_V2.md).
+Use `configs/g1_recovery_eval_lite_v2.yaml` with the separate result root
+`experiments/g1_recovery_eval_v2`. V1 remains readable; its teacher-based results
+are not directly comparable with v2. `2.0-dev` is **candidate_unvalidated** and
+cannot be promoted to `2.0` by passing software tests.

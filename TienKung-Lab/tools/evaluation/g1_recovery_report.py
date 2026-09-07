@@ -22,7 +22,7 @@ import yaml
 
 from g1_recovery_protocol import (
     COMPATIBILITY, TASKS, RunStore, atomic_write, code_identity, compatible, digest, evaluation_key, jsonl,
-    load_prepared, load_yaml, lock, nominal_reference, read_json, read_jsonl, sha256, write_json,
+    load_prepared, load_yaml, lock, nominal_reference, read_json, read_jsonl, sha256, write_json, is_common, COMMON_VERSION,
 )
 from g1_recovery_metrics import METRICS_VERSION, RecoveryDetector, TrialMachine, paired_comparison, summarize
 
@@ -52,7 +52,8 @@ def table(headers, rows):
 def is_full_lite_run(run, full_manifest):
     """Formal tables require the exact prepared 150 + 240 trial assignment."""
     manifest = run['manifest']
-    return (run['identity'].get('checkpoint_stage') == 'final'
+    return (run['identity'].get('metrics_version') != COMMON_VERSION
+            and run['identity'].get('checkpoint_stage') == 'final'
             and run['identity'].get('subset') == 'lite_full'
             and len(manifest) == 390
             and sum(row['experiment'] == 'E0' for row in manifest) == 150
@@ -61,7 +62,7 @@ def is_full_lite_run(run, full_manifest):
 
 
 def is_development_subset(run):
-    return bool(re.fullmatch(r'first_[1-9][0-9]*_per_experiment', run['identity'].get('subset', '')))
+    return run['identity'].get('metrics_version') == COMMON_VERSION or bool(re.fullmatch(r'first_[1-9][0-9]*_per_experiment', run['identity'].get('subset', '')))
 
 
 def load_runs(root, formal_only=True):
@@ -147,7 +148,9 @@ def curve_plots(root, group, group_id):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     paths = []
-    for name, xlabel in [('time', 'Recovery entry time (s)'), ('steps', 'New touchdowns to confirmed entry')]:
+    common = all(r['identity'].get('metrics_version') == COMMON_VERSION for r in group)
+    for name, xlabel in [('time', 'Sustained recovery entry time (s)' if common else 'Recovery entry time (s)'),
+                         ('steps', 'Physical touchdowns to sustained entry' if common else 'New touchdowns to confirmed entry')]:
         fig, axes = plt.subplots(1, 2, figsize=(10, 3.6), sharey=True)
         for ax, denominator in zip(axes, ('designated', 'pushed')):
             for run in group:
@@ -171,8 +174,10 @@ def curve_plots(root, group, group_id):
 
 def report_blocks(root, runs, excluded, history, plots=True):
     p, manifest, prepared = load_prepared(root)
+    if is_common(p):
+        return common_report_blocks(root, p, prepared, history, excluded, plots)
     runs = [r for r in runs if is_full_lite_run(r, manifest)]
-    development = [r for r in history if is_development_subset(r)]
+    development = [r for r in history if is_development_subset(r) and r['identity'].get('metrics_version') != COMMON_VERSION]
     models = load_yaml(root / 'models.yaml')['models']
     blocks = [('heading', 1, 'G1 可重复评测实验记录'),
               ('heading', 2, '当前结论摘要'),
@@ -189,6 +194,11 @@ def report_blocks(root, runs, excluded, history, plots=True):
               ('text', '每格参考脚实际 2/3 或 3/2，整体左右各 120；详情见 manifests/reference_foot_counts.json。'),
               ('text', '检测器实测验收未完成前保持开发版；DETECTOR_VALIDATION.md 记录验收状态。'),
               ('heading', 2, '模型清单')]
+    common_history = [r for r in history if r['identity'].get('metrics_version') == COMMON_VERSION]
+    if common_history:
+        blocks += [('heading', 2, 'Common v2 candidate 历史 — 不直接比较'),
+                   ('text', 'common_task_window_v1 与旧 teacher-based 指标不直接比较，不进入本版主排名。'),
+                   table(['Run', '指标', '参数状态'], [[r['id'], COMMON_VERSION, 'candidate_unvalidated'] for r in common_history])]
     rows = []
     partial_models = {}
     for path in (root / 'runs').glob('*/identity.json'):
@@ -369,6 +379,61 @@ def report_blocks(root, runs, excluded, history, plots=True):
     blocks.append(('heading', 2, '人工备注'))
     notes = load_yaml(root / 'report/notes.yaml')
     blocks.append(('text', yaml.safe_dump(notes, allow_unicode=True, sort_keys=False)))
+    return blocks
+
+
+def common_report_blocks(root, p, prepared, history, excluded, plots):
+    cfg = p['metrics']['detector']
+    blocks = [('heading', 1, 'Common Task Recovery — 2.0-dev'),
+              ('text', 'CANDIDATE_UNVALIDATED：开发候选结果，不是论文最终结果、理论稳定域或实机安全证明。禁止按单模型通过率自动调参。'),
+              ('text', '主终点为持续恢复且存活：最后连续合格段延续至推后10秒，entry≤8秒且保持确认0.50秒。首次恢复和复发另列。'),
+              ('text', '旧 teacher-based practical_interval_confirm2_v1 与 common_task_window_v1 不直接比较；不混合排名。'),
+              ('text', 'E0 为正常观察，正常完成不表述为恢复失败。Standing 仅 E0，不要求触地。未施扰时条件于 pushed 的生存/恢复率为 N/A。'),
+              ('heading', 2, '身份与验证证据'),
+              table(['资源', '值'], [[k, str(prepared[k])] for k in
+                  ('protocol_version', 'metrics_version', 'detector_code_version', 'candidate_parameters_sha256',
+                   'common_detector_config_sha256', 'validation_evidence_sha256', 'parameter_status')]),
+              ('text', '真实扰动正负例验证未完成，validation.evidence=[]。运行时 SHA 与每个策略的原生 nominal/capability/Estimator/solver SHA 分别记录；公共配置不引用 teacher。'),
+              ('heading', 2, '完整候选参数（明确单位）')]
+    rows = [[k, str(cfg['readiness'].get(k, '不使用')), str(cfg['recovery'].get(k, '不使用'))]
+            for k in cfg['readiness']]
+    blocks.append(table(['字段 / 单位', 'Readiness', 'Recovery'], rows))
+    blocks += [('text', '角度配置为 deg，计算前转 rad；10°=0.174533 rad，20°=0.349066 rad，5°=0.0872665 rad，15°=0.261799 rad。角速度始终为 world-Z rad/s。'),
+               ('text', '时间窗 [t-W,t]：先插值逐帧误差/倾角/角速度/间隙，再梯形积分（RMS先平方）。0.60秒需31端点，1.20秒需61端点；极值仅代表采样分辨率。窗口不足是有效未达标，缺失/损坏采样是执行错误。'),
+               ('text', 'Recovery只收真实post-push采样；entry是合格窗口结束，时间不减W。物理落脚计数范围 t_push_end < touchdown ≤ entry；重复同脚计数，同时双脚计2，交替事件只用于readiness/phase。'),
+               ('text', '主任务为当前heading系速度跟踪；初始heading偏移、heading变化及路径偏差仅报告，不进入gate。'),
+               ('heading', 2, 'Common candidate 开发记录（各 attempt 单列，不累计重复尝试）')]
+    common = [r for r in history if r['identity']['metrics_version'] == COMMON_VERSION]
+    if not common:
+        blocks.append(('text', '尚无新协议真实仿真结果；合成测试与旧无扰动trace诊断不能替代真实扰动验证。'))
+    for run in common:
+        s, i = run['summary'], run['identity']
+        e = s['E1']
+        blocks.append(('heading', 3, f"{i['model_alias']} / {run['id']} — candidate_unvalidated"))
+        blocks.append(table(['版本/资源', 'SHA / 值'], [[k, str(i.get(k, 'N/A'))] for k in
+            ('evaluation_runtime_sha256', 'candidate_parameters_sha256', 'validation_evidence_sha256',
+             'native_nominal_sha256', 'native_capability_sha256', 'estimator_sha256', 'native_configuration_sha256')]))
+        blocks.append(table(['指定', '已执行', 'Readiness通过', '实际施扰', 'Once', 'Sustained', '复发'],
+            [[e['designated'], e['executed'], e['readiness_passed'], e['pushed'], e['once_recovered'], e['sustained_recovered'], e['relapse_count']]]))
+        blocks.append(table(['比例及分母', '结果'], [[k, display_rate(e['rates'][k])] for k in
+            ('precondition_pass_rate', 'pushed_10s_survival_rate', 'once_designated', 'once_pushed',
+             'sustained_designated', 'sustained_pushed', 'recovery_within_3_touchdowns', 'recovery_within_5_touchdowns')]))
+        blocks.append(table(['Trial', '正常观察/任务状态', 'Entry', 'Confirmation', '持续Entry', '主时间(s)', '物理步数', '复发'],
+            [[r['trial_id'], r.get('e0_outcome') or r['status'], fmt(r.get('first_recovery_entry')),
+              fmt(r.get('first_confirmation')), fmt(r.get('sustained_recovery_entry')), fmt(r['recovery_time']),
+              fmt(r['recovery_steps']), r['relapse_count']] for r in run['records']]))
+        blocks.append(table(['Trial', 'GT CoM RMSE(m/s)', '倾角峰值(rad)', '航向偏移峰值(rad)', '路径偏差峰值(m)', '间隙最低(m)'],
+            [[r['trial_id'], *[fmt(r.get(k)) for k in ('com_xy_velocity_rmse', 'gravity_tilt_peak_rad',
+               'heading_offset_peak_rad', 'path_deviation_peak_m', 'root_vertical_clearance_min_m')]] for r in run['records']]))
+        if plots:
+            for path in curve_plots(root, [run], digest(run['id'])[:12]):
+                blocks.append(('image', str(path), 'Candidate sustained recovery; denominators designated / pushed'))
+    legacy = [r for r in history if r['identity']['metrics_version'] != COMMON_VERSION]
+    if legacy:
+        blocks.append(('heading', 2, '旧协议历史记录 — 与 common 指标不直接比较'))
+        blocks.append(table(['Run', '旧指标', '状态'], [[r['id'], r['identity']['metrics_version'], r['summary']['status']] for r in legacy]))
+    if excluded:
+        blocks.append(table(['Run', '状态', '原因'], excluded))
     return blocks
 
 
@@ -693,6 +758,32 @@ def detector_validation_report(root):
     p, manifest, info = load_prepared(root)
     runs, excluded, _ = load_runs(root, formal_only=False)
     runtime_hash = code_identity()['evaluation_runtime_sha256']
+    if is_common(p):
+        # Inventory only: legacy practical-interval acceptance is not a v2 gate.
+        common = [r for r in runs if r['identity'].get('metrics_version') == COMMON_VERSION]
+        sources = [{'evaluation_id': r['id'], 'method': r['identity']['method'],
+                    'evaluation_runtime_sha256': r['identity']['evaluation_runtime_sha256'],
+                    'candidate_parameters_sha256': r['identity']['candidate_parameters_sha256'],
+                    'completion_sha256': sha256(r['path'] / 'completion.json')}
+                   for r in common]
+        pushed = [{'evaluation_id': r['id'], 'trial_id': t['trial_id'], 'status': t['status'],
+                   'magnitude': t['push_magnitude'], 'trace_sha256': t['trace_sha256']}
+                  for r in common for t in r['records'] if t['experiment'] == 'E1' and t['push_applied']]
+        evidence = {**info, 'status': 'CANDIDATE_UNVALIDATED', 'automatic_freeze': False,
+                    'evaluation_runtime_sha256': runtime_hash, 'sources': sources,
+                    'pushed_trajectories': pushed, 'load_exclusions': excluded,
+                    'validation': p['metrics']['validation'], 'full_gate_acceptance': None,
+                    'acceptance_reason': 'Requires reviewed physical positive and negative evidence; inventory is not acceptance'}
+        blocks = [('heading', 1, 'Common Task detector validation — 2.0-dev'),
+                  ('text', 'CANDIDATE_UNVALIDATED：本清单不执行旧 teacher practical interval 判据，不自动验收或冻结。'),
+                  ('text', f'完整性验证通过的 common runs={len(common)}，实际推扰轨迹={len(pushed)}。完整gate验收：N/A。'),
+                  ('text', '软件测试、四条旧无扰动trace的部分约束诊断、16条预声明开发设计均不能替代真实扰动正负例人工审查。'),
+                  ('text', '应检查两个baseline、假恢复/漏报、复发、检测延迟、不同步态/坡度与参数敏感性；旧新指标不直接比较。'),
+                  ('text', json.dumps(evidence, ensure_ascii=False, indent=2))]
+        with lock(root / 'report/.report.lock'):
+            atomic_write(root / 'report/DETECTOR_VALIDATION.md', markdown(blocks, root / 'report'))
+            write_json(root / 'detector_evidence.json', evidence)
+        return evidence
     allowed = detector_protocol_hashes(p, info)
     candidates, rejected, sources = [], [], []
     for run in runs:

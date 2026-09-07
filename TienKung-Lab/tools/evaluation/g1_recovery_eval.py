@@ -19,9 +19,10 @@ from g1_recovery_protocol import (
     LAB, DEFAULT_PROTOCOL, TASKS, RunStore, atomic_write, canonical, code_identity, csv_bytes, digest,
     evaluation_key, import_results, inspect_checkpoint, jsonl, load_prepared, load_yaml, lock,
     prepare, read_json, read_jsonl, register_model, register_result, sha256, write_json,
-    RESOURCE_FIELDS, native_contract, validate_resource_identity,
+    RESOURCE_FIELDS, native_contract, validate_resource_identity, is_common, COMMON_PROTOCOL,
 )
-from g1_recovery_metrics import TrialMachine, additive_velocity, summarize
+from g1_recovery_metrics import TrialMachine, make_trial_machine, additive_velocity, summarize
+from g1_common_task_detector import METRICS_VERSION as COMMON_METRICS_VERSION
 
 
 def snapshot_checkpoint(root, identity):
@@ -260,6 +261,8 @@ def make_evaluation_environment(args, p, identity, snapshot):
             from pxr import UsdGeom
             import omni.usd
             stage = omni.usd.get_context().get_stage()
+            if is_common(p) and UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
+                raise ValueError('Common task measurement contract requires world +Z up')
             meshes = []
             for prim in stage.Traverse():
                 if str(prim.GetPath()).startswith('/World/ground') and prim.IsA(UsdGeom.Mesh):
@@ -381,6 +384,26 @@ def make_evaluation_environment(args, p, identity, snapshot):
                       'fell': fell if fell is not None else torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
                       'timeout': timeout if timeout is not None else torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
                       'out_of_test_area': outside}
+            if p['metrics']['version'] == COMMON_METRICS_VERSION:
+                # This plane is checked against the actual USD tile in assert_terrain.
+                # All positions below use the same env-origin-relative frame.
+                # Read data tensors only: never advance observations/actor history.
+                alpha = torch.deg2rad(self.eval_slopes)
+                plane_normal = torch.stack((-torch.sin(alpha), torch.zeros_like(alpha), torch.cos(alpha)), -1)
+                clearance = relative[:, 2] - torch.tan(alpha) * relative[:, 0]
+                values.update(root_quaternion_wxyz=data.root_quat_w,
+                              angular_velocity_world_z=data.root_vel_w[:, 5],
+                              command=self.command_generator.command.clone(),
+                              root_clearance_m=clearance,
+                              local_plane_normal=plane_normal,
+                              local_plane_point=torch.zeros_like(relative))
+                physical = ('com_velocity', 'root_velocity', 'root_velocity_world',
+                            'root_quaternion_wxyz', 'command', 'root_position', 'forces',
+                            'angular_velocity_world_z', 'root_clearance_m', 'local_plane_normal')
+                valid = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+                for key in physical:
+                    valid &= torch.isfinite(values[key]).reshape(self.num_envs, -1).all(-1)
+                values['data_valid'] = valid
             cpu = {k: v.detach().cpu().numpy().copy() for k, v in values.items()}
             return [{k: (v[i].tolist() if v[i].ndim else v[i].item()) for k, v in cpu.items()} for i in range(self.num_envs)]
 
@@ -408,6 +431,8 @@ def make_evaluation_environment(args, p, identity, snapshot):
     if env.action_buffer._circular_buffer.max_length < 2:
         raise ValueError('Evaluation requires at least two action-buffer frames because '
                          'action_rate_l2 uses current and previous actions.')
+    if is_common(p) and env.robot.body_names[0] != 'pelvis':
+        raise ValueError('Common orientation requires the G1 root/pelvis with asset +Z up')
     if metrics_cfg['termination_force_n'] != 1.0:
         raise ValueError('Native termination threshold is 1 N; changing it requires a new adapter')
     if cfg.robot.terminate_contacts_body_names != metrics_cfg['termination_bodies']:
@@ -463,6 +488,12 @@ def make_evaluation_environment(args, p, identity, snapshot):
                  'terrain_mesh_sha256': digest(env.eval_mesh.tolist()), 'terrain_origins': env.eval_origin_table.cpu().tolist(),
                  'slopes_deg': p['slopes_deg'], 'native_inference': identity['runner_type'],
                  'normalization': saved_env['normalization']}
+    if is_common(p):
+        effective['common_measurement_contract'] = {
+            'body': env.robot.body_names[0], 'up_axis_body': '+Z', 'quaternion_order': 'wxyz',
+            'quaternion_transform': 'body_to_world', 'velocity': 'mass_weighted_body_com_vel_w_to_current_yaw_heading',
+            'angular_velocity': 'root_vel_w[5] world-Z, not Euler yaw derivative',
+            'clearance': 'vertical_above_USD_verified_local_plane', 'history_reads_added': 0}
     return env, runner, policy, before_weights, effective
 
 
@@ -519,7 +550,8 @@ def execute_run(args):
         if not (run / 'identity.json').exists():
             write_json(run / 'identity.json', identity)
             atomic_write(run / 'protocol_snapshot.yaml', (root / 'protocol.yaml').read_bytes())
-            atomic_write(run / 'metrics_reference.yaml', (root / 'metrics_reference.yaml').read_bytes())
+            judge_file = 'common_detector_config.yaml' if is_common(p) else 'metrics_reference.yaml'
+            atomic_write(run / judge_file, (root / judge_file).read_bytes())
             atomic_write(run / 'manifest_snapshot.jsonl', jsonl(manifest))
             for role, resource in identity['resources'].items():
                 if role != 'estimator':
@@ -563,13 +595,13 @@ def execute_run(args):
                 except importlib.metadata.PackageNotFoundError:
                     pass
             write_json(run / 'identity.json', identity)
-            nodes = read_json(root / 'metrics_nodes.json')
+            nodes = {} if is_common(p) else read_json(root / 'metrics_nodes.json')
             with torch.inference_mode():
                 for offset in range(0, len(remaining), args.num_envs):
                     selected = remaining[offset:offset + args.num_envs]
                     plans = selected + [selected[-1]] * (args.num_envs - len(selected))
                     obs, extra = env.begin_batch(plans)
-                    machines = [TrialMachine(r, p, nodes.get(f"{r['slope_deg']}:{r['command_name']}")) for r in selected]
+                    machines = [make_trial_machine(r, p, nodes.get(f"{r['slope_deg']}:{r['command_name']}")) for r in selected]
                     frames = env.physical_snapshot()
                     for i, machine in enumerate(machines):
                         frame = {**frames[i], 'time': 0, 'plane': env.plane_diagnostics(i)}
@@ -659,11 +691,11 @@ def reanalyze(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation'):
+    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation', 'diagnose-common'):
         cmd = sub.add_parser(name)
-        cmd.add_argument('--output_root', default=str(LAB / 'experiments/g1_recovery_eval'))
-        if name in ('prepare', 'run', 'reanalyze'):
-            cmd.add_argument('--protocol', default=str(DEFAULT_PROTOCOL))
+        cmd.add_argument('--output_root', default=None)
+        if name in ('prepare', 'run', 'reanalyze', 'diagnose-common'):
+            cmd.add_argument('--protocol', default=str(COMMON_PROTOCOL if name == 'diagnose-common' else DEFAULT_PROTOCOL))
         if name in ('run', 'register'):
             cmd.add_argument('--task', required=True, choices=TASKS.values())
             cmd.add_argument('--checkpoint', required=True)
@@ -681,11 +713,14 @@ def main(argv=None):
             cmd.add_argument('--wandb', action='store_true')
         if name in ('run', 'import-results'):
             cmd.add_argument('--update_report', action='store_true')
-        if name in ('import-results', 'reanalyze'):
+        if name in ('import-results', 'reanalyze', 'diagnose-common'):
             cmd.add_argument('--source', required=True)
         if name == 'report':
             cmd.add_argument('--format', nargs='+', choices=['md', 'docx'], default=['md', 'docx'])
     args = parser.parse_args(argv)
+    if args.output_root is None:
+        common = hasattr(args, 'protocol') and is_common(load_yaml(args.protocol))
+        args.output_root = str(LAB / 'experiments' / ('g1_recovery_eval_v2' if common else 'g1_recovery_eval'))
     if args.command == 'prepare':
         result = prepare(args.output_root, args.protocol)
     elif args.command == 'register':
@@ -706,6 +741,9 @@ def main(argv=None):
     elif args.command == 'detector-validation':
         from g1_recovery_report import detector_validation_report
         result = detector_validation_report(args.output_root)
+    elif args.command == 'diagnose-common':
+        from g1_common_task_diagnostics import offline_acceptance
+        result = offline_acceptance(args.source, args.protocol, args.output_root)
     else:
         if not (Path(args.output_root) / 'prepared.json').exists():
             prepare(args.output_root)

@@ -337,6 +337,33 @@ def binomial_rate(successes, denominator, denominator_name, pending=0):
 
 
 def summarize(records, manifest):
+    versions = {r.get('metrics_version', METRICS_VERSION) for r in records}
+    if len(versions) > 1:
+        raise ValueError('Legacy and common task metrics are not directly comparable')
+    if versions == {'common_task_window_v1'}:
+        # Reuse denominator/curve calculations; only the v2 sustained endpoint
+        # populates RECOVERED_AND_SURVIVED and primary recovery_time/steps.
+        base = summarize([{k: v for k, v in r.items() if k != 'metrics_version'} for r in records], manifest)
+        e1 = [r for r in records if r['experiment'] == 'E1']
+        pushed = [r for r in e1 if r['push_applied']]
+        s = base['E1']
+        s['readiness_passed'] = sum(r['precondition_passed'] for r in e1)
+        s['once_recovered'] = sum(r['recovered_once_and_survived'] for r in pushed)
+        s['sustained_recovered'] = sum(r['recovered_sustained_and_survived'] for r in pushed)
+        for kind in ('once', 'sustained'):
+            for label, n in [('designated', s['designated']), ('pushed', len(pushed))]:
+                s['rates'][f'{kind}_{label}'] = binomial_rate(s[f'{kind}_recovered'], n, label,
+                    s['pending'] if label == 'designated' else 0)
+        s['relapse_count'] = sum(r['relapse_count'] for r in pushed)
+        s['out_of_domain_duration_after_confirmation'] = quantiles([r['out_of_domain_duration_after_confirmation'] for r in pushed])
+        for key in ('first_recovery_entry', 'first_confirmation', 'sustained_recovery_entry', 'sustained_confirmation',
+                    'confirmation_steps', 'gravity_tilt_peak_rad', 'root_vertical_clearance_min_m',
+                    'heading_offset_peak_rad', 'path_deviation_peak_m'):
+            s[key] = quantiles([r.get(key) for r in pushed])
+        base.update(metrics_version='common_task_window_v1', parameter_status='candidate_unvalidated',
+                    primary_endpoint='recovered_sustained_and_survived',
+                    curve_denominators={'designated': s['designated'], 'pushed': len(pushed)})
+        return base
     def rate(n, d):
         return n / d if d else None
     e0 = [r for r in records if r['experiment'] == 'E0']
@@ -390,6 +417,8 @@ def summarize(records, manifest):
 
 
 def paired_comparison(a, b, designated):
+    if len({r.get('metrics_version', METRICS_VERSION) for r in a + b}) > 1:
+        raise ValueError('Legacy and common task metrics are not directly comparable')
     aa = {r['trial_id']: r for r in a if r['experiment'] == 'E1'}
     bb = {r['trial_id']: r for r in b if r['experiment'] == 'E1'}
     common = [k for k in aa.keys() & bb.keys() if aa[k]['status'] == bb[k]['status'] == 'RECOVERED_AND_SURVIVED']
@@ -400,3 +429,12 @@ def paired_comparison(a, b, designated):
             'paired_relative_time_delta': mean_delta / baseline_time if baseline_time else None,
             'five_touchdown_delta_pp': 100 * (sum(r['recovery_within_5_touchdowns'] for r in aa.values()) -
                                              sum(r['recovery_within_5_touchdowns'] for r in bb.values())) / designated if designated else None}
+
+
+def make_trial_machine(plan, protocol, reference=None):
+    if protocol['metrics']['version'] == 'common_task_window_v1':
+        from g1_common_task_trial import CommonTaskTrialMachine
+        return CommonTaskTrialMachine(plan, protocol, reference)
+    if protocol['metrics']['version'] != METRICS_VERSION:
+        raise ValueError('Unsupported metrics version')
+    return TrialMachine(plan, protocol, reference)

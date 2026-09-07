@@ -21,6 +21,8 @@ import yaml
 
 LAB = Path(__file__).resolve().parents[2]
 DEFAULT_PROTOCOL = LAB / 'tools/evaluation/configs/g1_recovery_eval_lite_v1.yaml'
+COMMON_PROTOCOL = LAB / 'tools/evaluation/configs/g1_recovery_eval_lite_v2.yaml'
+COMMON_VERSION = 'common_task_window_v1'
 TASKS = {
     'ppo_plain': 'g1_slope_nosys_d_matched',
     'ppo_symmetric': 'g1_slope_sys_d_matched',
@@ -41,6 +43,8 @@ EVALUATION_RUNTIME_SOURCES = (
     'tools/evaluation/g1_recovery_eval.py',
     'tools/evaluation/g1_recovery_protocol.py',
     'tools/evaluation/g1_recovery_metrics.py',
+    'tools/evaluation/g1_common_task_detector.py',
+    'tools/evaluation/g1_common_task_trial.py',
     'legged_lab/envs/base/base_env.py',
     'legged_lab/envs/g1/g1_dwaq_env.py',
     'legged_lab/envs/g1/g1_plane_v1_env.py',
@@ -316,22 +320,73 @@ def generate_manifest(p):
     return rows
 
 
+def is_common(p):
+    return p['metrics']['version'] == COMMON_VERSION
+
+
+def manifest_names(p):
+    version = 'v2' if is_common(p) else 'v1'
+    return [f'manifests/nominal_lite_{version}.jsonl', f'manifests/push_lite_{version}.jsonl']
+
+
+def common_contract(p):
+    from g1_common_task_detector import validate_detector_config, DETECTOR_CODE_VERSION
+    if p['protocol_version'] != '2.0-dev' or 'reference' in p['metrics']:
+        raise ValueError('Common detector requires independent 2.0-dev configuration, no teacher reference')
+    config = validate_detector_config(p['metrics']['detector'])
+    if p['metrics'].get('validation') != {'status': 'unvalidated', 'evidence': []}:
+        raise ValueError('This candidate version cannot claim completed validation/freeze')
+    if p['slopes_deg'] != [-10, 0, 10]:
+        raise ValueError('Common v1 scope is Lite slopes -10/0/+10 only')
+    expected = {'+x': [.4, 0, 0], '-x': [-.4, 0, 0], '+y': [0, .4, 0], '-y': [0, -.4, 0], 'standing': [0, 0, 0]}
+    if p['commands'] != expected or p['physics']['policy_hz'] != 50:
+        raise ValueError('Common v1 requires cardinal 0.4 m/s, standing E0 and 50 Hz')
+    for k, value in {'warmup_s': 2., 'readiness_deadline_s': 6., 'reference_wait_s': 3.,
+                     'observation_s': 10., 'recovery_deadline_s': 8., 'required_alternating_touchdowns': 4}.items():
+        if p['e1'][k] != value:
+            raise ValueError('Unsupported common temporal contract: ' + k)
+    if p['e0']['warmup_s'] != 2 or p['e0']['observation_s'] != 10 or p['e1']['command'] == 'standing':
+        raise ValueError('Unsupported common E0/E1 task timing')
+    raw = yaml.safe_dump(config, sort_keys=True).encode()
+    return raw, {'protocol_version': p['protocol_version'], 'detector_code_version': DETECTOR_CODE_VERSION,
+                 'candidate_parameters_sha256': digest(config), 'common_detector_config_sha256': hashlib.sha256(raw).hexdigest(),
+                 'validation_evidence_sha256': digest(p['metrics']['validation']), 'parameter_status': config['parameter_status']}
+
+
+def validate_common_snapshot(path, p, info):
+    raw, fields = common_contract(p)
+    if (info.get('metrics_reference_sha256') is not None or any(info.get(k) != v for k, v in fields.items())
+            or info.get('metrics_version') != COMMON_VERSION or info.get('metrics_config_hash') != digest(p['metrics'])):
+        raise ValueError('Common detector identity/configuration mismatch')
+    if (Path(path) / 'common_detector_config.yaml').read_bytes() != raw:
+        raise ValueError('Common detector snapshot integrity mismatch')
+    if (Path(path) / 'metrics_reference.yaml').exists():
+        raise ValueError('Common judge cannot contain a teacher metrics reference snapshot')
+
+
 def prepare(root, protocol_path=DEFAULT_PROTOCOL):
     root = Path(root)
     p = load_yaml(protocol_path)
     from g1_recovery_metrics import METRICS_VERSION
-    if p['metrics']['version'] != METRICS_VERSION:
+    if p['metrics']['version'] not in (METRICS_VERSION, COMMON_VERSION):
         raise ValueError('Unsupported metrics definition; implement and test the requested detector first')
     if p['physics']['observation_noise'] or p['physics']['randomization'] or p['physics']['action_delay_steps'] != 0:
         raise ValueError('This controlled suite requires noise/randomization/delay disabled')
-    if p['protocol_version'] not in ('1.0-dev', '1.0'):
+    if not is_common(p) and p['protocol_version'] not in ('1.0-dev', '1.0'):
         raise ValueError('Unsupported protocol version')
-    reference, table = nominal_reference(p)
+    extra = {}
+    if is_common(p):
+        if root.resolve().is_relative_to((LAB / 'experiments/g1_recovery_eval').resolve()):
+            raise ValueError('v2 requires a new result directory; historical root is protected')
+        common_raw, extra = common_contract(p)
+        reference, table = None, None
+    else:
+        reference, table = nominal_reference(p)
     rows = generate_manifest(p)
     info = dict(protocol_hash=digest(p), manifest_hash=digest(rows),
                 metrics_version=p['metrics']['version'], metrics_config_hash=digest(p['metrics']),
-                metrics_reference_sha256=sha256(reference), physics_profile_hash=digest(p['physics']),
-                inference_mode=p['physics']['inference_mode'], trials=len(rows))
+                metrics_reference_sha256=sha256(reference) if reference else None, physics_profile_hash=digest(p['physics']),
+                inference_mode=p['physics']['inference_mode'], trials=len(rows), **extra)
     with lock(root / '.prepare.lock'):
         if (root / 'prepared.json').exists():
             if read_json(root / 'prepared.json') != info:
@@ -340,10 +395,13 @@ def prepare(root, protocol_path=DEFAULT_PROTOCOL):
             return info
         root.mkdir(parents=True, exist_ok=True)
         atomic_write(root / 'protocol.yaml', yaml.safe_dump(p, allow_unicode=True, sort_keys=False))
-        atomic_write(root / 'metrics_reference.yaml', reference.read_bytes())
-        write_json(root / 'metrics_nodes.json', table)
-        for e, filename in [('E0', 'nominal_lite_v1.jsonl'), ('E1', 'push_lite_v1.jsonl')]:
-            atomic_write(root / 'manifests' / filename, jsonl([r for r in rows if r['experiment'] == e]))
+        if is_common(p):
+            atomic_write(root / 'common_detector_config.yaml', common_raw)
+        else:
+            atomic_write(root / 'metrics_reference.yaml', reference.read_bytes())
+            write_json(root / 'metrics_nodes.json', table)
+        for e, filename in zip(('E0', 'E1'), manifest_names(p)):
+            atomic_write(root / filename, jsonl([r for r in rows if r['experiment'] == e]))
         balances = {}
         for r in rows:
             if r['experiment'] == 'E1':
@@ -365,19 +423,22 @@ def load_prepared(root):
     root = Path(root)
     p = load_yaml(root / 'protocol.yaml')
     info = read_json(root / 'prepared.json')
-    rows = read_jsonl(root / 'manifests/nominal_lite_v1.jsonl') + read_jsonl(root / 'manifests/push_lite_v1.jsonl')
+    rows = sum((read_jsonl(root / name) for name in manifest_names(p)), [])
     if digest(p) != info['protocol_hash'] or digest(rows) != info['manifest_hash']:
         raise ValueError('Protocol/manifest integrity mismatch')
-    if sha256(root / 'metrics_reference.yaml') != info['metrics_reference_sha256']:
+    if is_common(p):
+        validate_common_snapshot(root, p, info)
+    elif sha256(root / 'metrics_reference.yaml') != info['metrics_reference_sha256']:
         raise ValueError('Metrics reference integrity mismatch')
     if rows != generate_manifest(p):
         raise ValueError('Manifest does not match the fixed protocol')
     # Re-derive nodes from the frozen snapshot, never trust an edited cache.
-    snap_p = json.loads(canonical(p))
-    snap_p['metrics']['reference'] = str((root / 'metrics_reference.yaml').resolve())
-    _, nodes = nominal_reference(snap_p)
-    if read_json(root / 'metrics_nodes.json') != nodes:
-        raise ValueError('Metrics nodes integrity mismatch')
+    if not is_common(p):
+        snap_p = json.loads(canonical(p))
+        snap_p['metrics']['reference'] = str((root / 'metrics_reference.yaml').resolve())
+        _, nodes = nominal_reference(snap_p)
+        if read_json(root / 'metrics_nodes.json') != nodes:
+            raise ValueError('Metrics nodes integrity mismatch')
     return p, rows, info
 
 
@@ -616,7 +677,8 @@ class RunStore:
         dest = self.path / 'trial_records' / (tid + '.json')
         if dest.exists():
             raise ValueError(f'Trial already committed: {tid}; use a new attempt')
-        if result['status'] not in STATUSES:
+        allowed = STATUSES | ({'E0_COMPLETED'} if result.get('metrics_version') == COMMON_VERSION else set())
+        if result['status'] not in allowed:
             raise ValueError('Unknown terminal status')
         buf = io.BytesIO()
         np.savez_compressed(buf, **trace)
@@ -642,7 +704,10 @@ class RunStore:
         protocol = load_yaml(self.path / 'protocol_snapshot.yaml')
         if digest(protocol) != identity['protocol_hash']:
             raise ValueError('Run protocol mismatch')
-        if sha256(self.path / 'metrics_reference.yaml') != identity['metrics_reference_sha256']:
+        common = is_common(protocol)
+        if common:
+            validate_common_snapshot(self.path, protocol, identity)
+        elif sha256(self.path / 'metrics_reference.yaml') != identity['metrics_reference_sha256']:
             raise ValueError('Run reference mismatch')
         effective_path = self.path / 'effective_env_config.yaml'
         if effective_path.exists():
@@ -670,8 +735,10 @@ class RunStore:
         for r in records:
             if r['trial_id'] not in expected or any(r.get(k) != v for k, v in expected[r['trial_id']].items()):
                 raise ValueError('Trial is not the assigned manifest trial')
-            if r['status'] not in STATUSES:
+            if r['status'] not in (STATUSES | ({'E0_COMPLETED'} if common else set())):
                 raise ValueError('Invalid status')
+            if common and r.get('metrics_version') != COMMON_VERSION:
+                raise ValueError('Common run cannot contain legacy metric records')
             trace = self.path / 'traces' / (r['trial_id'] + '.npz')
             if sha256(trace) != r['trace_sha256']:
                 raise ValueError('Corrupt trace')
@@ -680,6 +747,10 @@ class RunStore:
             with np.load(trace, allow_pickle=False) as data:
                 required = {'time', 'root_velocity', 'root_velocity_world', 'com_velocity', 'roll_pitch',
                             'yaw', 'forces', 'root_position', 'fell', 'timeout', 'out_of_test_area', 'plane_json'}
+                if common and r['status'] != 'EVALUATION_ERROR':
+                    required |= {'command', 'root_quaternion_wxyz', 'root_clearance_m', 'local_plane_normal',
+                                 'local_plane_point', 'angular_velocity_world_z', 'data_valid', 'gravity_tilt_rad',
+                                 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag', 'post_push_sample'}
                 if not required.issubset(data.files) or len(data['time']) == 0:
                     raise ValueError('Missing required trace fields/frames')
                 if any(len(data[k]) != len(data['time']) for k in required):
@@ -692,6 +763,21 @@ class RunStore:
                         raise ValueError('Survival claimed before fixed observation deadline')
                 if r['status'] != 'EVALUATION_ERROR' and any(not np.isfinite(data[k]).all() for k in required - {'plane_json'}):
                     raise ValueError('Non-finite physical trace without EVALUATION_ERROR')
+                if common and r['status'] != 'EVALUATION_ERROR':
+                    from g1_common_task_trial import replay_common_trial
+                    replayed = replay_common_trial(expected[r['trial_id']], protocol, data, r)
+                    actual_record = replayed.result()
+                    for key in ('status', 'push_applied', 'survived', 'first_post_push_sample_time',
+                                'first_recovery_entry', 'first_confirmation', 'sustained_recovery_entry',
+                                'recovered_once_and_survived', 'recovered_sustained_and_survived',
+                                'relapse_count', 'out_of_domain_duration_after_confirmation',
+                                'recovery_time', 'recovery_steps', 'confirmation_steps'):
+                        if r.get(key) != actual_record.get(key):
+                            raise ValueError('Common record disagrees with physical replay: ' + key)
+                    rebuilt = replayed.trace()
+                    for key in ('post_push_sample', 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag'):
+                        if not np.array_equal(data[key], rebuilt[key]):
+                            raise ValueError('Common physical event/sample-role mismatch: ' + key)
             if r['status'] == 'RECOVERED_AND_SURVIVED' and not (r['push_applied'] and r['survived']
                     and r['recovery_time'] is not None and r['recovery_steps'] is not None):
                 raise ValueError('Inconsistent recovered-and-survived result')
@@ -700,7 +786,7 @@ class RunStore:
         if (self.path / 'completion.json').exists():
             completion = read_json(self.path / 'completion.json')
             required_files = {'identity.json', 'protocol_snapshot.yaml', 'manifest_snapshot.jsonl',
-                              'metrics_reference.yaml', 'effective_env_config.yaml', 'trials.csv', 'events.csv',
+                              'common_detector_config.yaml' if common else 'metrics_reference.yaml', 'effective_env_config.yaml', 'trials.csv', 'events.csv',
                               'summary.json', 'run.log'}
             required_files.update(f'{folder}/{r["trial_id"]}{suffix}' for r in records
                                   for folder, suffix in [('traces', '.npz'), ('trial_records', '.json'), ('trial_events', '.jsonl')])
