@@ -195,8 +195,8 @@ def make_evaluation_environment(args, p, identity, snapshot):
     cfg.scene.terrain_generator.size = tuple(p['physics']['tile_size_m'])
     cfg.scene.terrain_generator.seed = p['manifest_seed']
     cfg.noise.add_noise = False
+    # Disable lag sampling while preserving native action history for action_rate_l2.
     cfg.domain_rand.action_delay.enable = False
-    cfg.domain_rand.action_delay.params = {'min_delay': 0, 'max_delay': 0}
     for name in list(vars(cfg.domain_rand.events)):
         if not name.startswith('_'):
             setattr(cfg.domain_rand.events, name, None)
@@ -403,6 +403,11 @@ def make_evaluation_environment(args, p, identity, snapshot):
                         ('reward_td5', '_v1_event_td5'), ('reward_total', '_v1_event_total')]}}
 
     env = EvaluationEnv(cfg, args.headless)
+    if cfg.domain_rand.action_delay.enable is not False:
+        raise ValueError('Evaluation requires action_delay.enable to be False.')
+    if env.action_buffer._circular_buffer.max_length < 2:
+        raise ValueError('Evaluation requires at least two action-buffer frames because '
+                         'action_rate_l2 uses current and previous actions.')
     if metrics_cfg['termination_force_n'] != 1.0:
         raise ValueError('Native termination threshold is 1 N; changing it requires a new adapter')
     if cfg.robot.terminate_contacts_body_names != metrics_cfg['termination_bodies']:
