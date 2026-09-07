@@ -118,7 +118,8 @@ def _identity():
             'native_nominal_sha256': None, 'agent_config_sha256': 'agent', 'env_config_sha256': 'env',
             'identity_schema_version': 2, 'native_capability_sha256': None,
             'native_configuration_sha256': 'native-config', 'training_run_id': 'training-A',
-            'training_transitions': 100, 'checkpoint_stage': 'final', 'actual_physics_hash': 'actual'}
+            'training_transitions': 100, 'checkpoint_stage': 'final', 'actual_physics_hash': 'actual',
+            'realized_environment_hash': 'realized'}
 
 
 def test_report_hash_does_not_change_evaluation_key_but_runtime_does():

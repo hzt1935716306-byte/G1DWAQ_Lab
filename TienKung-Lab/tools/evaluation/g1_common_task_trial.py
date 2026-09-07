@@ -6,6 +6,7 @@ import numpy as np
 from g1_common_task_detector import (METRICS_VERSION, EPS, MEASUREMENT_FIELDS, CommonTaskMeasurements, CommonTaskGate,
     PhysicalTouchdowns, CommonReadinessDetector, CommonRecoveryDetector, vertical_plane_clearance)
 from g1_recovery_metrics import TrialMachine, additive_velocity, trajectory_metrics
+from g1_development_validation import is_sham, CommonAcceptance, ShamTaskObservation, ACCEPTANCE_FIELDS
 
 
 class CommonTaskTrialMachine(TrialMachine):
@@ -28,6 +29,11 @@ class CommonTaskTrialMachine(TrialMachine):
         self.push_counts = None
         self.failure_reason = None
         self.last_measurement_time = None
+        self.sham = is_sham(plan)
+        self.sham_marker_time = None
+        self.sham_observation = None
+        self.acceptance = CommonAcceptance(self.config['readiness']['hold_s']) if not self.standing else None
+        self.readiness_window_started = False
 
     def feed(self, frame):
         if self.status:
@@ -52,11 +58,19 @@ class CommonTaskTrialMachine(TrialMachine):
         f.update(gravity_tilt_rad=m.gravity_tilt_rad, physical_contact=self.contact.contact.tolist(),
                  physical_touchdown_flags=[any(e['foot'] == foot for e in physical) for foot in ('left', 'right')],
                  alternating_touchdown_flag=alternating is not None,
-                 post_push_sample=self.push_time is not None and m.time > self.push_time + EPS)
+                 post_push_sample=self.push_time is not None and m.time > self.push_time + EPS,
+                 post_sham_sample=self.sham_marker_time is not None and m.time > self.sham_marker_time + EPS)
+        if self.sham_observation is not None:
+            gate = self.sham_observation.update(m)
+            self.events.append({'event': 'sham_task_window', **gate})
         if m.terminal or m.out_of_area:
             if self.recovery is not None:
                 self.recovery.update(m.time, False, self.post_push_counts(), terminal=True)
             self.finish('FELL' if m.terminal else 'OUT_OF_TEST_AREA')
+            return False
+        if self.sham_observation is not None:
+            if m.time >= self.sham_marker_time + self.p['e1']['observation_s'] - EPS:
+                self.finish('SHAM_COMPLETED')
             return False
         if self.push_time is not None:
             gate = self.recovery_gate.update(m)
@@ -66,16 +80,24 @@ class CommonTaskTrialMachine(TrialMachine):
                 good = self.recovery.result(True)['recovered_sustained_and_survived']
                 self.finish('RECOVERED_AND_SURVIVED' if good else 'ALIVE_NOT_RECOVERED')
             return False
-        gate = self.readiness_gate.update(m) if self.readiness_gate else None
+        # Warmup physics/contact/history still run, but task-window support starts at 2 s.
+        gate = None
+        if self.readiness_gate and m.time >= self.p['e0']['warmup_s'] - EPS:
+            if not self.readiness_window_started:
+                self.events.append({'event': 'readiness_window_started', 'time': m.time,
+                                    'warmup_samples_excluded': True, 'warmup_end_s': self.p['e0']['warmup_s']})
+                self.readiness_window_started = True
+            gate = self.readiness_gate.update(m)
         if gate:
             self.events.append({'event': 'common_readiness_window', **gate})
+            self.acceptance.update(gate, self.contact.recent_count(m.time, self.config['readiness']['window_s']), self.contact.counts())
         if self.plan['experiment'] == 'E0':
             if m.time >= self.p['e0']['warmup_s'] and self.state == 'WARMUP':
                 self.transition('OBSERVE', m.time)
             if m.time >= self.p['e0']['warmup_s'] + self.p['e0']['observation_s'] - EPS:
                 self.finish('E0_COMPLETED')
             return False
-        due = self.readiness.update(m.time, gate['passed'], self.contact, alternating)
+        due = self.readiness.update(m.time, gate['passed'] if gate else False, self.contact, alternating)
         self.precondition_passed = self.readiness.ready_time is not None
         self.trigger.update(self.readiness.trigger)
         if self.readiness.state == 'PRECONDITION_FAILED':
@@ -92,6 +114,8 @@ class CommonTaskTrialMachine(TrialMachine):
         return {key: now[key] - self.push_counts[key] for key in now}
 
     def push_applied(self, before, after, yaw):
+        if self.sham:
+            raise ValueError('Sham cannot receive a physical velocity jump')
         if self.push_time is not None or self.state != 'APPLY_PUSH_ONCE':
             raise ValueError('Physical jump may be applied exactly once')
         expected = additive_velocity(before, yaw, self.plan['push_direction_heading'], self.plan['push_magnitude'])
@@ -109,17 +133,34 @@ class CommonTaskTrialMachine(TrialMachine):
         self.recovery = CommonRecoveryDetector(self.t)
         self.transition('OBSERVE', self.t)
 
+    def apply_sham_marker(self, before, after):
+        if not self.sham or self.sham_marker_time is not None or self.state != 'APPLY_PUSH_ONCE':
+            raise ValueError('Sham marker requires currently eligible one-time phase scheduling')
+        if not np.array_equal(before, after):
+            raise ValueError('Sham marker must not change physical velocity')
+        self.readiness.push_applied()  # scheduling state only; no physical push/recovery state
+        self.sham_marker_time = self.t
+        self.trigger.update(sham_marker_time=self.t,
+                            trigger_timing_error=self.t-self.trigger['scheduled_push_time'],
+                            sham_velocity_before=list(before), sham_velocity_after=list(after))
+        self.events.append({'event': 'sham_marker', 'time': self.t, **self.trigger})
+        self.sham_observation = ShamTaskObservation(self.t, self.config)
+        self.transition('OBSERVE', self.t)
+
     def result(self, include_metrics=True):
         if not self.status:
             raise ValueError('Cannot finalize active trial')
-        survived = self.status in ('E0_COMPLETED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED')
+        survived = self.status in ('E0_COMPLETED', 'SHAM_COMPLETED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED')
         r = self.recovery.result(survived) if self.recovery else CommonRecoveryDetector(0).result(False)
         record = {**self.plan, 'metrics_version': METRICS_VERSION, 'status': self.status,
                   'parameter_status': 'candidate_unvalidated', 'precondition_passed': self.precondition_passed,
                   'precondition_failure_reason': self.failure_reason, 'push_applied': self.push_time is not None,
+                  'intervention_marker_applied': self.push_time is not None or self.sham_marker_time is not None,
+                  'sham_applied': self.sham_marker_time is not None, 'sham_marker_time': self.sham_marker_time,
+                  'torso_orientation_status': 'NOT_IMPLEMENTED', 'torso_gravity_tilt_rad': None,
                   'survived': survived, 'recovery_applicable': self.push_time is not None,
                   'e0_outcome': 'NORMAL_OBSERVATION_COMPLETED' if self.status == 'E0_COMPLETED' else None,
-                  'observed_duration': self.t - (self.push_time or 0),
+                  'observed_duration': self.t - (self.push_time or self.sham_marker_time or 0),
                   'observed_touchdowns': self.post_push_counts()['physical'] if self.push_time is not None else 0,
                   'touchdown_count': self.contact.count, 'physical_touchdown_count': self.contact.count,
                   'alternating_touchdown_count': self.contact.alternating_count,
@@ -129,7 +170,12 @@ class CommonTaskTrialMachine(TrialMachine):
                   'step_intervals_s': [e['interval_s'] for e in self.contact.completed_intervals],
                   'readiness_confirmation': self.readiness.ready_time if self.readiness else None,
                   **self.trigger, **r}
-        start = self.p['e0']['warmup_s'] if self.plan['experiment'] == 'E0' else self.push_time
+        record.update(self.sham_observation.result(survived) if self.sham_observation else
+                      dict(sham_task_entry=None, sham_task_confirmation=None, sham_continuity=None,
+                           sham_detection_latency=None, sham_complete_windows=None, sham_task_gate_failed_windows=None))
+        record.update(self.acceptance.result() if self.acceptance and self.plan['experiment'] == 'E0' else
+                      dict.fromkeys(ACCEPTANCE_FIELDS))
+        start = self.p['e0']['warmup_s'] if self.plan['experiment'] == 'E0' else self.push_time or self.sham_marker_time
         frames = [f for f in self.frames if start is not None and f['time'] >= start]
         if include_metrics:
             record.update(trajectory_metrics(frames, self.plan))
@@ -148,7 +194,7 @@ class CommonTaskTrialMachine(TrialMachine):
         trace = super().trace()
         extra = ('root_quaternion_wxyz', 'angular_velocity_world_z', 'command', 'root_clearance_m',
                  'local_plane_normal', 'local_plane_point', 'data_valid', 'gravity_tilt_rad',
-                 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag', 'post_push_sample')
+                 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag', 'post_push_sample', 'post_sham_sample')
         for key in extra:
             if all(key in f for f in self.frames):
                 trace[key] = np.asarray([f[key] for f in self.frames])
@@ -188,10 +234,17 @@ def replay_common_trial(plan, protocol, trace, source_record):
         frame = {key: trace[key][index].tolist() for key in trace if key != 'plane_json'}
         frame['plane'] = json.loads(str(trace['plane_json'][index])) if 'plane_json' in trace else None
         due = machine.feed(frame)
-        recorded = (source_record.get('push_applied') and abs(frame['time'] - source_record['actual_push_time']) < EPS)
+        marked = source_record.get('sham_applied') and abs(frame['time'] - source_record['sham_marker_time']) < EPS
+        recorded = marked or (source_record.get('push_applied') and abs(frame['time'] - source_record['actual_push_time']) < EPS)
         if bool(due) != bool(recorded):
             raise ValueError('Recorded trigger disagrees with causal online detector; cannot invent a push')
-        if recorded:
+        if marked:
+            if source_record.get('push_applied'):
+                raise ValueError('Sham cannot be recorded as pushed')
+            if not np.array_equal(frame['root_velocity_world'], source_record['sham_velocity_before']):
+                raise ValueError('Sham marker velocity does not match physical trace')
+            machine.apply_sham_marker(source_record['sham_velocity_before'], source_record['sham_velocity_after'])
+        elif recorded:
             machine.push_applied(source_record['velocity_before'], source_record['velocity_after'], source_record['push_heading_yaw'])
     if not machine.status:
         raise ValueError('Recorded trial ends before its declared observation/precondition deadline')

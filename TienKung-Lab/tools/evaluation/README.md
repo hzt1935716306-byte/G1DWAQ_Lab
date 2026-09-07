@@ -184,3 +184,9 @@ Use `configs/g1_recovery_eval_lite_v2.yaml` with the separate result root
 `experiments/g1_recovery_eval_v2`. V1 remains readable; its teacher-based results
 are not directly comparable with v2. `2.0-dev` is **candidate_unvalidated** and
 cannot be promoted to `2.0` by passing software tests.
+
+The pinned 16-observation design now has a dedicated `run-development` entry.
+See [development execution contract](docs/DEVELOPMENT_VALIDATION_V2.md) for exact
+assignment selection, sham-only marker semantics, strict warmup, E0 acceptance,
+realized environment identity and the separate development report. These changes
+do not execute that validation list or change the candidate parameters.

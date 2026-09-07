@@ -23,6 +23,53 @@ from g1_recovery_protocol import (
 )
 from g1_recovery_metrics import TrialMachine, make_trial_machine, additive_velocity, summarize
 from g1_common_task_detector import METRICS_VERSION as COMMON_METRICS_VERSION
+from g1_development_validation import (DEVELOPMENT_MANIFEST, DEVELOPMENT_MANIFEST_SHA256,
+    select_development_assignment, realized_environment_payload, measure_realized_slopes, TERRAIN_SOURCES)
+
+
+def runtime_environment_versions():
+    """Called only after the existing AppLauncher, never by offline preparation."""
+    from pxr import Usd
+    import omni.kit.app
+    versions = {}
+    for key, package in (('IsaacLab', 'isaaclab'), ('IsaacSim', 'isaacsim'), ('trimesh', 'trimesh'), ('numpy', 'numpy')):
+        try:
+            versions[key] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            if key == 'IsaacLab':
+                import isaaclab
+                versions[key] = isaaclab.__version__
+            elif key == 'IsaacSim':
+                from isaacsim.core.version import get_version
+                versions[key] = '.'.join(map(str, get_version()))
+            else:
+                raise ValueError('Missing terrain/runtime package version: ' + package)
+    versions['USD'] = '.'.join(map(str, Usd.GetVersion()))
+    app = omni.kit.app.get_app()
+    versions['PhysX'] = app.get_extension_manager().get_enabled_extension_id('omni.physx')
+    versions['Kit'] = app.get_build_version()
+    return versions
+
+
+def apply_trial_intervention(env, machine, index, frame, identity):
+    """One causal trigger; sham never reaches the physics write or native push hook."""
+    import numpy as np
+    import torch
+    before = env.robot.data.root_vel_w[index].detach().cpu().numpy().copy()
+    if getattr(machine, 'sham', False):
+        after = env.robot.data.root_vel_w[index].detach().cpu().numpy().copy()
+        machine.apply_sham_marker(before.tolist(), after.tolist())
+        return
+    ids = torch.tensor([index], device=env.device)
+    after = additive_velocity(before, frame['yaw'], machine.plan['push_direction_heading'], machine.plan['push_magnitude'])
+    env.robot.write_root_velocity_to_sim(torch.tensor(after[None], dtype=torch.float32, device=env.device), env_ids=ids)
+    actual = env.robot.data.root_vel_w[index].detach().cpu().numpy().copy()
+    machine.push_applied(before.tolist(), actual.tolist(), frame['yaw'])
+    if identity['method'].startswith('context'):
+        delta = torch.tensor([machine.plan['push_direction_heading']], device=env.device) * machine.plan['push_magnitude']
+        env._on_curriculum_push(ids, delta, torch.zeros(1, dtype=torch.long, device=env.device))
+        if not np.allclose(env.robot.data.root_vel_w[index].cpu().numpy(), actual):
+            raise ValueError('Plane hook applied a second physical jump')
 
 
 def snapshot_checkpoint(root, identity):
@@ -501,16 +548,34 @@ def execute_run(args):
     import numpy as np
     import torch
     root = Path(args.output_root).resolve()
+    development = getattr(args, 'command', None) == 'run-development'
+    if development:
+        requested = load_yaml(args.protocol)
+        if not is_common(requested) or requested['protocol_version'] != '2.0-dev':
+            raise ValueError('Development validation requires common_task_window_v1 / 2.0-dev')
+        if root.is_relative_to((LAB / 'experiments/g1_recovery_eval').resolve()):
+            raise ValueError('Development validation cannot write the protected historical root')
     if not (root / 'prepared.json').exists():
         prepare(root, args.protocol)
     p, manifest, prepared = load_prepared(root)
+    if development and digest(p) != digest(requested):
+        raise ValueError('Development CLI protocol differs from prepared protocol')
     full_manifest = manifest
     identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage,
                                   args.estimator_checkpoint, args.identity_manifest)
+    if development:
+        manifest, development_fields = select_development_assignment(p, args.task, identity['method'],
+            args.development_manifest, args.development_manifest_sha256)
+        if args.trial_limit:
+            raise ValueError('Development assignments cannot be truncated or resampled')
+        identity.update(development_fields)
     snapshot = snapshot_checkpoint(root, identity)
     register_model(root, identity)
     identity.update(prepared)
-    if args.trial_limit:
+    if development:
+        identity['manifest_hash'] = digest(manifest)
+        identity['subset'] = 'registered_development_8'
+    elif args.trial_limit:
         if args.trial_limit < 1:
             raise ValueError('--trial_limit must be positive')
         # Fixed prefix of each experiment includes E0 and E1 even in a small acceptance run.
@@ -527,6 +592,7 @@ def execute_run(args):
         from g1_recovery_report import validate_detector_gate
         validate_detector_gate(root, p, full_manifest, prepared, identity, gate)
     identity['trials'] = len(manifest)
+    identity['realized_environment_schema_version'] = 1
     key = evaluation_key(identity)
     with lock(root / '.run-selection.lock'):
         attempts = sorted((root / 'runs').glob(key + '-attempt-*'))
@@ -553,6 +619,10 @@ def execute_run(args):
             judge_file = 'common_detector_config.yaml' if is_common(p) else 'metrics_reference.yaml'
             atomic_write(run / judge_file, (root / judge_file).read_bytes())
             atomic_write(run / 'manifest_snapshot.jsonl', jsonl(manifest))
+            if development:
+                if sha256(args.development_manifest) != identity['development_manifest_sha256']:
+                    raise ValueError('Development manifest changed before snapshot')
+                atomic_write(run / 'development_manifest_snapshot.json', Path(args.development_manifest).read_bytes())
             for role, resource in identity['resources'].items():
                 if role != 'estimator':
                     atomic_write(run / resource['snapshot'], (snapshot.parent / resource['snapshot']).read_bytes())
@@ -582,18 +652,20 @@ def execute_run(args):
             launcher = AppLauncher(headless=args.headless, device=args.device)
             app = launcher.app
             env, runner, policy, weights, effective = make_evaluation_environment(args, p, identity, snapshot)
+            effective['environment_versions'] = runtime_environment_versions()
+            effective['realized_slopes_deg'] = measure_realized_slopes(env.eval_mesh, effective['terrain_origins'], effective['slopes_deg'])
+            effective['terrain_source_sha256'] = {k: v for k, v in identity['evaluation_runtime_sources'].items()
+                if k in TERRAIN_SOURCES}
+            effective['realized_environment_hash'] = digest(realized_environment_payload(effective))
             effective_path = run / 'effective_env_config.yaml'
             if effective_path.exists() and load_yaml(effective_path) != effective:
                 raise ValueError('Effective physical/native configuration changed across resume')
             import yaml
             atomic_write(effective_path, yaml.safe_dump(effective, sort_keys=False))
             identity['actual_physics_hash'] = effective['actual_physics_hash']
+            identity['realized_environment_hash'] = effective['realized_environment_hash']
+            identity['software'].update({k: effective['environment_versions'][k] for k in ('IsaacLab', 'IsaacSim')})
             identity['hardware']['GPU'] = torch.cuda.get_device_name(torch.device(args.device)) if args.device.startswith('cuda') else 'CPU'
-            for name, package in [('IsaacLab', 'isaaclab'), ('IsaacSim', 'isaacsim')]:
-                try:
-                    identity['software'][name] = importlib.metadata.version(package)
-                except importlib.metadata.PackageNotFoundError:
-                    pass
             write_json(run / 'identity.json', identity)
             nodes = {} if is_common(p) else read_json(root / 'metrics_nodes.json')
             with torch.inference_mode():
@@ -626,18 +698,7 @@ def execute_run(args):
                             frame = {**env.eval_capture[i], 'time': step * env.step_dt,
                                      'plane': env.plane_diagnostics(i) if not bool(dones[i]) else None}
                             if machine.feed(frame):
-                                ids = torch.tensor([i], device=env.device)
-                                before = env.robot.data.root_vel_w[i].detach().cpu().numpy().copy()
-                                after = additive_velocity(before, frame['yaw'], machine.plan['push_direction_heading'], machine.plan['push_magnitude'])
-                                env.robot.write_root_velocity_to_sim(torch.tensor(after[None], dtype=torch.float32, device=env.device), env_ids=ids)
-                                actual = env.robot.data.root_vel_w[i].detach().cpu().numpy().copy()
-                                machine.push_applied(before.tolist(), actual.tolist(), frame['yaw'])
-                                if identity['method'].startswith('context'):
-                                    delta = torch.tensor([machine.plan['push_direction_heading']], device=env.device) * machine.plan['push_magnitude']
-                                    env._on_curriculum_push(ids, delta, torch.zeros(1, dtype=torch.long, device=env.device))
-                                    # Hook is bookkeeping-only; assert it did not change velocity a second time.
-                                    if not np.allclose(env.robot.data.root_vel_w[i].cpu().numpy(), actual):
-                                        raise ValueError('Plane hook applied a second physical jump')
+                                apply_trial_intervention(env, machine, i, frame, identity)
                             if machine.status:
                                 store.save_trial(machine.result(), machine.trace(), machine.all_events())
                                 logger.info('%s %s', machine.plan['trial_id'], machine.status)
@@ -691,27 +752,30 @@ def reanalyze(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation', 'diagnose-common'):
+    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation', 'diagnose-common', 'run-development'):
         cmd = sub.add_parser(name)
         cmd.add_argument('--output_root', default=None)
-        if name in ('prepare', 'run', 'reanalyze', 'diagnose-common'):
-            cmd.add_argument('--protocol', default=str(COMMON_PROTOCOL if name == 'diagnose-common' else DEFAULT_PROTOCOL))
-        if name in ('run', 'register'):
+        if name in ('prepare', 'run', 'reanalyze', 'diagnose-common', 'run-development'):
+            cmd.add_argument('--protocol', default=str(COMMON_PROTOCOL if name in ('diagnose-common', 'run-development') else DEFAULT_PROTOCOL))
+        if name in ('run', 'run-development', 'register'):
             cmd.add_argument('--task', required=True, choices=TASKS.values())
             cmd.add_argument('--checkpoint', required=True)
             cmd.add_argument('--model_alias', required=True)
             cmd.add_argument('--checkpoint_stage', choices=('intermediate', 'final', 'unknown'), default='unknown')
             cmd.add_argument('--estimator_checkpoint')
             cmd.add_argument('--identity_manifest', help='SHA-bound legacy task confirmation, resource mapping and training provenance YAML')
-        if name == 'run':
+        if name in ('run', 'run-development'):
             cmd.add_argument('--suite', choices=['lite'], default='lite')
-            cmd.add_argument('--num_envs', type=int, default=32)
+            cmd.add_argument('--num_envs', type=int, default=1 if name == 'run-development' else 32)
             cmd.add_argument('--headless', action='store_true')
             cmd.add_argument('--device', default='cuda:0')
             cmd.add_argument('--trial_limit', type=int, help='Development prefix PER experiment; distinct manifest hash')
             cmd.add_argument('--new_attempt', action='store_true')
             cmd.add_argument('--wandb', action='store_true')
-        if name in ('run', 'import-results'):
+        if name == 'run-development':
+            cmd.add_argument('--development_manifest', default=str(DEVELOPMENT_MANIFEST))
+            cmd.add_argument('--development_manifest_sha256', default=DEVELOPMENT_MANIFEST_SHA256)
+        if name in ('run', 'run-development', 'import-results'):
             cmd.add_argument('--update_report', action='store_true')
         if name in ('import-results', 'reanalyze', 'diagnose-common'):
             cmd.add_argument('--source', required=True)
@@ -729,7 +793,7 @@ def main(argv=None):
         snapshot_checkpoint(args.output_root, identity)
         register_model(args.output_root, identity)
         result = identity
-    elif args.command == 'run':
+    elif args.command in ('run', 'run-development'):
         if args.num_envs < 1:
             parser.error('--num_envs must be positive')
         result = execute_run(args)

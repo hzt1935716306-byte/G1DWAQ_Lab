@@ -338,13 +338,21 @@ def binomial_rate(successes, denominator, denominator_name, pending=0):
 
 def summarize(records, manifest):
     versions = {r.get('metrics_version', METRICS_VERSION) for r in records}
+    if not records and any(r.get('sham') is True for r in manifest):
+        versions = {'common_task_window_v1'}
     if len(versions) > 1:
         raise ValueError('Legacy and common task metrics are not directly comparable')
     if versions == {'common_task_window_v1'}:
+        from g1_development_validation import is_sham, ACCEPTANCE_FIELDS, GATE_FAILURES
         # Reuse denominator/curve calculations; only the v2 sustained endpoint
         # populates RECOVERED_AND_SURVIVED and primary recovery_time/steps.
-        base = summarize([{k: v for k, v in r.items() if k != 'metrics_version'} for r in records], manifest)
-        e1 = [r for r in records if r['experiment'] == 'E1']
+        real_records = [r for r in records if not is_sham(r)]
+        real_manifest = [r for r in manifest if not is_sham(r)]
+        base = summarize([{k: v for k, v in r.items() if k != 'metrics_version'} for r in real_records], real_manifest)
+        base.update(designated=len(manifest), executed=len(records), pending=len(manifest)-len(records),
+                    status='INVALID' if any(r['status'] == 'EVALUATION_ERROR' for r in records) else
+                    'COMPLETE' if len(records) == len(manifest) else 'PARTIAL')
+        e1 = [r for r in real_records if r['experiment'] == 'E1']
         pushed = [r for r in e1 if r['push_applied']]
         s = base['E1']
         s['readiness_passed'] = sum(r['precondition_passed'] for r in e1)
@@ -363,6 +371,28 @@ def summarize(records, manifest):
         base.update(metrics_version='common_task_window_v1', parameter_status='candidate_unvalidated',
                     primary_endpoint='recovered_sustained_and_survived',
                     curve_denominators={'designated': s['designated'], 'pushed': len(pushed)})
+        shams = [r for r in records if is_sham(r)]
+        marked = [r for r in shams if r['sham_applied']]
+        designated = sum(is_sham(r) for r in manifest)
+        continuity = sum(r['sham_continuity'] is True for r in marked)
+        base['sham'] = dict(designated=designated, executed=len(shams), marker_reached=len(marked),
+            marker_eligibility=binomial_rate(len(marked), designated, 'sham designated', designated-len(shams)),
+            continuity=binomial_rate(continuity, len(marked), 'sham marker reached'),
+            detector_latency=quantiles([r['sham_detection_latency'] for r in marked]))
+        for label in ('moving', 'standing'):
+            group = [r for r in records if r['experiment'] == 'E0' and (r['command_name'] == 'standing') == (label == 'standing')]
+            target = base['E0'][label]
+            if label == 'standing':
+                target.update(dict.fromkeys(ACCEPTANCE_FIELDS))
+                continue
+            for key in ('common_complete_windows', 'common_task_gate_pass_windows', 'common_task_plus_recent_touchdown_windows'):
+                target[key] = sum(r.get(key) or 0 for r in group)
+            n = target['common_complete_windows']
+            target['common_task_gate_pass_rate'] = target['common_task_gate_pass_windows']/n if n else None
+            target['common_task_plus_recent_touchdown_rate'] = target['common_task_plus_recent_touchdown_windows']/n if n else None
+            target['readiness_hold_confirmed'] = sum(bool(r.get('readiness_hold_confirmed')) for r in group)
+            target['first_readiness_confirmation_time'] = quantiles([r.get('first_readiness_confirmation_time') for r in group])
+            target['common_gate_failure_counts'] = {k: sum((r.get('common_gate_failure_counts') or {}).get(k, 0) for r in group) for k in GATE_FAILURES}
         return base
     def rate(n, d):
         return n / d if d else None
@@ -417,6 +447,8 @@ def summarize(records, manifest):
 
 
 def paired_comparison(a, b, designated):
+    if any(r.get('sham') for r in a + b):
+        raise ValueError('Sham must be excluded from real recovery paired cohorts and denominators')
     if len({r.get('metrics_version', METRICS_VERSION) for r in a + b}) > 1:
         raise ValueError('Legacy and common task metrics are not directly comparable')
     aa = {r['trial_id']: r for r in a if r['experiment'] == 'E1'}

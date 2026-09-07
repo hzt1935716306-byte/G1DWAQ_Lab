@@ -45,6 +45,10 @@ EVALUATION_RUNTIME_SOURCES = (
     'tools/evaluation/g1_recovery_metrics.py',
     'tools/evaluation/g1_common_task_detector.py',
     'tools/evaluation/g1_common_task_trial.py',
+    'tools/evaluation/g1_development_validation.py',
+    'legged_lab/terrains/__init__.py',
+    'legged_lab/terrains/plane_terrain_cfg.py',
+    'legged_lab/recovery/plane_terrain_math.py',
     'legged_lab/envs/base/base_env.py',
     'legged_lab/envs/g1/g1_dwaq_env.py',
     'legged_lab/envs/g1/g1_plane_v1_env.py',
@@ -642,10 +646,19 @@ def evaluation_key(identity):
     if identity.get('identity_schema_version', 1) >= 2:
         fields.update({k: identity.get(k) for k in ('native_capability_sha256', 'native_configuration_sha256',
                       'training_run_id', 'training_transitions', 'checkpoint_stage')})
+    if identity.get('evaluation_role') == 'development_validation':
+        from g1_development_validation import DEVELOPMENT_ID_FIELDS
+        fields.update({k: identity[k] for k in DEVELOPMENT_ID_FIELDS})
     return digest(fields)[:24]
 
 
 def compatible(a, b):
+    if a.get('evaluation_role') != b.get('evaluation_role'):
+        return False
+    if a.get('evaluation_role') == 'development_validation':
+        if any(not a.get(k) or a.get(k) != b.get(k) for k in
+               ('development_manifest_sha256', 'development_manifest_schema_version', 'realized_environment_hash')):
+            return False
     return all(k in a and k in b and a[k] == b[k] for k in COMPATIBILITY)
 
 
@@ -677,7 +690,7 @@ class RunStore:
         dest = self.path / 'trial_records' / (tid + '.json')
         if dest.exists():
             raise ValueError(f'Trial already committed: {tid}; use a new attempt')
-        allowed = STATUSES | ({'E0_COMPLETED'} if result.get('metrics_version') == COMMON_VERSION else set())
+        allowed = STATUSES | ({'E0_COMPLETED', 'SHAM_COMPLETED'} if result.get('metrics_version') == COMMON_VERSION else set())
         if result['status'] not in allowed:
             raise ValueError('Unknown terminal status')
         buf = io.BytesIO()
@@ -709,11 +722,26 @@ class RunStore:
             validate_common_snapshot(self.path, protocol, identity)
         elif sha256(self.path / 'metrics_reference.yaml') != identity['metrics_reference_sha256']:
             raise ValueError('Run reference mismatch')
+        if identity.get('evaluation_role') == 'development_validation':
+            from g1_development_validation import validate_development_snapshot
+            validate_development_snapshot(self.path, protocol, identity, manifest)
+        elif any(r.get('sham') for r in manifest):
+            raise ValueError('Sham requires the pinned development manifest and role')
         effective_path = self.path / 'effective_env_config.yaml'
         if effective_path.exists():
             effective = load_yaml(effective_path)
             if digest(effective['actual_physics']) != identity.get('actual_physics_hash'):
                 raise ValueError('Effective physics does not match identity')
+            if common or identity.get('realized_environment_schema_version'):
+                from g1_development_validation import realized_environment_payload
+                realized = digest(realized_environment_payload(effective))
+                if realized != identity.get('realized_environment_hash') or realized != effective.get('realized_environment_hash'):
+                    raise ValueError('Realized environment hash mismatch')
+                if any(identity.get('software', {}).get(k) != effective['environment_versions'][k] for k in ('IsaacLab', 'IsaacSim')):
+                    raise ValueError('Realized environment software mismatch')
+                terrain_sources = effective['terrain_source_sha256']
+                if any(identity.get('evaluation_runtime_sources', {}).get(k) != v for k, v in terrain_sources.items()):
+                    raise ValueError('Realized terrain source/runtime provenance mismatch')
             if identity.get('identity_schema_version', 1) >= 2:
                 expected_inputs = {k: v['sha256'] for k, v in identity.get('resources', {}).items()}
                 if effective.get('native_inputs') != expected_inputs or effective.get('native_configuration_sha256') != identity['native_configuration_sha256']:
@@ -735,7 +763,7 @@ class RunStore:
         for r in records:
             if r['trial_id'] not in expected or any(r.get(k) != v for k, v in expected[r['trial_id']].items()):
                 raise ValueError('Trial is not the assigned manifest trial')
-            if r['status'] not in (STATUSES | ({'E0_COMPLETED'} if common else set())):
+            if r['status'] not in (STATUSES | ({'E0_COMPLETED', 'SHAM_COMPLETED'} if common else set())):
                 raise ValueError('Invalid status')
             if common and r.get('metrics_version') != COMMON_VERSION:
                 raise ValueError('Common run cannot contain legacy metric records')
@@ -758,7 +786,8 @@ class RunStore:
                 if len(data['time']) > 1 and not np.allclose(np.diff(data['time']), .02, atol=1e-7):
                     raise ValueError('Trace must contain every 50 Hz frame')
                 if r.get('survived'):
-                    deadline = protocol['e0']['warmup_s'] + protocol['e0']['observation_s'] if r['experiment'] == 'E0' else r['actual_push_time'] + protocol['e1']['observation_s']
+                    intervention_time = r.get('sham_marker_time') if r.get('sham_applied') else r.get('actual_push_time')
+                    deadline = protocol['e0']['warmup_s'] + protocol['e0']['observation_s'] if r['experiment'] == 'E0' else intervention_time + protocol['e1']['observation_s']
                     if data['time'][-1] < deadline - 1e-7:
                         raise ValueError('Survival claimed before fixed observation deadline')
                 if r['status'] != 'EVALUATION_ERROR' and any(not np.isfinite(data[k]).all() for k in required - {'plane_json'}):
@@ -767,17 +796,27 @@ class RunStore:
                     from g1_common_task_trial import replay_common_trial
                     replayed = replay_common_trial(expected[r['trial_id']], protocol, data, r)
                     actual_record = replayed.result()
+                    from g1_development_validation import ACCEPTANCE_FIELDS
                     for key in ('status', 'push_applied', 'survived', 'first_post_push_sample_time',
                                 'first_recovery_entry', 'first_confirmation', 'sustained_recovery_entry',
                                 'recovered_once_and_survived', 'recovered_sustained_and_survived',
                                 'relapse_count', 'out_of_domain_duration_after_confirmation',
-                                'recovery_time', 'recovery_steps', 'confirmation_steps'):
+                                'recovery_time', 'recovery_steps', 'confirmation_steps',
+                                'intervention_marker_applied', 'sham_applied', 'sham_marker_time',
+                                'sham_task_entry', 'sham_task_confirmation', 'sham_continuity', 'sham_detection_latency',
+                                'sham_complete_windows', 'sham_task_gate_failed_windows', *ACCEPTANCE_FIELDS):
                         if r.get(key) != actual_record.get(key):
                             raise ValueError('Common record disagrees with physical replay: ' + key)
                     rebuilt = replayed.trace()
                     for key in ('post_push_sample', 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag'):
                         if not np.array_equal(data[key], rebuilt[key]):
                             raise ValueError('Common physical event/sample-role mismatch: ' + key)
+                    if r.get('sham'):
+                        if 'post_sham_sample' not in data or not np.array_equal(data['post_sham_sample'], rebuilt['post_sham_sample']):
+                            raise ValueError('Sham post-marker sample-role mismatch')
+                        events = read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))
+                        if canonical(events) != canonical(replayed.all_events()):
+                            raise ValueError('Sham event replay mismatch; no physical velocity jump permitted')
             if r['status'] == 'RECOVERED_AND_SURVIVED' and not (r['push_applied'] and r['survived']
                     and r['recovery_time'] is not None and r['recovery_steps'] is not None):
                 raise ValueError('Inconsistent recovered-and-survived result')
@@ -790,6 +829,8 @@ class RunStore:
                               'summary.json', 'run.log'}
             required_files.update(f'{folder}/{r["trial_id"]}{suffix}' for r in records
                                   for folder, suffix in [('traces', '.npz'), ('trial_records', '.json'), ('trial_events', '.jsonl')])
+            if identity.get('evaluation_role') == 'development_validation':
+                required_files.add('development_manifest_snapshot.json')
             if completion.get('status') != 'COMPLETE' or not required_files.issubset(completion['files']):
                 raise ValueError('Incomplete completion file index')
             for rel, sha in completion['files'].items():

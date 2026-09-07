@@ -118,8 +118,14 @@ chosen gap contract for isolated CPU tests; production always uses .02 s.
 No extrapolation or future input is used. Holds apply at continuous valid sample
 points and require actual timestamp span H; one false sample resets the hold.
 
+Warmup physics and public contact detection run normally, but **t<2.0 s never
+enters the readiness task window**. The first task sample is at t=2.0 s;
+earliest complete 1.20 s window is approximately 3.20 s and earliest 0.20 s hold
+confirmation is approximately 3.40 s. The deadline remains 6 s. The
+`readiness_window_started` event records the start and warmup exclusion.
 Readiness uses the recent alternating stream in `(t-1.20,t]`, not total events
-since reset. After H confirmation, choose the first legal target-foot event.
+since reset; the first complete window therefore cannot use warmup contacts.
+After H confirmation, choose the first legal target-foot event.
 Predict phase with the newest recent completed interval **starting at that same
 foot**; only if unavailable, use the latest completed interval and record the
 fallback. The estimated interval and its start/end/source are recorded. Neither
@@ -213,16 +219,19 @@ The fixed **design manifest** `configs/g1_recovery_eval_v2_development_16.json`
 predeclares 4 normal-development E0 and 12 held-out sham/.5/1.0 m/s observations
 across PPO and DWAQ at −10°/+X/.4, phase .25, balanced reference feet. Paired
 baselines and amplitudes share reset assignments; E0-development and holdout
-reset seeds are disjoint. The file is planned, not executed, and is not selected
-by the current full/prefix run CLI. The next authorized development harness must
-execute this exact list and distinguish sham markers from physical pushes.
+reset seeds are disjoint. The file is planned, not executed. The dedicated
+`run-development` entry now selects each baseline's exact eight assignments;
+the ordinary full/prefix CLI continues to use its independent formal manifest.
+The original design file bytes (including its historical design-only prose)
+are preserved under the pinned SHA. See [development execution contract](DEVELOPMENT_VALIDATION_V2.md)
+for the executable entry, sham semantics, environment identity, E0 fields and reports.
 Software/physics contract failure stops execution. Valid precondition failures,
 non-recovery and falls are saved, then the fixed list continues without tuning.
 There are only eight planned real pushes: insufficient for ≥20 reviewed pushes,
 negative-class/relapse coverage or any full-protocol freeze. No such simulations
 or training were run in this implementation delivery.
 
-## Implementation verification (2026-09-07)
+## Initial implementation verification (commit 140681c, 2026-09-07)
 
 The full CPU suite passed **145 tests** in 88.85 s with the command above,
 retaining the previous 117 tests. Coverage includes timestamp endpoint/interpolation

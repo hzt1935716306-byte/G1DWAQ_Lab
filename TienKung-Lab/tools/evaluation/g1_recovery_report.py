@@ -52,7 +52,9 @@ def table(headers, rows):
 def is_full_lite_run(run, full_manifest):
     """Formal tables require the exact prepared 150 + 240 trial assignment."""
     manifest = run['manifest']
-    return (run['identity'].get('metrics_version') != COMMON_VERSION
+    return (run['identity'].get('evaluation_role') != 'development_validation'
+            and bool(run['identity'].get('realized_environment_hash'))
+            and run['identity'].get('metrics_version') != COMMON_VERSION
             and run['identity'].get('checkpoint_stage') == 'final'
             and run['identity'].get('subset') == 'lite_full'
             and len(manifest) == 390
@@ -99,7 +101,7 @@ def load_runs(root, formal_only=True):
     # An explicit retest is retained in history, but never counted as additional samples.
     selected = {}
     for run in runs:
-        key = (evaluation_key(run['identity']), run['identity']['actual_physics_hash'])
+        key = (evaluation_key(run['identity']), run['identity']['actual_physics_hash'], run['identity'].get('realized_environment_hash'))
         def rank(item):
             completion = read_json(item['path'] / 'completion.json')
             return (item['identity'].get('attempt_index', 0), completion.get('completed_at_utc', ''), item['id'])
@@ -111,7 +113,9 @@ def load_runs(root, formal_only=True):
 
 
 def compatible_run(a, b):
-    return compatible(a['identity'], b['identity']) and a['identity']['actual_physics_hash'] == b['identity']['actual_physics_hash']
+    return (bool(a['identity'].get('realized_environment_hash')) and
+            a['identity']['realized_environment_hash'] == b['identity'].get('realized_environment_hash') and
+            compatible(a['identity'], b['identity']) and a['identity']['actual_physics_hash'] == b['identity']['actual_physics_hash'])
 
 
 def budget_relation(a, b):
@@ -144,6 +148,8 @@ def previous_checkpoint(run, history):
 
 
 def curve_plots(root, group, group_id):
+    if any(r['identity'].get('evaluation_role') == 'development_validation' for r in group):
+        raise ValueError('Registered development validation cannot enter formal cumulative curves')
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -199,6 +205,8 @@ def report_blocks(root, runs, excluded, history, plots=True):
         blocks += [('heading', 2, 'Common v2 candidate 历史 — 不直接比较'),
                    ('text', 'common_task_window_v1 与旧 teacher-based 指标不直接比较，不进入本版主排名。'),
                    table(['Run', '指标', '参数状态'], [[r['id'], COMMON_VERSION, 'candidate_unvalidated'] for r in common_history])]
+        blocks.extend(development_report_blocks([r for r in common_history
+                      if r['identity'].get('evaluation_role') == 'development_validation']))
     rows = []
     partial_models = {}
     for path in (root / 'runs').glob('*/identity.json'):
@@ -233,7 +241,8 @@ def report_blocks(root, runs, excluded, history, plots=True):
     groups = defaultdict(list)
     for run in runs:
         i = run['identity']
-        group_id = digest({k: i[k] for k in COMPATIBILITY} | {'actual_physics_hash': i['actual_physics_hash']})[:12]
+        group_id = digest({k: i[k] for k in COMPATIBILITY} | {'actual_physics_hash': i['actual_physics_hash'],
+                          'realized_environment_hash': i['realized_environment_hash']})[:12]
         groups[group_id].append(run)
     blocks += [('heading', 2, 'E0 正常运动总表'), ('text', '主表仅包含显式 final 且完整执行 150 个 E0 + 240 个 E1 的 Lite 模型；开发子集和 intermediate/unknown 不参与。Moving 与 standing 分开；RMSE 单位 m/s，姿态波动单位 rad。')]
     if not runs:
@@ -403,7 +412,9 @@ def common_report_blocks(root, p, prepared, history, excluded, plots):
                ('text', 'Recovery只收真实post-push采样；entry是合格窗口结束，时间不减W。物理落脚计数范围 t_push_end < touchdown ≤ entry；重复同脚计数，同时双脚计2，交替事件只用于readiness/phase。'),
                ('text', '主任务为当前heading系速度跟踪；初始heading偏移、heading变化及路径偏差仅报告，不进入gate。'),
                ('heading', 2, 'Common candidate 开发记录（各 attempt 单列，不累计重复尝试）')]
-    common = [r for r in history if r['identity']['metrics_version'] == COMMON_VERSION]
+    development = [r for r in history if r['identity'].get('evaluation_role') == 'development_validation']
+    common = [r for r in history if r['identity']['metrics_version'] == COMMON_VERSION
+              and r['identity'].get('evaluation_role') != 'development_validation']
     if not common:
         blocks.append(('text', '尚无新协议真实仿真结果；合成测试与旧无扰动trace诊断不能替代真实扰动验证。'))
     for run in common:
@@ -434,6 +445,53 @@ def common_report_blocks(root, p, prepared, history, excluded, plots):
         blocks.append(table(['Run', '旧指标', '状态'], [[r['id'], r['identity']['metrics_version'], r['summary']['status']] for r in legacy]))
     if excluded:
         blocks.append(table(['Run', '状态', '原因'], excluded))
+    blocks.extend(development_report_blocks(development))
+    return blocks
+
+
+def development_report_blocks(runs):
+    """Pre-registered observations, grouped by method and heldout seed; no ranking/curves."""
+    blocks = [('heading', 2, 'Common v2 Development Validation'),
+              ('text', 'CANDIDATE_UNVALIDATED：固定清单开发观察，不是390条full-Lite、正式累计曲线或论文结论。'),
+              ('text', 'Sham单独统计：未写物理速度增量，不进入真实push、生存、恢复或3/5次落脚恢复分母。连续性分母为marker reached；延迟为首次任务确认减marker时刻。')]
+    if not runs:
+        blocks.append(('text', '16条预注册开发验证尚无完成记录。'))
+    for run in runs:
+        identity, summary = run['identity'], run['summary']
+        blocks.append(('heading', 3, f"{identity['method']} / {run['id']}"))
+        blocks.append(table(['身份', '值'], [[k, str(identity.get(k, 'N/A'))] for k in
+            ('development_manifest_sha256', 'development_assignment_sha256', 'realized_environment_hash')]))
+        e0 = summary['E0']['moving']
+        blocks.append(table(['E0 normal acceptance', '值'], [[k, str(e0.get(k)) if e0.get(k) is not None else 'N/A'] for k in
+            ('designated', 'executed', 'common_complete_windows', 'common_task_gate_pass_windows', 'common_task_gate_pass_rate',
+             'common_task_plus_recent_touchdown_windows', 'common_task_plus_recent_touchdown_rate',
+             'readiness_hold_confirmed', 'first_readiness_confirmation_time', 'common_gate_failure_counts')]))
+        blocks.append(('text', 'Standing E0 walking readiness=N/A；torso_gravity_tilt_rad=NOT_IMPLEMENTED（不猜测body index，不进入gate）。'))
+        sham = summary['sham']
+        blocks.append(table(['Sham designated', 'Marker reached', 'Marker eligibility', 'Continuity', '确认延迟(s)'],
+            [[sham['designated'], sham['marker_reached'], display_rate(sham['marker_eligibility']),
+              display_rate(sham['continuity']), display_quantile(sham['detector_latency'])]]))
+        for magnitude in (.5, 1.):
+            records = [r for r in run['records'] if r['experiment'] == 'E1' and r['push_magnitude'] == magnitude]
+            blocks.append(('heading', 4, f'{magnitude:.1f} m/s real push'))
+            blocks.append(table(['Seed', 'Readiness', 'Push', 'Survival', 'Once', 'Sustained', 'Relapse', '时间(s)', '物理步数'],
+                [[r['reset_seed'], r['precondition_passed'], r['push_applied'], r['survived'] if r['push_applied'] else 'N/A',
+                  r['recovered_once_and_survived'] if r['push_applied'] else 'N/A',
+                  r['recovered_sustained_and_survived'] if r['push_applied'] else 'N/A',
+                  r['relapse_count'], fmt(r['recovery_time']), fmt(r['recovery_steps'])] for r in records]))
+    blocks.append(('heading', 3, 'Heldout reset seed 配对展示'))
+    for a, b in itertools.combinations(runs, 2):
+        if a['identity']['method'] == b['identity']['method']:
+            continue
+        if not compatible_run(a, b):
+            blocks.append(('text', f"{a['id']} / {b['id']}：不能严格配对，实际环境或协议/assignment身份不一致。"))
+            continue
+        aa = {(r['reset_seed'], r['push_magnitude']): r for r in a['records'] if r['experiment'] == 'E1'}
+        bb = {(r['reset_seed'], r['push_magnitude']): r for r in b['records'] if r['experiment'] == 'E1'}
+        blocks.append(table(['Heldout seed', '条件(m/s; 0=sham)', a['identity']['method'], b['identity']['method']],
+            [[seed, magnitude, aa[seed, magnitude]['status'], bb[seed, magnitude]['status']]
+             for seed, magnitude in sorted(aa.keys() & bb.keys())]))
+        blocks.append(('text', 'Strict matched environment: ' + a['identity']['realized_environment_hash']))
     return blocks
 
 
@@ -762,6 +820,7 @@ def detector_validation_report(root):
         # Inventory only: legacy practical-interval acceptance is not a v2 gate.
         common = [r for r in runs if r['identity'].get('metrics_version') == COMMON_VERSION]
         sources = [{'evaluation_id': r['id'], 'method': r['identity']['method'],
+                    'realized_environment_hash': r['identity']['realized_environment_hash'],
                     'evaluation_runtime_sha256': r['identity']['evaluation_runtime_sha256'],
                     'candidate_parameters_sha256': r['identity']['candidate_parameters_sha256'],
                     'completion_sha256': sha256(r['path'] / 'completion.json')}

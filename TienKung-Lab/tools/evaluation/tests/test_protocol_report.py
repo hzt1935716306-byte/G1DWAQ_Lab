@@ -98,7 +98,8 @@ def synthetic_run(tmp_path, alias='synthetic_A', full=False):
          'checkpoint_sha256': digest(alias), 'estimator_sha256': None, 'native_nominal_sha256': None,
          'agent_config_sha256': 'test', 'env_config_sha256': 'test',
          'evaluation_runtime_sha256': 'test_runtime', 'report_code_sha256': 'test_report',
-         'actual_physics_hash': 'synthetic_physics', 'training_iteration': 100, 'training_seed': 42,
+         'actual_physics_hash': 'synthetic_physics', 'realized_environment_hash': 'synthetic_environment',
+         'training_iteration': 100, 'training_seed': 42,
          'checkpoint_stage': 'final' if full else 'intermediate',
          'subset': 'lite_full' if full else 'first_1_per_experiment'}
     i['manifest_hash'] = digest(plans)
