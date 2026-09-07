@@ -169,6 +169,33 @@ def test_relocation_preserves_raw_config_and_content(checkpoint_factory, tmp_pat
         inspect(f)
 
 
+@pytest.mark.parametrize('slope_drift', ['value', 'order', 'missing'])
+def test_native_tuple_matches_snapshot_array_but_rejects_drift(checkpoint_factory, tmp_path, slope_drift):
+    f = checkpoint_factory('context_reward')
+    slopes = [-15., -10., -5., 0., 5., 10., 15.]
+    f.env['plane_recovery']['slopes_degrees'] = slopes
+    rewrite_fixture(f)
+    identity = inspect(f)
+    snapshot = snapshot_checkpoint(tmp_path / 'output', identity)
+    current = copy.deepcopy(f.env)
+    current['plane_recovery']['slopes_degrees'] = tuple(slopes)
+    cfg = NS(**{k: NS(**v) if isinstance(v, dict) else v for k, v in current.items()})
+    cfg.to_dict = lambda: current
+    paths = bind_native_inputs(cfg, identity, snapshot)
+    assert sha256(paths['native_nominal']) == identity['native_nominal_sha256']
+    assert sha256(paths['native_capability']) == identity['native_capability_sha256']
+    assert sha256(paths['estimator']) == identity['estimator_sha256']
+    assert isinstance(identity['native_configuration']['plane_recovery']['slopes_degrees'], list)
+    if slope_drift == 'value':
+        current['plane_recovery']['slopes_degrees'] = tuple(slopes[:-1] + [20.])
+    elif slope_drift == 'order':
+        current['plane_recovery']['slopes_degrees'] = tuple(reversed(slopes))
+    else:
+        del current['plane_recovery']['slopes_degrees']
+    with pytest.raises(ValueError, match='configuration differs'):
+        bind_native_inputs(cfg, identity, snapshot)
+
+
 def test_actual_solver_uses_snapshot_and_detects_drift(checkpoint_factory, tmp_path):
     f = checkpoint_factory()
     identity = inspect(f)

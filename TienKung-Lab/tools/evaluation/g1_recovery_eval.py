@@ -149,7 +149,9 @@ def bind_native_inputs(cfg, identity, snapshot):
     paths = verify_native_snapshot(identity, snapshot)
     if not identity['method'].startswith('context'):
         return paths
-    if native_contract(cfg.to_dict()) != identity['native_configuration']:
+    # Native configclass tuples become JSON arrays in the SHA-bound snapshot.
+    # Compare the same canonical representation used by its identity hash.
+    if canonical(native_contract(cfg.to_dict())) != canonical(identity['native_configuration']):
         raise ValueError('Native solver/context configuration differs from training snapshot')
     for role, (section, field) in RESOURCE_FIELDS.items():
         setattr(getattr(cfg, section), field, str(paths[role]))
