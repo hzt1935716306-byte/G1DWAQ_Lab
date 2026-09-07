@@ -30,8 +30,15 @@ def aggregate(rows):
             'pushed_rate':n/len(pushed) if pushed else None}
     result['disturbance_phase_survival_rate']=result['disturbance_phase_survived']/len(pushed) if pushed else None
     for field in ('recovery_time','recovery_steps','first_recovery_entry','first_confirmation',
-                  'disturbance_task_domain_occupancy','disturbance_com_velocity_rmse_mps'):
+                  'disturbance_task_domain_occupancy','disturbance_com_velocity_rmse_mps',
+                  'mass_kg','force_rms_n','peak_force_n','actual_rms_acceleration_mps2','actual_force_lag_one_correlation'):
         result[field]=distribution([r.get(field) for r in pushed])
+    for field in ('first_recovery_entry','first_confirmation','sustained_confirmation'):
+        values=[]
+        for r in pushed:
+            clock=r.get('recovery_clock_start_time',r.get('push_end_time'))
+            if clock is not None and r.get(field) is not None:values.append(r[field]-clock)
+        result[field+'_latency_s']=distribution(values)
     return result
 
 
@@ -117,6 +124,8 @@ def native_diagnostics(trace,record):
         if key not in seen:unique.append((time,p));seen.add(key)
     pre=[(float(time),p) for time,p in zip(t,planes) if time<=onset and p and p.get('context_valid')]
     post=next(((time,p) for time,p in unique if time>onset),None)
+    release=record.get('recovery_clock_start_time',record.get('push_end_time'))
+    release_query=next(((time,p) for time,p in unique if release is not None and time>release),None)
     after=[(time,p) for time,p in unique if time>onset];valid=[(time,p) for time,p in after if p['context_valid']]
     td=[]
     for idx in np.flatnonzero(np.any(trace['physical_touchdown_flags'],axis=1)):
@@ -129,7 +138,10 @@ def native_diagnostics(trace,record):
             'query_age_s':float(t[idx]-latest[0]) if latest else None,'query_event':p.get('query_event') if p else None})
     firstzero=next((time for time,p in valid if p['N']==0),None)
     rate=lambda key: (valid[-1][1][key]-valid[0][1][key])/(valid[-1][0]-valid[0][0]) if len(valid)>1 else None
-    return {**base,'real_push':True,'N_pre':pre[-1][1]['N'] if pre else None,'margin_pre':pre[-1][1]['margin'] if pre else None,
+    return {**base,'real_push':True,'disturbance_start_time':onset,'disturbance_release_time':release,
+        'N_first_post_release_refresh':release_query[1]['N'] if release_query else None,
+        'margin_first_post_release_refresh':release_query[1]['margin'] if release_query else None,
+        'first_post_release_refresh_time':release_query[0] if release_query else None,'N_pre':pre[-1][1]['N'] if pre else None,'margin_pre':pre[-1][1]['margin'] if pre else None,
         'N_post':post[1]['N'] if post else None,'margin_post':post[1]['margin'] if post else None,
         'first_post_refresh_time':post[0] if post else None,'first_post_refresh_valid':post[1]['context_valid'] if post else None,
         'queries_after_onset':len(after),'valid_queries_after_onset':len(valid),
@@ -151,7 +163,7 @@ def association(rows,key):
     for target in ('recovery_steps','recovery_time'):
         good=[r for r in eligible if r[target] is not None]
         out[target+'_spearman'] = float(stats.spearmanr([r[key] for r in good],[r[target] for r in good]).statistic) if len(good)>2 and len({r[key] for r in good})>1 and len({r[target] for r in good})>1 else None
-    cuts=sorted(set(x)) if key=='N_post' else np.unique(np.quantile(x,np.linspace(0,1,6))).tolist() if len(x) else []
+    cuts=sorted(set(x.tolist())) if key=='N_post' else np.unique(np.quantile(x,np.linspace(0,1,6))).tolist() if len(x) else []
     buckets=[]
     for i,c in enumerate(cuts if key=='N_post' else cuts[:-1]):
         group=[r for r in eligible if r[key]==c] if key=='N_post' else [r for r in eligible if c<=r[key] and (r[key]<cuts[i+1] or i==len(cuts)-2)]

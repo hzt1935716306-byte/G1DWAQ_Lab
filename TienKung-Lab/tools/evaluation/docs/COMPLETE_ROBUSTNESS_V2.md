@@ -111,3 +111,38 @@ all five complete seals and generates Markdown, DOCX, figures and detailed
 machine-readable statistics. All raw trials/traces/events remain archived.
 Protocol stays **2.0-dev / candidate_unvalidated**. No threshold tuning,
 retraining, removal of failures, or overwriting historical attempts is allowed.
+
+## Execution stop on the first real force-pulse batch
+
+Runtime commit: `c91d3edc3368c45ac13ac8ab4d0f56a264cab797`.
+PPO run `f754ef075b7393c0ec093ca8-attempt-0001` stopped with
+`Applied world wrench differs from declared force/application point`.
+It contains 12,416 non-error terminal records (11,648 envelope and 768
+velocity_ood) and 64 EVALUATION_ERROR records for the interrupted force-pulse
+batch. The whole attempt is INVALID, without a COMPLETE seal. All raw files
+remain present. No subsequent model was started and no trial was rerun.
+
+A direct CPU call to the installed Warp kernel reproduces a coordinate-frame
+inconsistency: the global position offset is translated but not rotated to
+link coordinates before being crossed with the link-coordinate force. For
+link pitch=30 deg, F_world=(300,0,0) N and r_world=(0,0,.2) m, correct world
+moment is (0,60,0) N·m; the kernel produces (0,51.9615173,0) N·m. The installed
+kernel file SHA256 is
+`b38780baabb26b035595e6b6710e26381a18e99ed3bfbbc82887321aee7f82bf`.
+
+The initial test suite covered the independent force formulas, release timing
+and replay but did not exercise this installed global-position API with a
+rotated link. That integration-test coverage gap is material. Passing CPU
+unit tests is not proof of the physical wrench contract.
+
+No runtime repair or physical restart was performed after this stop. A future
+repair should express both force and resultant link torque in the same local
+frame inside the evaluation adapter, avoiding this global-position path,
+and verify against the installed kernel before launching new physical trials.
+It must receive a new runtime identity; the preserved INVALID attempt must
+not be relabeled or merged with another runtime cohort.
+
+Evidence and human-readable stop reports are in
+`experiments/g1_complete_robustness_v2/development/20260907T170643Z/` and
+`experiments/g1_complete_robustness_v2/report/EXECUTION_STOP_REPORT.{md,docx}`.
+The full five-model robustness comparison has **not** been completed.

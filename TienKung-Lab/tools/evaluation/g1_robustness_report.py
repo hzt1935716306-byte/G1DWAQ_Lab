@@ -17,7 +17,7 @@ def limit(v):return ('<' if v['censor']=='left' else '≥' if v['censor']=='righ
 
 def build_report(root):
     root=Path(root);report=root/'report';report.mkdir(parents=True,exist_ok=True);figures=report/'figures';figures.mkdir(exist_ok=True)
-    index=read_json(root/'standard_benchmark_five_model_index.json');models={};standard={};identities={};mechanisms={}
+    index=read_json(root/'standard_benchmark_five_model_index.json');models={};standard={};identities={};mechanisms={};evolution={};standard_mechanisms={}
     for model in MODEL_ORDER:
         entry=read_json(root/'completed_models'/f'{model}.json');run=root/'runs'/entry['evaluation_id']
         if sha256(run/'completion.json')!=entry['completion_sha256']:raise ValueError('New completion changed')
@@ -30,11 +30,25 @@ def build_report(root):
         old=next(x for x in index['models'] if x['model']==model);oldrun=LAB/'experiments/g1_recovery_eval_v2/runs'/old['evaluation_id']
         if sha256(oldrun/'completion.json')!=old['completion_sha256']:raise ValueError('Standard completion changed')
         standard[model]=[read_json(x) for x in sorted((oldrun/'trial_records').glob('*.json'))]
-        mechanisms[model]=[]
+        standard_mechanisms[model]=[]
+        if model.startswith('context'):
+            for r in standard[model]:
+                if r['experiment']=='E1' and r['push_applied']:
+                    with np.load(oldrun/'traces'/f"{r['trial_id']}.npz",allow_pickle=False) as trace:
+                        standard_mechanisms[model].append(native_diagnostics(trace,r))
+        mechanisms[model]=[];evolution[model]=defaultdict(lambda:np.zeros((101,3)))
         for r in models[model]:
             if not r['push_applied']:continue
             with np.load(run/'traces'/f'{r["trial_id"]}.npz',allow_pickle=False) as trace:
                 m=native_diagnostics(trace,r)
+            if m.get('refresh_trajectory'):
+                refresh=m['refresh_trajectory'];cursor=-1;onset=m['disturbance_start_time']
+                for j,elapsed in enumerate(np.linspace(0,10,101)):
+                    timepoint=onset+elapsed
+                    if timepoint>r['observed_terminal_time']:break
+                    while cursor+1<len(refresh) and refresh[cursor+1]['time']<=timepoint+1e-9:cursor+=1
+                    if cursor>=0 and refresh[cursor]['context_valid']:
+                        evolution[model][r['suite']][j]+=[refresh[cursor]['N'],refresh[cursor]['margin'],1]
             m.update(suite=r['suite'],slope_deg=r['slope_deg'],direction_deg=r['direction_deg'],push_magnitude=r['push_magnitude'])
             atomic_write(report/'mechanism_trials'/model/f'{r["trial_id"]}.json',__import__('json').dumps(m,allow_nan=False))
             mechanisms[model].append({k:v for k,v in m.items() if k not in ('touchdowns','refresh_trajectory')})
@@ -90,12 +104,26 @@ def build_report(root):
     table(['Cohort','RL-only sustained','Context-only sustained','Context+Reward sustained'],[[s,*[fmt((standards if s=='standard' else suites[s])[m]['recovered_sustained_and_survived']['designated_rate'],True) for m in ('rl_only','context_only','context_reward')]] for s in ['standard',*COUNTS]])
     figure('15_ablation','RL-only → Context-only → Context+Reward; envelope main designated denominator.',lambda:bars([suites['extreme_main'][m]['recovered_sustained_and_survived']['designated_rate'] for m in MODEL_ORDER],'Envelope sustained recovery probability'))
     heading(4,'Extreme Disturbance Envelope')
-    def plot_curve(scope,field):
+    def plot_curve(scope,field,conditional=False):
         fig,ax=plt.subplots(figsize=(9,4.8))
         for m in MODEL_ORDER:
-            pts=curves[scope][m][field]['designated'];ax.plot([x['delta_v_mps'] for x in pts],[x['rate'] for x in pts],marker='.',label=LABELS[m])
-        ax.set(xlabel='Instantaneous Δv (m/s)',ylabel='Probability / designated real trials',ylim=(-.03,1.03));ax.legend();ax.grid(alpha=.25);return fig
+            pts=curves[scope][m][field]['pushed' if conditional else 'designated'];ax.plot([x['delta_v_mps'] for x in pts],[x['rate'] for x in pts],marker='.',label=LABELS[m])
+        ax.set(xlabel='Instantaneous Δv (m/s)',ylabel='Probability / actually pushed' if conditional else 'Probability / designated real trials',ylim=(-.03,1.03));ax.legend();ax.grid(alpha=.25);return fig
     for field,name in [('survived','03_survival'),('recovered_sustained_and_survived','04_recovery'),('recovery_within_5_touchdowns','04_five_touchdown')]:figure(name,'Main slopes only; sham excluded. Conditional-pushed versions archived in probability_curves.json.',lambda field=field:plot_curve('overall',field))
+    curve_catalog=[]
+    for scope in curves:
+        for field in ('survived','recovered_sustained_and_survived','recovery_within_5_touchdowns'):
+            for conditional in (False,True):
+                fig=plot_curve(scope,field,conditional);fig.tight_layout()
+                path=figures/f'curve_{scope}_{field}_{"pushed" if conditional else "designated"}.png'
+                fig.savefig(path,dpi=140);plt.close(fig)
+                curve_catalog.append({'scope':scope,'endpoint':field,'denominator':'pushed' if conditional else 'designated_real','path':str(path.relative_to(report))})
+    write_json(report/'curve_figure_catalog.json',curve_catalog)
+    blocks.append(('text','All overall, signed-slope and eight-direction survival/recovery/≤5-touchdown curves, with both designated and actual-push denominators, are exported as individual figures listed in curve_figure_catalog.json.'))
+    blocks.append(('heading',3,'Flat square velocity OOD family'))
+    table(['Model','Designated','Actually pushed','Survival/designated','Sustained/designated','≤5 TD/designated'],
+        [[LABELS[m],suites['velocity_ood'][m]['designated'],suites['velocity_ood'][m]['actually_pushed'],
+          *[fmt(suites['velocity_ood'][m][k]['designated_rate'],True) for k in ('survived','recovered_sustained_and_survived','recovery_within_5_touchdowns')]] for m in MODEL_ORDER])
     table(['Model','Survival100','Survival90','Survival50','Recovery90','Recovery50','≤5 TD90','≤5 TD50','First fall Δv'],[[LABELS[m],*[limit(limits['overall'][m][f][str(q)]) for f,q in [('survived',1.),('survived',.9),('survived',.5),('recovered_sustained_and_survived',.9),('recovered_sustained_and_survived',.5),('recovery_within_5_touchdowns',.9),('recovery_within_5_touchdowns',.5)]],fmt(limits['overall'][m]['first_fall_magnitude_mps'])] for m in MODEL_ORDER])
     figure('05_boundary90','90% sustained boundary; read censoring symbols in table.',lambda:bars([limits['overall'][m]['recovered_sustained_and_survived']['0.9']['value_mps'] for m in MODEL_ORDER],'90% recovery Δv boundary (m/s)'))
     heading(5,'Slope Robustness')
@@ -117,6 +145,11 @@ def build_report(root):
     for n,s,title in [(7,'force_pulse','Force Pulse'),(8,'constant_force','Sustained Force'),(9,'repeated_impulse','Repeated Impact'),(10,'random_force','Random Force'),(11,'wrench_pulse','Wrench Robustness')]:
         heading(n,title);conds=sorted({r['condition_id'] for r in models[MODEL_ORDER[0]] if r['suite']==s})
         table(['Model','Designated','Readiness','Onset','Phase survival/onset','Once/designated','Sustained/designated','Median s','Median TD'],[[LABELS[m],suites[s][m]['designated'],suites[s][m]['readiness_passed'],suites[s][m]['actually_pushed'],fmt(suites[s][m]['disturbance_phase_survival_rate'],True),fmt(suites[s][m]['recovered_once_and_survived']['designated_rate'],True),fmt(suites[s][m]['recovered_sustained_and_survived']['designated_rate'],True),fmt(suites[s][m]['recovery_time']['median']),fmt(suites[s][m]['recovery_steps']['median'])] for m in MODEL_ORDER])
+        table(['Model','Median first entry after release (s)','Median first confirmation after release (s)','Median sustained confirmation (s)','Relapses'],
+            [[LABELS[m],*[fmt(suites[s][m][k+'_latency_s']['median']) for k in ('first_recovery_entry','first_confirmation','sustained_confirmation')],suites[s][m]['relapse_count']] for m in MODEL_ORDER])
+        table(['Model','Actual mass (kg)','Median applied force RMS (N)','Median peak force (N)','Disturbance task occupancy'],
+            [[LABELS[m],fmt(suites[s][m]['mass_kg']['median']),fmt(suites[s][m]['force_rms_n']['median']),
+              fmt(suites[s][m]['peak_force_n']['median']),fmt(suites[s][m]['disturbance_task_domain_occupancy']['median'],True)] for m in MODEL_ORDER])
         figure(f'{n+1:02d}_{s}','Condition labels encode Δv (m/s), duration/period/tau (s), acceleration/RMS (m/s²); recovery starts at release.',lambda s=s,conds=conds:heat_matrix(conds,[[aggregate([r for r in models[m] if r['condition_id']==c])['recovered_sustained_and_survived']['designated_rate'] for m in MODEL_ORDER] for c in conds],'Disturbance condition'))
     # Duration/strength grids retain each model separately; curves use explicit units.
     for suite,xkey,ykey in [('force_pulse','duration_s','equivalent_delta_v_mps'),
@@ -144,6 +177,14 @@ def build_report(root):
         return fig
     figure('09_constant_force_curve','Force N = actual mass kg × acceleration m/s²; mass and force retained per trial.',constant_curve)
     heading(12,'Recoverability Mechanism')
+    std_assoc={m:{k:association(v,k) for k in ('N_post','margin_post')} for m,v in standard_mechanisms.items()}
+    write_json(report/'standard_mechanism_summary.json',std_assoc)
+    table(['Standard cohort','N vs real TD rho','N vs time rho','Margin vs TD rho','Margin vs time rho','Success AUROC'],
+        [[LABELS[m],fmt(std_assoc[m]['N_post']['recovery_steps_spearman']),fmt(std_assoc[m]['N_post']['recovery_time_spearman']),
+          fmt(std_assoc[m]['margin_post']['recovery_steps_spearman']),fmt(std_assoc[m]['margin_post']['recovery_time_spearman']),
+          fmt(std_assoc[m]['N_post']['sustained_AUROC'])] for m in MODEL_ORDER])
+    blocks.append(('text','Standard and robustness mechanism statistics are separate cohorts. Standard all-success data cannot identify success AUROC.'))
+
     assoc={m:{k:association([r for r in mechanisms[m] if r['suite']!='extreme_ood'],k) for k in ('N_post','margin_post')} for m in MODEL_ORDER}
     write_json(report/'mechanism_summary.json',assoc)
     table(['Model','N available','N missing','N AUROC','N vs TD rho','Margin AUROC','Margin vs s rho'],[[LABELS[m],assoc[m]['N_post']['available'],assoc[m]['N_post']['missing'],fmt(assoc[m]['N_post']['sustained_AUROC']),fmt(assoc[m]['N_post']['recovery_steps_spearman']),fmt(assoc[m]['margin_post']['sustained_AUROC']),fmt(assoc[m]['margin_post']['recovery_time_spearman'])] for m in MODEL_ORDER])
@@ -160,6 +201,35 @@ def build_report(root):
             b=assoc[m]['margin_post']['calibration'];ax.plot([(x['lower']+x['upper'])/2 for x in b],[x['success_rate'] for x in b],marker='o',label=LABELS[m])
         ax.set(xlabel='Native margin (native certificate units)',ylabel='Sustained success probability');ax.legend();return fig
     figure('14_margin','Native margin quantile calibration; counts in mechanism_summary.json.',margin_plot)
+    main_mechanisms={m:[r for r in mechanisms[m] if r['suite']!='extreme_ood'] for m in MODEL_ORDER}
+    table(['Model','Post-onset queries','Certificate valid','Query failures','Median N decrease/s','Median margin improvement/s','Median TD to first N=0'],[
+        [LABELS[m],sum(r.get('queries_after_onset',0) for r in main_mechanisms[m]),
+         fmt(sum(r.get('valid_queries_after_onset',0) for r in main_mechanisms[m])/sum(r.get('queries_after_onset',0) for r in main_mechanisms[m]) if sum(r.get('queries_after_onset',0) for r in main_mechanisms[m]) else None,True),
+         sum(r.get('query_failures',0) for r in main_mechanisms[m]) if any(r.get('diagnostics_available') for r in main_mechanisms[m]) else 'N/A',
+         *[fmt(distribution([r.get(k) for r in main_mechanisms[m] if r['suite']!='extreme_ood'])['median']) for k in
+           ('N_decrease_rate_per_s','margin_improvement_rate_per_s','touchdowns_to_first_N_zero')]] for m in MODEL_ORDER])
+    for suite in COUNTS:
+        if suite=='extreme_ood':continue
+        def evolution_plot(suite=suite):
+            fig,axes=plt.subplots(1,2,figsize=(11,4))
+            for model in ('context_only','context_reward'):
+                values=evolution[model][suite];counts=values[:,2]
+                for col,ax in enumerate(axes):
+                    means=np.divide(values[:,col],counts,out=np.full(101,np.nan),where=counts>0)
+                    ax.plot(np.linspace(0,10,101),means,label=LABELS[model])
+            for ax,label in zip(axes,['Mean native N (certificate steps)','Mean native margin (native units)']):
+                ax.set(xlabel='Time since disturbance onset (s)',ylabel=label,title=suite);ax.legend()
+            return fig
+        figure('mechanism_evolution_'+suite,'Causal held native queries; available and alive samples only. Support counts are archived; this curve is subject to survivor selection.',evolution_plot)
+    write_json(report/'mechanism_evolution_support.json',{m:{s:{'time_since_onset_s':np.linspace(0,10,101).tolist(),'N_sum':a[:,0].tolist(),'margin_sum':a[:,1].tolist(),'available_count':a[:,2].astype(int).tolist()} for s,a in ev.items()} for m,ev in evolution.items()})
+    ablation=[]
+    for scope in ['standard',*COUNTS]:
+        group=standards if scope=='standard' else suites[scope]
+        for a,b in [('context_only','rl_only'),('context_reward','context_only'),('context_reward','rl_only')]:
+            ablation.append({'scope':scope,'model_a':a,'model_b':b,
+                **{field+'_risk_difference':group[a][field]['designated_rate']-group[b][field]['designated_rate'] if group[a][field]['designated_rate'] is not None and group[b][field]['designated_rate'] is not None else None for field in ('survived','recovered_sustained_and_survived','recovery_within_5_touchdowns')},
+                **{field+'_median_difference':group[a][field]['median']-group[b][field]['median'] if group[a][field]['median'] is not None and group[b][field]['median'] is not None else None for field in ('recovery_time','recovery_steps')}})
+    write_json(report/'ablation_effects.json',ablation)
     heading(13,'Statistical Comparisons')
     tests=paired_tests({m:[r for r in standard[m] if r['experiment']=='E1'] for m in MODEL_ORDER},'standard')
     for s in COUNTS:tests.extend(paired_tests({m:[r for r in models[m] if r['suite']==s] for m in MODEL_ORDER},s))

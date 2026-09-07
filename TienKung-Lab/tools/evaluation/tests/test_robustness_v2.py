@@ -173,6 +173,7 @@ def test_report_template_five_models_and_figures(tmp_path,monkeypatch,p,rows):
         write_json(root/'completed_models'/f'{model}.json',{'evaluation_id':model,'completion_sha256':sha256(run/'completion.json')})
         old=tmp_path/'experiments/g1_recovery_eval_v2/runs'/model
         write_json(old/'trial_records'/'e1.json',record);write_json(old/'completion.json',{'status':'COMPLETE'})
+        (old/'traces').mkdir(exist_ok=True);np.savez_compressed(old/'traces'/f'{record["trial_id"]}.npz',**trace)
         index['models'].append({'model':model,'evaluation_id':model,'completion_sha256':sha256(old/'completion.json')})
     write_json(root/'standard_benchmark_five_model_index.json',index)
     result=report.build_report(root)
@@ -182,3 +183,18 @@ def test_report_template_five_models_and_figures(tmp_path,monkeypatch,p,rows):
     with zipfile.ZipFile(result['docx']) as z:
         assert 'word/document.xml' in z.namelist()
         assert len([n for n in z.namelist() if n.startswith('word/media/')])>=15
+
+
+def test_nonempty_native_bucket_json_serialization():
+    import json
+    from g1_robustness_analysis import association
+    rows=[dict(N_post=n,sustained_success=True,recovery_steps=n+3,recovery_time=.6+n*.1) for n in (1,2,2,3)]
+    result=association(rows,'N_post')
+    assert len(json.loads(json.dumps(result,allow_nan=False))['calibration'])==3
+
+
+def test_report_event_latencies_use_actual_release(p):
+    from g1_robustness_analysis import aggregate
+    m=synthetic(p,5.);r=m.result();a=aggregate([r])
+    assert a['first_recovery_entry_latency_s']['median']==pytest.approx(r['first_recovery_entry']-m.release_time)
+    assert a['first_confirmation_latency_s']['median']==pytest.approx(r['first_confirmation']-m.release_time)
