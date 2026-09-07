@@ -1,0 +1,45 @@
+schema_version: 1
+protocol_id: G1-Complete-Robustness-V2
+protocol_version: 2.0-dev
+parameter_status: candidate_unvalidated
+manifest_seed: 20260908
+base_protocol_sha256: 70e168e6c11642915d902a4a591520d2241d9d12e402b0e697fce9f845315ba2
+main_slopes_deg: [-15, -10, 0, 10, 15]
+ood_slopes_deg: [-20, 20]
+magnitudes_mps: [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0]
+directions_deg: [0, 45, 90, 135, 180, 225, 270, 315]
+envelope_trials_per_cell: 128
+family_trials_per_condition: 128
+velocity_ood_trials_per_condition: 256
+command: [0.4, 0.0, 0.0]
+reference_phases: [0.25, 0.75]
+num_envs: 64
+physics_dt_s: 0.005
+velocity_component_bounds_mps: [1.25, 1.5, 2.0]
+force_pulse_equivalent_delta_v_mps: [0.5, 1.0, 1.5]
+force_pulse_durations_s: [0.05, 0.2, 0.5]
+constant_accelerations_mps2: [0.25, 0.5, 0.75, 1.0, 1.5]
+constant_duration_s: 5.0
+repeated_magnitudes_mps: [0.25, 0.5, 0.75]
+repeated_periods_s: [0.5, 1.0]
+repeated_duration_s: 8.0
+repeated_endpoint: inclusive_first_and_last
+random_rms_accelerations_mps2: [0.25, 0.5, 1.0]
+random_correlation_times_s: [0.1, 1.0]
+random_duration_s: 10.0
+random_process: stationary_2d_ou_vector_rms
+wrench_modes: [com, upper_pitch, lateral_yaw]
+wrench_equivalent_delta_v_mps: 1.0
+wrench_duration_s: 0.2
+upper_pitch_arm_m: 0.2
+lateral_yaw_arm_m: 0.15
+family_vector_frame: world
+envelope_vector_frame: heading_at_onset
+force_application: whole_robot_com_plus_declared_arm_on_torso_link
+strong_disturbance_min_delta_v_mps: 1.25
+boundary_rule: first_downward_crossing_contiguous_prefix_linear_interpolation
+primary_curve_denominator: designated_real_interventions
+conditional_curve_denominator: actually_pushed
+bootstrap_seed: 20260908
+bootstrap_replicates: 2000
+holm_family: all_preregistered_endpoint_comparisons

@@ -40,6 +40,12 @@ STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERE
 # This allowlist is intentionally explicit. Only sources that can alter native
 # inference, trial execution, physical judging, or recovery metrics belong here.
 EVALUATION_RUNTIME_SOURCES = (
+    'tools/evaluation/g1_complete_robustness.py',
+    'tools/evaluation/g1_robustness_protocol.py',
+    'tools/evaluation/g1_robustness_physics.py',
+    'tools/evaluation/g1_robustness_trial.py',
+    'tools/evaluation/g1_robustness_store.py',
+    'tools/evaluation/configs/g1_complete_robustness_v2.yaml',
     'tools/evaluation/g1_recovery_eval.py',
     'tools/evaluation/g1_recovery_protocol.py',
     'tools/evaluation/g1_recovery_metrics.py',
@@ -72,7 +78,7 @@ EVALUATION_RUNTIME_SOURCES = (
     'rsl_rl/rsl_rl/runners/on_policy_runner.py',
     'rsl_rl/rsl_rl/runners/dwaq_on_policy_runner.py',
 )
-REPORT_SOURCE_PATHS = ('tools/evaluation/g1_recovery_report.py', 'tools/evaluation/README.md')
+REPORT_SOURCE_PATHS = ('tools/evaluation/g1_robustness_analysis.py', 'tools/evaluation/g1_robustness_report.py', 'tools/evaluation/g1_recovery_report.py', 'tools/evaluation/README.md')
 REPORT_SOURCE_DIRS = ('tools/evaluation/tests', 'tools/evaluation/docs')
 
 
