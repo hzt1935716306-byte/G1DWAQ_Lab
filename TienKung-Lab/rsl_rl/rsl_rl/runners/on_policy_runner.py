@@ -141,6 +141,8 @@ class OnPolicyRunner:
         self.log_dir = log_dir
         self.writer = None
         self.tot_timesteps = 0
+        self.training_transitions = 0
+        self.training_provenance = {}
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
@@ -330,6 +332,8 @@ class OnPolicyRunner:
                     }
                 )
             self.current_learning_iteration = it
+            from rsl_rl.utils.training_provenance import advance_training_transitions
+            advance_training_transitions(self)
             # log info
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
@@ -472,6 +476,7 @@ class OnPolicyRunner:
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
+            "training_provenance": {**self.training_provenance, "training_transitions": self.training_transitions},
         }
         # -- Save RND model if used
         if self.alg.rnd:
@@ -518,6 +523,8 @@ class OnPolicyRunner:
         # -- load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]
+        self.training_provenance = loaded_dict.get('training_provenance') or {}
+        self.training_transitions = self.training_provenance.get('training_transitions')
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):

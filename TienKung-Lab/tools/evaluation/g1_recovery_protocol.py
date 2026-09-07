@@ -58,6 +58,65 @@ def portable_path(path):
     return project_path(path).relative_to(LAB).as_posix()
 
 
+class CheckpointIdentity(dict):
+    """Serializable content identity plus transient, explicitly resolved input handles."""
+    def __init__(self, *args, inputs=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inputs = inputs or {}
+
+
+RESOURCE_FIELDS = {'native_nominal': ('plane_recovery', 'nominal_parameters_path'),
+                   'native_capability': ('stage2_reward', 'certificate_parameters_path')}
+NATIVE_CONFIG_FIELDS = ('plane_recovery', 'stage2_reward', 'recovery_context', 'plane_v1_reward',
+                        'com_velocity_source', 'estimator_imu_acceleration_scale')
+
+
+def native_contract(env):
+    """Path-free solver/context settings; file contents have separate identities."""
+    import copy
+    result = {k: copy.deepcopy(env[k]) for k in NATIVE_CONFIG_FIELDS if k in env}
+    for section, field in RESOURCE_FIELDS.values():
+        if section in result:
+            result[section].pop(field, None)
+    # A diagnostic output path is not an input to the certificate.
+    if 'stage2_reward' in result:
+        result['stage2_reward'].pop('certificate_query_record_path', None)
+    return result
+
+
+def resolve_resource(role, saved_path, declaration, manifest_dir, expected_sha=None):
+    """No suffix/basename rebasing: relocation requires an explicit SHA-bound map."""
+    if declaration:
+        if not declaration.get('path') or not declaration.get('sha256'):
+            raise ValueError(f'{role}: resource mapping requires path and sha256')
+        candidate = Path(declaration['path'])
+        source = resolve_input_path(candidate if candidate.is_absolute() else manifest_dir / candidate)
+        if expected_sha and declaration['sha256'] != expected_sha:
+            raise ValueError(f'{role}: declared SHA conflicts with training provenance')
+        expected_sha = declaration['sha256']
+    else:
+        candidate = Path(saved_path)
+        try:
+            source = project_path(candidate if candidate.is_absolute() else LAB / candidate)
+        except (ValueError, OSError) as exc:
+            raise ValueError(f'{role}: saved resource unavailable in this checkout; provide '
+                             '--identity_manifest with explicit path and sha256') from exc
+    actual = sha256(source)
+    if expected_sha and actual != expected_sha:
+        raise ValueError(f'{role}: resource SHA mismatch')
+    suffix = '.yaml' if role in RESOURCE_FIELDS else '.pt'
+    return source, {'sha256': actual, 'snapshot': f'resources/{actual}/{role}{suffix}',
+                    'evidence': 'declared_sha256' if expected_sha else 'observed_at_registration'}
+
+
+def validate_resource_identity(identity):
+    for role in (*RESOURCE_FIELDS, 'estimator'):
+        if identity.get(role + '_sha256') != identity.get('resources', {}).get(role, {}).get('sha256'):
+            raise ValueError(f'{role}: identity SHA conflicts with resource binding')
+    if digest(identity['native_configuration']) != identity['native_configuration_sha256']:
+        raise ValueError('Native configuration identity mismatch')
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
@@ -292,43 +351,70 @@ def load_prepared(root):
 def code_identity():
     def git(*args):
         return subprocess.check_output(['git', '-C', str(LAB), *args], text=True).strip()
+    roots = [LAB / 'tools/evaluation', LAB / 'legged_lab', LAB / 'rsl_rl/rsl_rl']
     return {'evaluation_code_commit': git('rev-parse', 'HEAD'),
-            'evaluation_code_sha256': digest({p.name: sha256(p) for p in Path(__file__).parent.glob('*.py')}),
-            'evaluation_code_dirty': bool(git('status', '--porcelain', '--', 'tools/evaluation'))}
+            'evaluation_code_sha256': digest({p.relative_to(LAB).as_posix(): sha256(p)
+                                              for root in roots for p in root.rglob('*.py')}),
+            'evaluation_code_dirty': bool(git('status', '--porcelain', '--', 'tools/evaluation', 'legged_lab', 'rsl_rl/rsl_rl'))}
 
 
-def inspect_checkpoint(task, checkpoint, alias, stage='unknown', estimator=None):
+def inspect_checkpoint(task, checkpoint, alias, stage='unknown', estimator=None, identity_manifest=None):
     """CPU-only strict shape/config audit; authoritative native strict load runs again on run."""
     import torch
     method = method_for(task)
     checkpoint = resolve_input_path(checkpoint)
     agent_path, env_path = checkpoint.parent / 'params/agent.yaml', checkpoint.parent / 'params/env.yaml'
     a, e = load_yaml(agent_path), load_yaml(env_path)
+    before = sha256(checkpoint)
+    config_hashes = {'agent_config_sha256': sha256(agent_path), 'env_config_sha256': sha256(env_path)}
+    c = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    if before != sha256(checkpoint):
+        raise ValueError('Checkpoint changed while being inspected')
+    infos = c.get('infos') if isinstance(c.get('infos'), dict) else {}
+    provenance = c.get('training_provenance') or infos.get('training_provenance') or infos
+    declaration, manifest_dir = {}, LAB
+    if identity_manifest:
+        manifest_file = resolve_input_path(identity_manifest)
+        declaration, manifest_dir = load_yaml(manifest_file), manifest_file.parent
+        for key, value in {'checkpoint_sha256': before, **config_hashes}.items():
+            if declaration.get(key) != value:
+                raise ValueError(f'Identity manifest {key} mismatch')
+        for key in ('task_name', 'training_run_id', 'training_transitions'):
+            if declaration.get(key) is not None and provenance.get(key) is not None and declaration[key] != provenance[key]:
+                raise ValueError(f'Identity manifest conflicts with training {key}')
+    for key, value in config_hashes.items():
+        if key in provenance and provenance[key] != value:
+            raise ValueError(f'Training provenance {key} mismatch')
     runner = 'DWAQOnPolicyRunner' if method == 'dwaq' else 'OnPolicyRunner'
     if a['runner_class_name'] != runner:
         raise ValueError('runner type mismatch')
-    if method in ('ppo_plain', 'ppo_symmetric', 'dwaq'):
-        if a['experiment_name'] != task:
-            raise ValueError('task mismatch in params/agent.yaml')
-    else:
-        expected_run = {'rl_only': 'rl_only_matched', 'context_only': 'estimator_context_no_reward_matched',
-                        'context_reward': 'estimator_context_reward_matched'}[method]
-        # Plane methods share experiment_name; source/reward and run_name distinguish them.
-        if not a.get('run_name', '').startswith(expected_run):
-            raise ValueError('Plane/RL-only run_name does not establish task identity')
-        if method.startswith('context') and (e.get('com_velocity_source') != 'estimator'
-                or e['plane_v1_reward']['enabled'] != (method == 'context_reward')):
+    explicit_tasks = [x for x in (provenance.get('task_name'), c.get('task_name'), infos.get('task_name'),
+                                  a.get('task_name'), e.get('task_name'),
+                                  declaration.get('task_name')) if x]
+    if any(x != task for x in explicit_tasks):
+        raise ValueError('Explicit task mismatch')
+    experiment = a.get('experiment_name')
+    if experiment in TASKS.values() and experiment != task:
+        raise ValueError('task mismatch in params/agent.yaml')
+    established = bool(provenance.get('task_name') or c.get('task_name') or infos.get('task_name')
+                       or a.get('task_name') or e.get('task_name'))
+    established |= experiment == (task if method in ('ppo_plain', 'ppo_symmetric', 'dwaq') else 'g1_plane_v1_matched')
+    if not established and not (declaration.get('task_name') == task and declaration.get('task_confirmed') is True):
+        raise ValueError('Insufficient legacy task evidence: require SHA-bound --identity_manifest '
+                         'with task_name and task_confirmed: true; strict weights remain required')
+    if method.startswith('context'):
+        if (e.get('com_velocity_source') != 'estimator' or
+                e.get('plane_v1_reward', {}).get('enabled') is not (method == 'context_reward')):
             raise ValueError('Plane source/reward task mismatch')
-        if method == 'rl_only' and 'com_velocity_source' in e:
-            raise ValueError('RL-only must not contain estimator/context configuration')
+        if e.get('recovery_context', {}).get('enabled') is not True or e['recovery_context'].get('mode') != 'certificate':
+            raise ValueError('Plane context configuration mismatch')
+    elif ('com_velocity_source' in e or e.get('recovery_context', {}).get('enabled') or
+          e.get('plane_v1_reward', {}).get('enabled')):
+        raise ValueError('Baseline/RL-only must not contain estimator/context/recovery reward configuration')
     ah, ch = int(e['robot']['actor_obs_history_length']), int(e['robot']['critic_obs_history_length'])
     expected = {'ppo_plain': (960, 1010, 10, 10), 'ppo_symmetric': (960, 1010, 10, 10),
                 'dwaq': (115, 307, 1, 1), 'rl_only': (480, 1010, 5, 10),
                 'context_only': (483, 1010, 5, 10), 'context_reward': (483, 1010, 5, 10)}[method]
-    before = sha256(checkpoint)
-    c = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    if before != sha256(checkpoint):
-        raise ValueError('Checkpoint changed while being inspected')
     sd = c['model_state_dict']
     actor, critic = int(sd['actor.0.weight'].shape[1]), int(sd['critic.0.weight'].shape[1])
     final = sorted((k for k in sd if k.startswith('actor.') and k.endswith('.weight')), key=lambda k: int(k.split('.')[1]))[-1]
@@ -379,24 +465,59 @@ def inspect_checkpoint(task, checkpoint, alias, stage='unknown', estimator=None)
             sys.path.insert(0, str(LAB))
         from legged_lab.estimation import load_com_velocity_estimator_for_inference
         load_com_velocity_estimator_for_inference(str(estimator), device='cpu')
-    native = e.get('plane_recovery', {}).get('nominal_parameters_path')
-    native_file = project_path(LAB / native) if native else None
-    native_hash = sha256(native_file) if native_file else None
-    infos = c.get('infos') or {}
-    return dict(task_name=task, method=method, model_alias=alias,
-                checkpoint_path=portable_path(checkpoint),
+    inputs = {'checkpoint': checkpoint, 'agent_config': agent_path, 'env_config': env_path}
+    resources = {}
+    for role, (section, field) in RESOURCE_FIELDS.items():
+        saved_path = e.get(section, {}).get(field)
+        if method.startswith('context') and not saved_path:
+            raise ValueError(f'Missing native input: {role}')
+        if saved_path:
+            inputs[role], resources[role] = resolve_resource(role, saved_path,
+                declaration.get('resources', {}).get(role), manifest_dir,
+                provenance.get('resources', {}).get(role, {}).get('sha256'))
+    if estimator:
+        inputs['estimator'] = estimator
+        expected_estimator = provenance.get('resources', {}).get('estimator', {}).get('sha256')
+        if expected_estimator and expected_estimator != estimator_hash:
+            raise ValueError('Estimator SHA conflicts with training provenance')
+        estimator_declaration = declaration.get('resources', {}).get('estimator')
+        if estimator_declaration:
+            _, declared_resource = resolve_resource('estimator', estimator, estimator_declaration, manifest_dir, expected_estimator)
+            if declared_resource['sha256'] != estimator_hash:
+                raise ValueError('Estimator SHA conflicts with identity manifest')
+        resources['estimator'] = {'sha256': estimator_hash, 'snapshot': f'resources/{estimator_hash}/estimator.pt'}
+    run_id = declaration.get('training_run_id') or provenance.get('training_run_id')
+    transitions = declaration.get('training_transitions')
+    if transitions is None:
+        transitions = provenance.get('training_transitions')
+    if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+        raise ValueError('training_run_id must be a nonempty unique training lineage ID')
+    if transitions is not None and (type(transitions) is not int or transitions < 0):
+        raise ValueError('training_transitions must be a nonnegative integer')
+    if any(sha256(inputs[k.removesuffix('_sha256')]) != v for k, v in config_hashes.items()):
+        raise ValueError('Training config changed during inspection')
+    def input_label(path, fallback):
+        return portable_path(path) if path.is_relative_to(LAB) else fallback
+    return CheckpointIdentity(task_name=task, method=method, model_alias=alias, identity_schema_version=2,
+                inputs=inputs, resources=resources, native_configuration=native_contract(e),
+                native_configuration_sha256=digest(native_contract(e)),
+                checkpoint_path=input_label(checkpoint, f'checkpoints/{before}/model.pt'),
                 checkpoint_sha256=before, training_commit=infos.get('training_commit', 'unknown'),
                 training_iteration=c.get('iter', 'unknown'), training_seed=a.get('seed', 'unknown'),
+                training_run_id=run_id, training_transitions=transitions,
+                training_metadata_source='identity_manifest' if declaration else 'checkpoint' if provenance else 'unknown',
                 checkpoint_stage=stage, estimator_sha256=estimator_hash,
-                estimator_path=portable_path(estimator) if estimator else None,
-                native_nominal_sha256=native_hash,
-                native_nominal_path=portable_path(native_file) if native_file else None,
+                estimator_path=input_label(estimator, resources['estimator']['snapshot']) if estimator else None,
+                native_nominal_sha256=resources.get('native_nominal', {}).get('sha256'),
+                native_nominal_path=resources.get('native_nominal', {}).get('snapshot'),
+                native_capability_sha256=resources.get('native_capability', {}).get('sha256'),
                 actor_input_dimension=actor, critic_input_dimension=critic, action_dimension=actions,
                 actor_history_length=ah, critic_history_length=ch,
                 encoder_history_length=5 if method == 'dwaq' else None,
                 runner_type=runner, empirical_normalization=a['empirical_normalization'],
-                agent_config_sha256=sha256(agent_path), env_config_sha256=sha256(env_path),
+                **config_hashes,
                 identity_evidence=['params/agent.yaml', 'params/env.yaml', 'checkpoint tensor shapes and iter'],
+                task_confirmation=bool(declaration.get('task_confirmed')), run_name=a.get('run_name'),
                 software={'Python': platform.python_version(), 'Torch': str(torch.__version__), 'IsaacLab': 'unknown', 'IsaacSim': 'unknown'},
                 hardware={'CPU': platform.processor() or platform.machine(), 'GPU': 'unknown'}, **code_identity())
 
@@ -415,7 +536,11 @@ def register_model(root, identity):
 def evaluation_key(identity):
     keys = COMPATIBILITY + ('task_name', 'checkpoint_sha256', 'estimator_sha256', 'native_nominal_sha256',
                            'agent_config_sha256', 'env_config_sha256', 'evaluation_code_sha256')
-    return digest({k: identity[k] for k in keys})[:24]
+    fields = {k: identity[k] for k in keys}
+    if identity.get('identity_schema_version', 1) >= 2:
+        fields.update({k: identity.get(k) for k in ('native_capability_sha256', 'native_configuration_sha256',
+                      'training_run_id', 'training_transitions', 'checkpoint_stage')})
+    return digest(fields)[:24]
 
 
 def compatible(a, b):
@@ -483,6 +608,20 @@ class RunStore:
             effective = load_yaml(effective_path)
             if digest(effective['actual_physics']) != identity.get('actual_physics_hash'):
                 raise ValueError('Effective physics does not match identity')
+            if identity.get('identity_schema_version', 1) >= 2:
+                expected_inputs = {k: v['sha256'] for k, v in identity.get('resources', {}).items()}
+                if effective.get('native_inputs') != expected_inputs or effective.get('native_configuration_sha256') != identity['native_configuration_sha256']:
+                    raise ValueError('Effective native inputs do not match identity')
+        if identity.get('identity_schema_version', 1) >= 2:
+            validate_resource_identity(identity)
+            if digest(read_json(self.path / 'native_configuration.json')) != identity['native_configuration_sha256']:
+                raise ValueError('Run native configuration mismatch')
+            for role, resource in identity.get('resources', {}).items():
+                if role == 'estimator':
+                    continue
+                path = (self.path / resource['snapshot']).resolve(strict=True)
+                if not path.is_relative_to(self.path.resolve()) or sha256(path) != resource['sha256']:
+                    raise ValueError(f'Run {role} snapshot mismatch')
         expected = {r['trial_id']: r for r in manifest}
         records = self.records()
         if len({r['trial_id'] for r in records}) != len(records):

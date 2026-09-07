@@ -127,6 +127,7 @@ def test_synthetic_cannot_import_or_register(tmp_path):
 
 def test_synthetic_report_tables_pairing_and_docx(tmp_path):
     run = synthetic_run(tmp_path)
+    run['identity']['checkpoint_stage'] = 'final'
     other = copy.deepcopy(run)
     other['id'] = 'synthetic_B'; other['identity']['model_alias'] = 'synthetic_B'; other['identity']['method'] = 'dwaq'
     blocks = [('text', 'SYNTHETIC TEST DATA — NOT EXPERIMENT RESULTS')] + report_blocks(tmp_path, [run, other], [], [run, other])
@@ -232,8 +233,10 @@ def test_bad_checkpoint_contracts(tmp_path, mutation):
         a['empirical_normalization'] = True
     else:
         task = TASKS['context_only']
+        a['experiment_name'] = 'g1_plane_v1_matched'
         a['run_name'] = 'estimator_context_no_reward_matched'
         e['com_velocity_source'] = 'estimator'; e['plane_v1_reward'] = {'enabled': False}
+        e['recovery_context'] = {'enabled': True, 'mode': 'certificate'}
         e['robot']['actor_obs_history_length'] = 5
         c['model_state_dict']['actor.0.weight'] = torch.zeros(512, 483)
     atomic_write(tmp_path / 'params/agent.yaml', yaml.safe_dump(a))

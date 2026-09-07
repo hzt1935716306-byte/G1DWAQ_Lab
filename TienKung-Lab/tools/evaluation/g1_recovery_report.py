@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import io
 import itertools
 import json
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -35,14 +36,20 @@ def fmt(value, percent=False):
 
 
 def display_quantile(q):
-    return f"{fmt(q['median'])} / {fmt(q['p90'])} (n={q['count']})"
+    return f"{fmt(q['median'])} / {fmt(q['p90'])}; IQR={fmt(q['iqr'])} [{fmt(q['q1'])}, {fmt(q['q3'])}] (n={q['count']})"
+
+
+def display_rate(s):
+    interval = s['wilson_95']
+    ci = f"[{fmt(interval[0], True)}, {fmt(interval[1], True)}]" if interval else 'N/A'
+    return f"{s['numerator']}/{s['denominator']} {s['denominator_name']}; {fmt(s['rate'], True)}; Wilson95% {ci}"
 
 
 def table(headers, rows):
     return ('table', headers, [[str(x) for x in row] for row in rows])
 
 
-def load_runs(root):
+def load_runs(root, final_only=True):
     runs, excluded, seen = [], [], set()
     for path in sorted((root / 'runs').glob('*')):
         if not path.is_dir() or path.name.startswith('.'):
@@ -50,9 +57,15 @@ def load_runs(root):
         try:
             if not (path / 'completion.json').exists():
                 status = read_json(path / 'summary.json').get('status', 'PARTIAL') if (path / 'summary.json').exists() else 'PARTIAL'
-                excluded.append((path.name, status, '未完成；不进入主表'))
+                _, partial_records = RunStore(path).validate(require_complete=False)
+                partial = summarize(partial_records, read_jsonl(path / 'manifest_snapshot.jsonl'))
+                s = partial['E1']
+                excluded.append((path.name, status, f"未完成；不进入主表；E1 执行/指定 {s['executed']}/{s['designated']}，"
+                                 f"成功 {s['successes']}，已执行失败 {s['failures_executed']}，pending {s['pending']}"))
                 continue
             identity, records = RunStore(path).validate()
+            if identity['method'].startswith('context') and identity.get('identity_schema_version', 1) < 2:
+                raise ValueError('Legacy Plane result lacks SHA-bound native solver inputs; reevaluation required')
             content = sha256(path / 'completion.json')
             if content in seen:
                 continue
@@ -73,11 +86,42 @@ def load_runs(root):
             return (item['identity'].get('attempt_index', 0), completion.get('completed_at_utc', ''), item['id'])
         if key not in selected or rank(run) > rank(selected[key]):
             selected[key] = run
-    return list(selected.values()), excluded, runs
+    selected_runs = list(selected.values())
+    return ([r for r in selected_runs if r['identity'].get('checkpoint_stage') == 'final']
+            if final_only else selected_runs), excluded, runs
 
 
 def compatible_run(a, b):
     return compatible(a['identity'], b['identity']) and a['identity']['actual_physics_hash'] == b['identity']['actual_physics_hash']
+
+
+def budget_relation(a, b):
+    aa, bb = a['identity'].get('training_transitions'), b['identity'].get('training_transitions')
+    if type(aa) is not int or type(bb) is not int or aa <= 0 or bb <= 0:
+        return '预算未知（非等预算比较）'
+    return '等预算' if aa == bb else f'不同预算（{aa} / {bb} transitions）'
+
+
+def matched_ablation(a, b):
+    seed = a['identity'].get('training_seed')
+    return (compatible_run(a, b) and type(seed) is int and seed == b['identity'].get('training_seed')
+            and a['identity'].get('checkpoint_stage') == b['identity'].get('checkpoint_stage') == 'final'
+            and budget_relation(a, b) == '等预算')
+
+
+def previous_checkpoint(run, history):
+    i = run['identity']
+    run_id, budget = i.get('training_run_id'), i.get('training_transitions')
+    if not run_id or type(budget) is not int:
+        return None
+    candidates = [r for r in history if compatible_run(run, r)
+                  and r['identity'].get('training_run_id') == run_id
+                  and r['identity']['method'] == i['method']
+                  and r['identity'].get('training_seed') == i.get('training_seed')
+                  and type(r['identity'].get('training_transitions')) is int
+                  and r['identity']['training_transitions'] < budget]
+    return max(candidates, key=lambda r: (r['identity']['training_transitions'],
+               r['identity'].get('attempt_index', 0), r['id'])) if candidates else None
 
 
 def curve_plots(root, group, group_id):
@@ -108,12 +152,13 @@ def curve_plots(root, group, group_id):
 
 
 def report_blocks(root, runs, excluded, history, plots=True):
+    runs = [r for r in runs if r['identity'].get('checkpoint_stage') == 'final']
     p, manifest, prepared = load_prepared(root)
     models = load_yaml(root / 'models.yaml')['models']
     blocks = [('heading', 1, 'G1 可重复评测实验记录'),
               ('heading', 2, '当前结论摘要'),
-              ('text', f"已完成并通过完整性检查的评测：{len(runs)}。" +
-               ('当前没有真实评测结果；本次仅搭建框架，没有运行仿真实验。' if not runs else
+              ('text', f"主表 final 评测：{len(runs)}；全部完成记录：{len(history)}。" +
+               ('当前没有可进入 final 主表的结果。' if not runs else
                 '以下仅为当前 checkpoint 的观察结果，不代表多 seed 稳定优势或理论证明。')),
               ('heading', 2, '协议与版本'),
               ('text', f"{p['protocol_id']} / {p['protocol_version']}；指标 {p['metrics']['version']}。"),
@@ -133,17 +178,18 @@ def report_blocks(root, runs, excluded, history, plots=True):
             status_path = path.parent / 'summary.json'
             partial_models[raw['checkpoint_sha256']] = read_json(status_path).get('status', 'PARTIAL') if status_path.exists() else 'PARTIAL'
     for model in models:
-        complete = [r for r in runs if r['identity']['checkpoint_sha256'] == model.get('checkpoint_sha256')]
+        complete = [r for r in history if r['identity']['checkpoint_sha256'] == model.get('checkpoint_sha256')]
         rows.append([model['model_alias'], model['task_name'], model.get('training_iteration', 'unknown'),
+                     model.get('training_run_id') or '未知', fmt(model.get('training_transitions')),
                      model.get('training_seed', 'unknown'), model.get('checkpoint_stage', 'unknown'),
                      'COMPLETE' if complete else partial_models.get(model.get('checkpoint_sha256'), model['status']), (model.get('checkpoint_sha256') or 'N/A')[:12]])
-    blocks.append(table(['模型', 'Task', '迭代', 'Seed', '阶段', '状态', 'SHA 前缀'], rows))
+    blocks.append(table(['模型', 'Task', '迭代', '训练批次 ID', 'Transitions', 'Seed', '阶段', '状态', 'SHA 前缀'], rows))
     groups = defaultdict(list)
     for run in runs:
         i = run['identity']
         group_id = digest({k: i[k] for k in COMPATIBILITY} | {'actual_physics_hash': i['actual_physics_hash']})[:12]
         groups[group_id].append(run)
-    blocks += [('heading', 2, 'E0 正常运动总表'), ('text', 'Moving 与 standing 分开；RMSE 单位 m/s，姿态波动单位 rad；统计为 trial 中位数。')]
+    blocks += [('heading', 2, 'E0 正常运动总表'), ('text', '主表仅包含显式 final 模型；intermediate/unknown 在演进章节展示。Moving 与 standing 分开；RMSE 单位 m/s，姿态波动单位 rad。')]
     if not runs:
         blocks.append(('text', '待评测：E0 每模型 150 个指定 trial。'))
     for gid, group in groups.items():
@@ -151,11 +197,12 @@ def report_blocks(root, runs, excluded, history, plots=True):
         rows = []
         for run in group:
             for label, stats in run['summary']['E0'].items():
-                rows.append([run['identity']['model_alias'], label, f"{stats['executed']}/{stats['designated']}",
-                             fmt(stats['survival_rate'], True), fmt(stats['root_xy_velocity_rmse']['median']),
-                             fmt(stats['com_xy_velocity_rmse']['median']), fmt(stats['heading_drift']['median']),
-                             f"{fmt(stats['roll_std']['median'])}/{fmt(stats['pitch_std']['median'])}"])
-        blocks.append(table(['模型', '命令', '执行/指定', '存活率', 'Root RMSE', 'CoM RMSE', '航向漂移', 'Roll/Pitch σ'], rows))
+                rows.append([run['identity']['model_alias'], fmt(run['identity'].get('training_transitions')),
+                             label, f"{stats['executed']}/{stats['designated']}",
+                             display_rate(stats['survival_statistics']), display_quantile(stats['root_xy_velocity_rmse']),
+                             display_quantile(stats['com_xy_velocity_rmse']), display_quantile(stats['heading_drift']),
+                             f"{display_quantile(stats['roll_std'])} / {display_quantile(stats['pitch_std'])}"])
+        blocks.append(table(['模型', 'Transitions', '命令', '执行/指定', '存活率', 'Root RMSE', 'CoM RMSE', '航向漂移', 'Roll/Pitch σ'], rows))
         blocks.append(table(['模型', '命令', '触地数 median/P90', '步间隔秒 median/P90'],
                             [[r['identity']['model_alias'], label, display_quantile(stats['touchdown_count']),
                               display_quantile(stats['step_interval_s'])] for r in group for label, stats in r['summary']['E0'].items()]))
@@ -167,7 +214,7 @@ def report_blocks(root, runs, excluded, history, plots=True):
         rows, durations, extras = [], [], []
         for run in group:
             i, s = run['identity'], run['summary']['E1']
-            rows.append([i['model_alias'], f"{s['successes']}/{s['designated']} ({s['pushed']} pushed)",
+            rows.append([i['model_alias'], fmt(i.get('training_transitions')), f"{s['successes']}/{s['designated']} ({s['pushed']} pushed)",
                          fmt(s['precondition_pass_rate'], True), fmt(s['task_recovery_success_rate'], True),
                          fmt(s['conditional_recovery_success_rate'], True), fmt(s['pushed_10s_survival_rate'], True),
                          fmt(s['recovery_within_3_touchdowns'], True), fmt(s['recovery_within_5_touchdowns'], True)])
@@ -175,9 +222,12 @@ def report_blocks(root, runs, excluded, history, plots=True):
                               f"{s['successes']}/{s['designated']}", fmt(s['failure_rate'], True)])
             extras.append([i['model_alias'], display_quantile(s['peak_tilt']), display_quantile(s['peak_velocity_error']),
                            display_quantile(s['integrated_velocity_error']), display_quantile(s['heading_drift'])])
-        blocks += [table(['模型', '成功/指定 (已推)', '准备通过', '任务成功', '条件成功', '10s 存活', '≤3 次落脚', '≤5 次落脚'], rows),
+        blocks += [table(['模型', 'Transitions', '成功/指定 (已推)', '准备通过', '任务成功', '条件成功', '10s 存活', '≤3 次落脚', '≤5 次落脚'], rows),
                    table(['模型', '恢复秒 median/P90', '落脚数 median/P90', '成功/指定', '失败率'], durations),
                    table(['模型', '峰值倾角 rad', '峰值速度误差 m/s', '误差积分 m', '航向漂移 rad'], extras)]
+        blocks.append(table(['模型', '比例指标', '分子/分母、比例及 Wilson 95% 区间'],
+                            [[r['identity']['model_alias'], key, display_rate(value)] for r in group
+                             for key, value in r['summary']['E1']['rates'].items()]))
     blocks.append(('heading', 2, '分坡度、方向、时相结果'))
     for gid, group in groups.items():
         for field in ('slope_deg', 'push_direction', 'target_phase'):
@@ -189,7 +239,7 @@ def report_blocks(root, runs, excluded, history, plots=True):
                     records = [r for r in run['records'] if r['experiment'] == 'E1' and str(r[field]) == condition]
                     s = summarize(records, plans)['E1']
                     rows.append([run['identity']['model_alias'], condition, f"{s['successes']}/{s['designated']}",
-                                 fmt(s['task_recovery_success_rate'], True), fmt(s['recovery_within_5_touchdowns'], True)])
+                                 display_rate(s['rates']['task_recovery_success_rate']), display_rate(s['rates']['recovery_within_5_touchdowns'])])
             blocks += [('text', f'{gid} / {field}'), table(['模型', '条件', '成功/指定', '任务恢复率', '五次落脚内'], rows)]
     if not runs:
         blocks.append(('text', '待评测。'))
@@ -214,25 +264,18 @@ def report_blocks(root, runs, excluded, history, plots=True):
         for baseline in ('ppo_plain', 'dwaq'):
             matches = [r for r in candidates if r['identity']['method'] == baseline]
             if matches:
-                targets.extend((f'baseline:{baseline}', r) for r in matches)
+                targets.extend((f'baseline:{baseline}；{budget_relation(run, r)}', r) for r in matches)
             elif i['method'] != baseline:
                 blocks.append(('text', f"{i['model_alias']}：缺少兼容 {baseline} 结果。"))
-        previous = [r for r in candidates if r['identity']['method'] == i['method'] and
-                    isinstance(r['identity']['training_iteration'], int) and isinstance(i['training_iteration'], int) and
-                    r['identity']['training_iteration'] < i['training_iteration'] and r['identity']['training_seed'] == i['training_seed']]
-        if previous:
-            targets.append(('previous checkpoint', max(previous, key=lambda r: r['identity']['training_iteration'])))
-        else:
-            blocks.append(('text', f"{i['model_alias']}：无相同方法、相同 seed 的上一 checkpoint 可比结果。"))
         if i['method'] in ('rl_only', 'context_only', 'context_reward'):
             for method in ('rl_only', 'context_only', 'context_reward'):
                 if method == i['method']:
                     continue
-                matches = [r for r in candidates if r['identity']['method'] == method and
-                           r['identity']['training_seed'] == i['training_seed'] and r['identity']['checkpoint_stage'] == i['checkpoint_stage']]
-                targets.extend(('matched ablation', r) for r in matches)
+                matches = [r for r in candidates if r['identity']['method'] == method]
+                targets.extend(('matched ablation（同 seed / final / 等预算）' if matched_ablation(run, r)
+                                else '非控制变量消融；' + budget_relation(run, r), r) for r in matches)
                 if not matches:
-                    blocks.append(('text', f"{i['model_alias']}：缺少同阶段同 seed 的 {method}。"))
+                    blocks.append(('text', f"{i['model_alias']}：缺少兼容的 {method}。"))
         for relation, other in targets:
             comp = paired_comparison(run['records'], other['records'], run['summary']['E1']['designated'])
             blocks.append(('text', f"当前 checkpoint {i['model_alias']} 相比 {other['identity']['model_alias']}：在 {run['summary']['E1']['designated']} 个指定 E1 trial 上，五次落脚内恢复率变化 {fmt(comp['five_touchdown_delta_pp'])} 个百分点；双方共同成功 {comp['paired_success_count']} 条，配对平均恢复时间变化 {fmt(comp['paired_mean_time_delta_s'])} 秒（{fmt(comp['paired_relative_time_delta'], True)}）。"))
@@ -241,9 +284,18 @@ def report_blocks(root, runs, excluded, history, plots=True):
     if compare_rows:
         blocks.append(table(['模型 A', '模型 B', '关系', '≤5 差 pp (A−B)', '共同成功 n', '时间差 s', '相对时间差'], compare_rows))
     blocks.append(('heading', 2, '各模型历次 checkpoint 的变化'))
-    blocks.append(table(['模型', '迭代', 'Seed', '阶段', '评测/attempt', '是否主表'],
-                        [[r['identity']['model_alias'], r['identity']['training_iteration'], r['identity']['training_seed'],
-                          r['identity']['checkpoint_stage'], r['id'], '是' if r in runs else '历史 attempt'] for r in history]))
+    blocks.append(('text', '仅在 training_run_id、方法、seed 和评测协议一致时连接轨迹；未知训练身份或预算不自动配对。'))
+    blocks.append(table(['模型', '训练批次 ID', '迭代', 'Transitions', 'Seed', '阶段', '评测/attempt', '是否主表', 'E1 成功/指定'],
+                        [[r['identity']['model_alias'], r['identity'].get('training_run_id') or '未知',
+                          r['identity']['training_iteration'], fmt(r['identity'].get('training_transitions')),
+                          r['identity']['training_seed'], r['identity']['checkpoint_stage'], r['id'],
+                          '是' if r in runs else '演进/历史',
+                          f"{r['summary']['E1']['successes']}/{r['summary']['E1']['designated']}"] for r in history]))
+    for run in history:
+        previous = previous_checkpoint(run, history)
+        if previous:
+            blocks.append(('text', f"训练批次 {run['identity']['training_run_id']}：{previous['id']} → {run['id']}；"
+                           f"{budget_relation(run, previous)}，仅展示训练演进。"))
     blocks.append(('heading', 2, 'Plane 专项诊断'))
     for run in runs:
         values = [r.get('plane_diagnostics') for r in run['records'] if r.get('plane_diagnostics')]
@@ -251,11 +303,14 @@ def report_blocks(root, runs, excluded, history, plots=True):
                        '：逐 trial context valid、standing N/A、heading/geometry invalid、N、margin、solver failure 与恢复奖励分量见 plane_diagnostics.json。')))
         if values:
             frame_count = sum(v.get('frames', 1) for v in values)
-            blocks.append(table(['模型', '诊断帧数', 'Context valid', 'Standing N/A', 'Solver failure 帧'], [[
+            available = all(v.get('diagnostics_available', False) for v in values)
+            blocks.append(table(['模型', '诊断帧数', 'Context valid', 'Standing N/A', '无效 context 帧', '查询失败事件', '数值失败事件'], [[
                 run['identity']['model_alias'], frame_count,
                 fmt(sum(v['context_valid_rate'] * v.get('frames', 1) for v in values) / frame_count, True),
                 fmt(sum(v['standing_na_rate'] * v.get('frames', 1) for v in values) / frame_count, True),
-                sum(v['solver_failure_frames'] for v in values)]]))
+                sum(v['invalid_context_frames'] for v in values) if available else 'N/A（旧诊断证据不足）',
+                sum(v['query_failures'] for v in values) if available else 'N/A（旧诊断证据不足）',
+                sum(v['numerical_failure_events'] for v in values) if available else 'N/A（旧诊断证据不足）']]))
             write_json(root / 'report' / (run['id'] + '_plane_diagnostics.json'), values)
     if not runs:
         blocks.append(('text', 'Baseline / RL-only：N/A；两个 estimator Plane 模型：待评测。'))
@@ -265,6 +320,7 @@ def report_blocks(root, runs, excluded, history, plots=True):
                 '两份 baseline 为检测器开发验证对象，不能据此称为独立最终测试集。')]
     if excluded:
         blocks.append(table(['评测', '状态', '排除原因'], excluded))
+    blocks.append(('text', 'PARTIAL 不参与排名。指定分母中的 pending 单列，未执行不算失败；指定分母尚有 pending 时不计算 Wilson 区间，已执行/已推分母的区间仅描述当前样本。'))
     for run in runs:
         failures = [r for r in run['records'] if r['status'] not in ('RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED')]
         blocks.append(('text', f"{run['identity']['model_alias']}：失败记录 {len(failures)}，全部轨迹保存在 runs/{run['id']}/traces。"))
@@ -373,7 +429,21 @@ def preserve_existing(report):
         if not path.exists():
             continue
         dest = report / 'history' / stamp / path.name
-        atomic_write(dest, path.read_bytes())
+        if ext == 'md':
+            def archive_image(match):
+                target = match.group(2).strip('<>')
+                if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target):
+                    return match.group(0)
+                source = (report / target).resolve(strict=True)
+                if not source.is_relative_to(report.resolve()):
+                    raise ValueError('Historical Markdown image must be inside report directory')
+                relative = Path('assets') / (sha256(source) + source.suffix)
+                atomic_write(dest.parent / relative, source.read_bytes())
+                return f'![{match.group(1)}]({relative.as_posix()})'
+            archived = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', archive_image, path.read_text())
+            atomic_write(dest, archived)
+        else:
+            atomic_write(dest, path.read_bytes())
         if prior.get(path.name) != sha256(path):
             if ext == 'docx':
                 with zipfile.ZipFile(path) as z:
@@ -381,7 +451,7 @@ def preserve_existing(report):
                 text = '\n'.join(''.join(n.itertext()) for n in xml.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
             else:
                 text = path.read_text()
-            notes.setdefault('migrated_document_edits', []).append({'timestamp': stamp, 'source': str(dest),
+            notes.setdefault('migrated_document_edits', []).append({'timestamp': stamp, 'source': dest.relative_to(report).as_posix(),
                                                                   'sha256': sha256(path), 'preserved_text': text})
             changed = True
     if changed:
@@ -478,7 +548,7 @@ def detector_validation_report(root):
     """Evidence inventory for manual detector acceptance; never auto-relax thresholds/freeze."""
     root = Path(root)
     p, manifest, info = load_prepared(root)
-    runs, excluded, _ = load_runs(root)
+    runs, excluded, _ = load_runs(root, final_only=False)
     candidates = [r for r in runs if r['identity']['method'] in ('ppo_plain', 'dwaq')
                   and r['identity']['metrics_config_hash'] == info['metrics_config_hash']
                   and r['identity']['metrics_reference_sha256'] == info['metrics_reference_sha256']]

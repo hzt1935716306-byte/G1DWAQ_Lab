@@ -363,6 +363,26 @@ def train():
     if estimator_record is not None:
         dump_yaml(os.path.join(log_dir, "params", "estimator.yaml"), estimator_record)
 
+    from rsl_rl.utils.training_provenance import new_training_provenance
+    resources = {}
+    for role, section, field in [('native_nominal', 'plane_recovery', 'nominal_parameters_path'),
+                                 ('native_capability', 'stage2_reward', 'certificate_parameters_path')]:
+        path = getattr(getattr(env_cfg, section, None), field, None)
+        if path:
+            resources[role] = path
+    if estimator_record is not None:
+        resources['estimator'] = env_cfg.estimator_checkpoint_path
+    # A new invocation gets a new ID, even when branching from a resumed model.
+    # The parent is recorded, and the exact accumulated budget continues if known.
+    runner.training_provenance = new_training_provenance(
+        args_cli.task, os.path.join(log_dir, 'params'), resources, runner.training_provenance)
+    if args_cli.stage1a_context_warm_start:
+        runner.training_transitions = None
+    if runner.is_distributed:
+        identity_objects = [runner.training_provenance]
+        torch.distributed.broadcast_object_list(identity_objects, src=0)
+        runner.training_provenance['training_run_id'] = identity_objects[0]['training_run_id']
+
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     if args_cli.plane_v1_profile:
         profile = env.plane_v1_profile_summary()

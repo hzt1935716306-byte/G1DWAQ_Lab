@@ -42,6 +42,7 @@ class PlaneCertificateQuery:
     alpha: float
     adapter_valid: bool
     invalid_reason: str = ""
+    invalid_category: str = "invalid_input"
 
 
 def mirror_plane_certificate_query(query: PlaneCertificateQuery) -> PlaneCertificateQuery:
@@ -64,6 +65,7 @@ def mirror_plane_certificate_query(query: PlaneCertificateQuery) -> PlaneCertifi
         alpha=query.alpha,
         adapter_valid=query.adapter_valid,
         invalid_reason=query.invalid_reason,
+        invalid_category=query.invalid_category,
     )
 
 
@@ -158,6 +160,8 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             PlaneCertificateQueryRecorder(query_record_path) if query_record_path else None
         )
         self._solve_depth_reached_counts = np.zeros(5, dtype=np.int64)
+        self.last_query_diagnostics = {}
+        self._diagnostic_query_sequence = 0
         self.workers = max(1, int(workers))
         self.executor_type = str(executor_type)
         if self.executor_type == "subprocess":
@@ -262,7 +266,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         )
 
     @staticmethod
-    def _invalid_result(reason: str) -> CertificateResult:
+    def _invalid_result(reason: str, category: str = 'invalid_input') -> CertificateResult:
         return CertificateResult(
             CertificateStatus.INVALID_INPUT,
             6,
@@ -270,13 +274,20 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             None,
             (),
             reason,
+            diagnostic={'kind': category + '_failure'},
         )
 
     def _solve(self, query: PlaneCertificateQuery) -> CertificateResult:
         if not query.adapter_valid:
             return self._invalid_result(query.invalid_reason)
         try:
-            config = self._plane_config(query.command, query.alpha)
+            lookup = self.lookup_nominal(query.command, query.alpha)
+            if not lookup.valid or lookup.value is None:
+                return self._invalid_result(lookup.reason, 'lookup')
+            try:
+                config = self._plane_config(query.command, query.alpha, lookup.value)
+            except ValueError as exc:
+                return self._invalid_result(str(exc), 'adapter')
             return certify_recoverability(
                 CertificateState(
                     b=query.b,
@@ -383,6 +394,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
             reason = "" if valid else (
                 lookup.reason if lookup is not None else "invalid terrain plane"
             )
+            category = '' if valid else 'geometry' if not plane_valid else 'lookup'
             if valid:
                 try:
                     capability_started = time.perf_counter_ns()
@@ -391,10 +403,12 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 except ValueError as exc:
                     valid = False
                     reason = str(exc)
+                    category = 'adapter'
                 else:
                     if not capability.nominal_cop_valid:
                         valid = False
                         reason = "nominal CoP [0,0] lies outside projected C"
+                        category = 'adapter'
             if valid:
                 nominal = lookup.value
                 assert nominal is not None
@@ -418,6 +432,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
                 alpha=float(alpha),
                 adapter_valid=valid,
                 invalid_reason=reason,
+                invalid_category=category,
             )
             query_build_ms += (time.perf_counter_ns() - query_started) / 1.0e6
             queries.append(query)
@@ -589,6 +604,7 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         self,
         pending: PendingPlaneCertificateBatch,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self.last_query_diagnostics = {}
         if not pending.env_ids:
             return (
                 torch.empty(0, dtype=torch.long, device=pending.device),
@@ -599,6 +615,11 @@ class PlaneCalibratedG1CertificateEvaluator(CalibratedG1CertificateEvaluator):
         results = []
         valid_results = []
         for env_id, query, result in zip(pending.env_ids, pending.queries, raw_results):
+            self._diagnostic_query_sequence += 1
+            self.last_query_diagnostics[env_id] = {
+                'query_id': self._diagnostic_query_sequence,
+                **query_diagnostic(query, result),
+            }
             if result.status == CertificateStatus.CONSTRAINT_BUILDER_MISMATCH:
                 record = self._failure_record(env_id, query, result)
                 self._save_failure_record(record)
@@ -698,3 +719,27 @@ __all__ = [
     "mirror_plane_certificate_query",
     "plane_periodic_state",
 ]
+
+
+def query_diagnostic(query, result):
+    """Classify raw outcomes before the conservative context fallback erases them."""
+    normal = (result.status in (CertificateStatus.FINITE, CertificateStatus.OVER_HORIZON)
+              and result.n_min is not None and result.margin is not None
+              and not result.margin_fallback and not result.solver_fallback)
+    kind = (result.diagnostic or {}).get('kind', '')
+    if not query.adapter_valid:
+        category = query.invalid_category or 'invalid_input'
+    elif kind == 'worker_transport_failure':
+        category = 'communication'
+    elif kind.startswith('unexpected_'):
+        category = 'runtime_exception'
+    elif result.status == CertificateStatus.CONSTRAINT_BUILDER_MISMATCH:
+        category = 'constraint_builder'
+    elif result.status == CertificateStatus.INVALID_INPUT:
+        category = kind.removesuffix('_failure') if kind in ('lookup_failure', 'adapter_failure') else 'invalid_input'
+    elif normal:
+        category = 'success'
+    else:
+        category = 'numerical'
+    return {'category': category, 'failed': category != 'success',
+            'status': result.status.value, 'message': result.message}

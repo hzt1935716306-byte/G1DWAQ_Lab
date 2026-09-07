@@ -11,6 +11,14 @@ import numpy as np
 METRICS_VERSION = 'practical_interval_confirm2_v1'
 
 
+def trapezoid_integral(y, x):
+    """NumPy 1.24 and 2.4+: never evaluate an unavailable fallback eagerly."""
+    integrate = getattr(np, 'trapezoid', None)
+    if integrate is None:
+        integrate = np.trapz
+    return integrate(y, x)
+
+
 def frame_errors(com_xy, command_xy, roll_pitch, nominal):
     return float(np.linalg.norm(np.asarray(com_xy) - command_xy)), np.abs(np.asarray(roll_pitch) - nominal)
 
@@ -233,7 +241,7 @@ class TrialMachine:
         self.status = status
         self.transition('FINALIZE', self.t)
 
-    def result(self):
+    def result(self, include_metrics=True):
         if not self.status:
             raise ValueError('Cannot finalize active trial')
         survived = self.status in ('RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED')
@@ -247,7 +255,10 @@ class TrialMachine:
                   **self.trigger, **recovery}
         start = self.p['e0']['warmup_s'] if self.plan['experiment'] == 'E0' else self.push_time
         frames = [f for f in self.frames if start is not None and f['time'] >= start]
-        record.update(trajectory_metrics(frames, self.plan))
+        if include_metrics:
+            record.update(trajectory_metrics(frames, self.plan))
+        else:
+            record['metrics_unavailable'] = 'execution_error; metrics computation skipped during cleanup'
         return record
 
     def all_events(self):
@@ -276,19 +287,26 @@ def trajectory_metrics(frames, plan):
     time = np.array([f['time'] for f in frames])
     values = [np.sqrt(np.mean(np.sum((root - command)**2, axis=1))),
               np.sqrt(np.mean(error**2)), yaw[-1] - yaw[0], *np.std(rp, axis=0),
-              np.max(np.linalg.norm(rp, axis=1)), np.max(error), np.trapz(error, time)]
+              np.max(np.linalg.norm(rp, axis=1)), np.max(error), trapezoid_integral(error, time)]
     result = {k: float(v) if np.isfinite(v) else None for k, v in zip(names, values)}
     plane = [f['plane'] for f in frames if f.get('plane') is not None]
     result['plane_diagnostics'] = None
     if plane:
+        queries = {d['query_id']: d for d in plane if d.get('query_event') and d.get('query_id') is not None}
+        failures = [d for d in queries.values() if d['query_failed']]
         result['plane_diagnostics'] = {
+            'diagnostic_schema_version': 2,
             'frames': len(plane),
+            'invalid_context_frames': sum(not d['context_valid'] and not d['standing_na'] for d in plane),
             'context_valid_rate': float(np.mean([d['context_valid'] for d in plane])),
             'standing_na_rate': float(np.mean([d['standing_na'] for d in plane])),
             'invalid_reasons': dict(Counter(d['invalid_reason'] for d in plane if d['invalid_reason'])),
             'N_distribution': dict(Counter(str(d['N']) for d in plane if d['N'] is not None)),
             'margin_distribution': [d['margin'] for d in plane if d['margin'] is not None],
-            'solver_failure_frames': sum(d['solver_failure'] for d in plane),
+            'query_events': len(queries), 'query_failures': len(failures),
+            'query_failure_categories': dict(Counter(d['query_category'] for d in failures)),
+            'numerical_failure_events': sum(d['query_category'] == 'numerical' for d in failures),
+            'diagnostics_available': all('query_event' in d for d in plane),
             'reward_components': {k: {'sum': sum(d[k] for d in plane), 'nonzero_frames': sum(d[k] != 0 for d in plane)}
                                   for k in ('reward_progress', 'reward_step_cost', 'reward_td5', 'reward_total')}}
     return result
@@ -296,8 +314,26 @@ def trajectory_metrics(frames, plan):
 
 def quantiles(values):
     values = [v for v in values if v is not None]
+    q1, q3 = [float(x) for x in np.percentile(values, [25, 75])] if values else (None, None)
     return {'count': len(values), 'median': float(np.median(values)) if values else None,
-            'p90': float(np.percentile(values, 90)) if values else None}
+            'p90': float(np.percentile(values, 90)) if values else None,
+            'q1': q1, 'q3': q3, 'iqr': q3 - q1 if values else None}
+
+
+def binomial_rate(successes, denominator, denominator_name, pending=0):
+    if not 0 <= successes <= denominator or pending < 0:
+        raise ValueError('Invalid binomial counts')
+    interval = None
+    if denominator and not pending:
+        z = 1.959963984540054
+        p = successes / denominator
+        scale = 1 + z*z / denominator
+        center = (p + z*z / (2 * denominator)) / scale
+        radius = z * math.sqrt(p * (1 - p) / denominator + z*z / (4 * denominator**2)) / scale
+        interval = [max(0., center - radius), min(1., center + radius)]
+    return {'numerator': successes, 'denominator': denominator, 'denominator_name': denominator_name,
+            'pending': pending, 'rate': successes / denominator if denominator else None,
+            'wilson_95': interval, 'interval_status': 'pending_outcomes' if pending else 'available' if denominator else 'empty'}
 
 
 def summarize(records, manifest):
@@ -310,11 +346,16 @@ def summarize(records, manifest):
     success = [r for r in e1 if r['status'] == 'RECOVERED_AND_SURVIVED']
     summary = {'status': 'INVALID' if any(r['status'] == 'EVALUATION_ERROR' for r in records) else
                ('COMPLETE' if len(records) == len(manifest) else 'PARTIAL'),
-               'designated': len(manifest), 'executed': len(records), 'E0': {}, 'E1': {}}
+               'summary_schema_version': 2, 'designated': len(manifest), 'executed': len(records),
+               'pending': len(manifest) - len(records), 'E0': {}, 'E1': {}}
     for label, group in [('moving', [r for r in e0 if r['command_name'] != 'standing']),
                           ('standing', [r for r in e0 if r['command_name'] == 'standing'])]:
         n = sum(r['experiment'] == 'E0' and (r['command_name'] == 'standing') == (label == 'standing') for r in manifest)
         summary['E0'][label] = {'designated': n, 'executed': len(group), 'survival_rate': rate(sum(r['survived'] for r in group), n),
+                               'pending': n - len(group), 'successes': sum(r['survived'] for r in group),
+                               'failures_executed': sum(not r['survived'] for r in group),
+                               'survival_statistics': binomial_rate(sum(r['survived'] for r in group), n, 'designated', n - len(group)),
+                               'executed_survival_statistics': binomial_rate(sum(r['survived'] for r in group), len(group), 'executed'),
                                **{k: quantiles([r.get(k) for r in group]) for k in
                                   ('root_xy_velocity_rmse', 'com_xy_velocity_rmse', 'heading_drift', 'roll_std', 'pitch_std', 'touchdown_count')},
                                'step_interval_s': quantiles([v for r in group for v in r.get('step_intervals_s', [])])}
@@ -323,12 +364,23 @@ def summarize(records, manifest):
         'task_recovery_success_rate': rate(len(success), designated),
         'conditional_recovery_success_rate': rate(len(success), len(pushed)),
         'pushed_10s_survival_rate': rate(sum(r['survived'] for r in pushed), len(pushed)),
-        'failure_rate': rate(designated - len(success), designated),
+        'pending': designated - len(e1), 'failures_executed': len(e1) - len(success),
+        'failure_rate': rate(len(e1) - len(success), designated),
         'recovery_within_3_touchdowns': rate(sum(r['recovery_within_3_touchdowns'] for r in success), designated),
         'recovery_within_5_touchdowns': rate(sum(r['recovery_within_5_touchdowns'] for r in success), designated),
         **{k: quantiles([r.get(k) for r in (success if k.startswith('recovery_') else pushed)]) for k in
            ('recovery_time', 'recovery_steps', 'peak_tilt', 'peak_velocity_error', 'integrated_velocity_error', 'heading_drift')},
         'terminal_counts': dict(Counter(r['status'] for r in e1))}
+    counts = {'precondition_pass_rate': (sum(r['precondition_passed'] for r in e1), designated, 'designated'),
+              'task_recovery_success_rate': (len(success), designated, 'designated'),
+              'conditional_recovery_success_rate': (len(success), len(pushed), 'pushed'),
+              'pushed_10s_survival_rate': (sum(r['survived'] for r in pushed), len(pushed), 'pushed'),
+              'failure_rate': (len(e1) - len(success), designated, 'designated'),
+              'executed_failure_rate': (len(e1) - len(success), len(e1), 'executed'),
+              'executed_recovery_success_rate': (len(success), len(e1), 'executed'),
+              **{f'recovery_within_{k}_touchdowns': (sum(r[f'recovery_within_{k}_touchdowns'] for r in success), designated, 'designated') for k in (3, 5)}}
+    summary['E1']['rates'] = {key: binomial_rate(n, d, name, designated - len(e1) if name == 'designated' else 0)
+                            for key, (n, d, name) in counts.items()}
     summary['curves'] = {}
     for name, key, grid in [('time', 'recovery_time', np.linspace(0, 10, 101)),
                             ('steps', 'recovery_steps', range(0, max([10] + [r['recovery_steps'] for r in success]) + 1))]:

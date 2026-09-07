@@ -19,6 +19,7 @@ from g1_recovery_protocol import (
     LAB, DEFAULT_PROTOCOL, TASKS, RunStore, atomic_write, canonical, code_identity, csv_bytes, digest,
     evaluation_key, import_results, inspect_checkpoint, jsonl, load_prepared, load_yaml, lock,
     prepare, read_json, read_jsonl, register_model, register_result, sha256, write_json,
+    RESOURCE_FIELDS, native_contract, validate_resource_identity,
 )
 from g1_recovery_metrics import TrialMachine, additive_velocity, summarize
 
@@ -26,10 +27,13 @@ from g1_recovery_metrics import TrialMachine, additive_velocity, summarize
 def snapshot_checkpoint(root, identity):
     """Copy before simulation, verify source stability and deserialization, make immutable."""
     import torch
-    dest = Path(root) / 'checkpoints' / identity['checkpoint_sha256']
+    variant = digest({k: identity.get(k) for k in ('agent_config_sha256', 'env_config_sha256',
+                     'native_nominal_sha256', 'native_capability_sha256', 'estimator_sha256',
+                     'native_configuration_sha256')})[:24]
+    dest = Path(root) / 'checkpoints' / identity['checkpoint_sha256'] / variant
     with lock(Path(root) / '.snapshot.lock'):
         dest.mkdir(parents=True, exist_ok=True)
-        source = LAB / identity['checkpoint_path']
+        source = getattr(identity, 'inputs', {}).get('checkpoint', LAB / identity['checkpoint_path'])
         target = dest / 'model.pt'
         if not target.exists():
             atomic_write(target, source.read_bytes())
@@ -46,15 +50,73 @@ def snapshot_checkpoint(root, identity):
                 raise ValueError('Same weights have conflicting training configurations')
             if not output.exists():
                 atomic_write(output, src.read_bytes())
+            if sha256(output) != identity[key] or sha256(src) != identity[key]:
+                raise ValueError('Training config SHA mismatch during snapshot')
             output.chmod(0o444)
-        if identity['estimator_path']:
-            target_est = dest / (identity['estimator_sha256'] + '.pt')
-            if not target_est.exists():
-                atomic_write(target_est, (LAB / identity['estimator_path']).read_bytes())
-            if sha256(target_est) != identity['estimator_sha256']:
-                raise ValueError('Estimator snapshot SHA mismatch')
-            target_est.chmod(0o444)
+        for role, resource in identity.get('resources', {}).items():
+            source_resource = identity.inputs[role]
+            output = dest / resource['snapshot']
+            data = source_resource.read_bytes()
+            if sha256(source_resource) != resource['sha256']:
+                raise ValueError(f'{role}: source changed during snapshot')
+            if not output.exists():
+                atomic_write(output, data)
+            if sha256(output) != resource['sha256']:
+                raise ValueError(f'{role}: snapshot SHA mismatch')
+            output.chmod(0o444)
+        config_path = dest / 'native_configuration.json'
+        if config_path.exists() and read_json(config_path) != identity['native_configuration']:
+            raise ValueError('Native configuration snapshot conflict')
+        if not config_path.exists():
+            write_json(config_path, identity['native_configuration'])
+        config_path.chmod(0o444)
+        verify_native_snapshot(identity, target)
+        identity['checkpoint_snapshot'] = target.relative_to(Path(root)).as_posix()
+        if not source.is_relative_to(LAB):
+            identity['checkpoint_path'] = identity['checkpoint_snapshot']
+            identity['checkpoint_path_base'] = 'output_root'
     return target
+
+
+def verify_native_snapshot(identity, snapshot):
+    validate_resource_identity(identity)
+    for path, key in [(snapshot, 'checkpoint_sha256'), (snapshot.parent / 'params/env.yaml', 'env_config_sha256'),
+                      (snapshot.parent / 'params/agent.yaml', 'agent_config_sha256')]:
+        if sha256(path) != identity[key]:
+            raise ValueError(f'{key}: snapshot SHA mismatch')
+    paths = {}
+    for role, resource in identity.get('resources', {}).items():
+        path = (snapshot.parent / resource['snapshot']).resolve(strict=True)
+        if not path.is_relative_to(snapshot.parent.resolve()) or sha256(path) != resource['sha256']:
+            raise ValueError(f'{role}: snapshot SHA mismatch or unsafe path')
+        paths[role] = path
+    config = read_json(snapshot.parent / 'native_configuration.json')
+    if digest(config) != identity['native_configuration_sha256'] or config != identity['native_configuration']:
+        raise ValueError('Native configuration snapshot mismatch')
+    return paths
+
+
+def bind_native_inputs(cfg, identity, snapshot):
+    """Called before constructing the environment (and therefore any worker)."""
+    paths = verify_native_snapshot(identity, snapshot)
+    if not identity['method'].startswith('context'):
+        return paths
+    if native_contract(cfg.to_dict()) != identity['native_configuration']:
+        raise ValueError('Native solver/context configuration differs from training snapshot')
+    for role, (section, field) in RESOURCE_FIELDS.items():
+        setattr(getattr(cfg, section), field, str(paths[role]))
+    cfg.estimator_checkpoint_path = str(paths['estimator'])
+    assert_native_inputs(cfg, identity)
+    return paths
+
+
+def assert_native_inputs(cfg, identity):
+    validate_resource_identity(identity)
+    for role, (section, field) in RESOURCE_FIELDS.items():
+        if sha256(getattr(getattr(cfg, section), field)) != identity['resources'][role]['sha256']:
+            raise ValueError(f'{role}: actual solver input SHA differs from identity')
+    if sha256(cfg.estimator_checkpoint_path) != identity['estimator_sha256']:
+        raise ValueError('Actual estimator SHA differs from identity')
 
 
 def make_evaluation_environment(args, p, identity, snapshot):
@@ -78,6 +140,7 @@ def make_evaluation_environment(args, p, identity, snapshot):
     method = identity['method']
     native = G1DwaqEnv if method == 'dwaq' else G1PlaneV1Env if method.startswith('context') else BaseEnv
     cfg, agent = (copy.deepcopy(c) for c in task_registry.get_cfgs(args.task))
+    native_paths = bind_native_inputs(cfg, identity, snapshot)
     saved_env, saved_agent = load_yaml(snapshot.parent / 'params/env.yaml'), load_yaml(snapshot.parent / 'params/agent.yaml')
     # Keep native input semantics; reject config drift rather than silently loading a new input chain.
     current = cfg.to_dict()
@@ -145,9 +208,8 @@ def make_evaluation_environment(args, p, identity, snapshot):
     if hasattr(cfg, 'debug_save_num'):
         cfg.debug_save_num = 0
     if method.startswith('context'):
-        cfg.estimator_checkpoint_path = str(snapshot.parent / (identity['estimator_sha256'] + '.pt'))
         cfg.plane_recovery.slopes_degrees = tuple(p['slopes_deg'])
-        cfg.push_curriculum.enabled = False
+        cfg.push_curriculum.enable_push_curriculum = False
         # Preserve context/reward/certificate cadence, including reward-off certificate.
     metrics_cfg = p['metrics']
 
@@ -162,6 +224,10 @@ def make_evaluation_environment(args, p, identity, snapshot):
             self._resample_command(torch.arange(self.num_envs, device=self.device))
 
     class EvaluationEnv(native):
+        def _create_certificate_evaluator(self):
+            assert_native_inputs(self.cfg, identity)
+            return super()._create_certificate_evaluator()
+
         def __init__(self, cfg, headless):
             self.eval_commands = torch.zeros((cfg.scene.num_envs, 3), device=cfg.device)
             self.eval_plans = None
@@ -320,13 +386,15 @@ def make_evaluation_environment(args, p, identity, snapshot):
                 return None
             valid = bool(self.current_certificate_valid[i])
             standing = bool(self._v1_intentional_not_applicable[i])
-            geometry = bool(self._v1_last_geometry_valid[i])
-            ready = int(self._estimator_history_count[i]) >= 5
-            reason = 'standing' if standing else 'estimator_warmup' if not ready else 'heading_geometry' if not geometry else 'solver_invalid' if not valid else ''
+            diagnostic = self._v1_context_diagnostics[i]
+            reason = 'standing' if standing else diagnostic['category'] if not valid else ''
             return {'context_valid': valid, 'standing_na': standing, 'invalid_reason': reason,
                     'N': int(self.current_n_min[i]) if valid else None,
                     'margin': float(self.current_margin[i]) if valid else None,
-                    'solver_failure': bool(ready and geometry and not valid and not standing),
+                    'query_id': diagnostic['query_id'],
+                    'query_event': bool(self._context_refresh_mask[i]) and diagnostic['query_id'] is not None,
+                    'query_failed': diagnostic['failed'], 'query_category': diagnostic['category'],
+                    'query_status': diagnostic.get('status'), 'query_message': diagnostic.get('message'),
                     **{out: float(getattr(self, attr)[i]) for out, attr in
                        [('reward_progress', '_v1_event_progress'), ('reward_step_cost', '_v1_event_step_cost'),
                         ('reward_td5', '_v1_event_td5'), ('reward_total', '_v1_event_total')]}}
@@ -364,6 +432,12 @@ def make_evaluation_environment(args, p, identity, snapshot):
         native_policy = runner.get_inference_policy(device=args.device)
         policy = lambda obs, extra: native_policy(obs)
     env_cfg = plain(cfg.to_dict())
+    # Persist logical content locations, independent of checkout/output root names.
+    for role, (section, field) in RESOURCE_FIELDS.items():
+        if role in native_paths:
+            env_cfg[section][field] = identity['resources'][role]['snapshot']
+    if 'estimator' in native_paths:
+        env_cfg['estimator_checkpoint_path'] = identity['resources']['estimator']['snapshot']
     # Serialize actual physical quantities separately from native inference configuration.
     view = env.robot.root_physx_view
     asset_path = Path(cfg.scene.robot.spawn.usd_path).resolve(strict=True)
@@ -376,6 +450,8 @@ def make_evaluation_environment(args, p, identity, snapshot):
               'physics_dt': env.physics_dt, 'step_dt': env.step_dt,
               'ground_material': plain(env.scene.terrain.cfg.physics_material.to_dict())}
     effective = {'environment': env_cfg, 'actual_physics': actual, 'actual_physics_hash': digest(actual),
+                 'native_inputs': {k: sha256(v) for k, v in native_paths.items()},
+                 'native_configuration_sha256': identity['native_configuration_sha256'],
                  'terrain_mesh_sha256': digest(env.eval_mesh.tolist()), 'terrain_origins': env.eval_origin_table.cpu().tolist(),
                  'slopes_deg': p['slopes_deg'], 'native_inference': identity['runner_type'],
                  'normalization': saved_env['normalization']}
@@ -389,9 +465,10 @@ def execute_run(args):
     if not (root / 'prepared.json').exists():
         prepare(root, args.protocol)
     p, manifest, prepared = load_prepared(root)
-    identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage, args.estimator_checkpoint)
-    register_model(root, identity)
+    identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage,
+                                  args.estimator_checkpoint, args.identity_manifest)
     snapshot = snapshot_checkpoint(root, identity)
+    register_model(root, identity)
     identity.update(prepared)
     if args.trial_limit:
         if args.trial_limit < 1:
@@ -438,6 +515,10 @@ def execute_run(args):
             atomic_write(run / 'protocol_snapshot.yaml', (root / 'protocol.yaml').read_bytes())
             atomic_write(run / 'metrics_reference.yaml', (root / 'metrics_reference.yaml').read_bytes())
             atomic_write(run / 'manifest_snapshot.jsonl', jsonl(manifest))
+            for role, resource in identity['resources'].items():
+                if role != 'estimator':
+                    atomic_write(run / resource['snapshot'], (snapshot.parent / resource['snapshot']).read_bytes())
+            atomic_write(run / 'native_configuration.json', (snapshot.parent / 'native_configuration.json').read_bytes())
         else:
             store.validate(require_complete=False)
         committed = {r['trial_id'] for r in store.records()}
@@ -539,7 +620,10 @@ def execute_run(args):
                     if machine.plan['trial_id'] not in saved_ids and machine.frames:
                         machine.finish('EVALUATION_ERROR')
                         machine.events.append({'event': 'execution_error', 'time': machine.t, 'error': str(exc)})
-                        store.save_trial(machine.result(), machine.trace(), machine.all_events())
+                        try:
+                            store.save_trial(machine.result(include_metrics=False), machine.trace(), machine.all_events())
+                        except Exception as cleanup_exc:
+                            logger.exception('Could not preserve failed trial: %s', cleanup_exc)
             logger.exception('Evaluation failed: %s', exc)
             write_json(run / 'failure.json', {'status': 'INVALID', 'error': str(exc), 'completed_trials': len(store.records())})
             write_json(run / 'summary.json', {**summarize(store.records(), manifest), 'status': 'INVALID'})
@@ -580,6 +664,7 @@ def main(argv=None):
             cmd.add_argument('--model_alias', required=True)
             cmd.add_argument('--checkpoint_stage', choices=('intermediate', 'final', 'unknown'), default='unknown')
             cmd.add_argument('--estimator_checkpoint')
+            cmd.add_argument('--identity_manifest', help='SHA-bound legacy task confirmation, resource mapping and training provenance YAML')
         if name == 'run':
             cmd.add_argument('--suite', choices=['lite'], default='lite')
             cmd.add_argument('--num_envs', type=int, default=32)
@@ -598,7 +683,9 @@ def main(argv=None):
     if args.command == 'prepare':
         result = prepare(args.output_root, args.protocol)
     elif args.command == 'register':
-        identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage, args.estimator_checkpoint)
+        identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage,
+                                      args.estimator_checkpoint, args.identity_manifest)
+        snapshot_checkpoint(args.output_root, identity)
         register_model(args.output_root, identity)
         result = identity
     elif args.command == 'run':

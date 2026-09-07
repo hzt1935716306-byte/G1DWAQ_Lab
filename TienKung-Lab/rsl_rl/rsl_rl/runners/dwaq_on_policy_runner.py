@@ -158,6 +158,8 @@ class DWAQOnPolicyRunner:
         self.log_dir = log_dir
         self.writer = None
         self.tot_timesteps = 0
+        self.training_transitions = 0
+        self.training_provenance = {}
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
@@ -274,6 +276,8 @@ class DWAQOnPolicyRunner:
             learn_time = stop - start
 
             self.current_learning_iteration = it
+            from rsl_rl.utils.training_provenance import advance_training_transitions
+            advance_training_transitions(self)
 
             # Logging
             if self.log_dir is not None and not self.disable_logs:
@@ -396,6 +400,7 @@ class DWAQOnPolicyRunner:
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
+            "training_provenance": {**self.training_provenance, "training_transitions": self.training_transitions},
         }
         # Save normalizer state if using empirical normalization
         if self.empirical_normalization:
@@ -427,6 +432,8 @@ class DWAQOnPolicyRunner:
             self.privileged_obs_normalizer.load_state_dict(loaded_dict["privileged_obs_norm_state_dict"])
 
         self.current_learning_iteration = loaded_dict["iter"]
+        self.training_provenance = loaded_dict.get('training_provenance') or {}
+        self.training_transitions = self.training_provenance.get('training_transitions')
         return loaded_dict.get("infos")
 
     def get_inference_policy(self, device=None):

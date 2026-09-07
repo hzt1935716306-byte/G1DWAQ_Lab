@@ -149,6 +149,10 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_intentional_not_applicable_count = 0
         self._v1_geometry_invalid_count = 0
         self._v1_solver_failure_count = 0
+        self._v1_query_failure_count = 0
+        self._v1_query_failure_categories = {}
+        self._v1_context_diagnostics = [{'category': 'awaiting_touchdown', 'query_id': None,
+                                        'failed': False} for _ in range(count)]
         self._v1_completed_episodes: list[dict[str, float | str]] = []
         self._v1_reward_ratios: deque[float] = deque(maxlen=4096)
         self._v1_reward_ratios_initial_n_gt_1: deque[float] = deque(maxlen=4096)
@@ -225,6 +229,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
             return
         ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         self._clear_recovery_context(ids)
+        for env_id in ids.tolist():
+            self._v1_context_diagnostics[env_id] = {'category': 'awaiting_touchdown', 'query_id': None, 'failed': False}
         self._estimator_history_count[ids] = 0
         if self._estimator_history is not None:
             self._estimator_history.buffer[ids] = 0.0
@@ -376,6 +382,9 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self._v1_geometry_invalid_count += int(geometry_invalid.sum().item())
 
         solve_ids = moving_ids[estimator_ready[moving_ids]]
+        for env_id in env_ids.tolist():
+            category = 'standing' if bool(self._v1_intentional_not_applicable[env_id]) else 'estimator_warmup'
+            self._v1_context_diagnostics[env_id] = {'category': category, 'query_id': None, 'failed': False}
         if self._certificate_evaluator is not None:
             self._certificate_evaluator._record_profile(
                 "touchdown_moving_collect_ms",
@@ -403,8 +412,14 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         self.current_certificate_valid[solve_ids] = valid
         self._v1_last_solver_valid[solve_ids] = valid
 
-        numerical_failure = certificate_state.terrain_plane_valid[solve_ids] & ~valid
-        self._v1_solver_failure_count += int(numerical_failure.sum().item())
+        for env_id in solve_ids.tolist():
+            diagnostic = dict(self._certificate_evaluator.last_query_diagnostics[env_id])
+            self._v1_context_diagnostics[env_id] = diagnostic
+            if diagnostic['failed']:
+                category = diagnostic['category']
+                self._v1_query_failure_count += 1
+                self._v1_query_failure_categories[category] = self._v1_query_failure_categories.get(category, 0) + 1
+                self._v1_solver_failure_count += int(category == 'numerical')
         self._context_refresh_batches += 1
         self._context_refresh_evaluations += int(solve_ids.numel())
         valid_count = int(valid.sum().item())
@@ -594,6 +609,7 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
                 ),
                 "RecoveryReward/enabled": float(self._plane_v1_reward_enabled),
                 "RecoveryReward/solver_failure_count": float(self._v1_solver_failure_count),
+                "RecoveryReward/query_failure_count": float(self._v1_query_failure_count),
                 "RecoveryContext/intentional_not_applicable_fraction": float(
                     self._v1_intentional_not_applicable.float().mean().item()
                 ),
@@ -763,6 +779,8 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
                     for index in range(1, 6)
                 },
                 "solver_failures": int(self._v1_solver_failure_count),
+                "query_failures": int(self._v1_query_failure_count),
+                "query_failure_categories": dict(self._v1_query_failure_categories),
                 "fine_grained": (
                     self._certificate_evaluator.profile_statistics
                     if self._certificate_evaluator is not None

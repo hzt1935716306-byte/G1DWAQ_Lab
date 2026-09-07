@@ -441,6 +441,45 @@ def test_one_transport_failure_does_not_abort_remaining_batch() -> None:
     assert not valid[0].item()
     assert valid[1].item()
     assert evaluator.failure_records[0]["failure"]["kind"] == "worker_transport_failure"
+    assert evaluator.last_query_diagnostics[0]['category'] == 'communication'
+    assert evaluator.last_query_diagnostics[1]['category'] == 'success'
+
+
+@pytest.mark.parametrize('failure', ['geometry', 'lookup', 'adapter'])
+def test_actual_submit_preserves_failure_category(failure, monkeypatch):
+    evaluator = PlaneCalibratedG1CertificateEvaluator(FLAT, NOMINAL, executor_type='sequential')
+    state = SimpleNamespace(command_velocity=torch.tensor([[.2, 0., 0.]]), signed_slope=torch.zeros(1),
+                            terrain_plane_valid=torch.tensor([failure != 'geometry']),
+                            com_position=torch.zeros(1, 2), com_velocity=torch.zeros(1, 2),
+                            left_foot_position=torch.zeros(1, 2), right_foot_position=torch.zeros(1, 2),
+                            q=torch.zeros(1, 2), b=torch.zeros(1, 2), support_is_left=torch.tensor([True]))
+    if failure == 'lookup':
+        state.command_velocity[0, 0] = 123.
+    if failure == 'adapter':
+        def invalid_capability(alpha):
+            raise ValueError('synthetic projected capability invalid')
+        monkeypatch.setattr(evaluator, '_capability_at', invalid_capability)
+    try:
+        pending = evaluator.submit(state, torch.tensor([0]))
+        assert pending.queries[0].invalid_category == failure
+        _, _, valid = evaluator.resolve_with_validity(pending)
+        assert valid.tolist() == [False]
+        assert evaluator.last_query_diagnostics[0]['category'] == failure
+        assert evaluator.last_query_diagnostics[0]['failed'] is True
+    finally:
+        evaluator.close()
+
+
+def test_numerical_failure_classified_before_fallback():
+    evaluator = PlaneCalibratedG1CertificateEvaluator(FLAT, NOMINAL, executor_type='sequential')
+    failure = CertificateResult(CertificateStatus.SOLVER_FAILURE, None, None, None, (), 'synthetic LP failure')
+    pending = PendingPlaneCertificateBatch((0,), (_valid_slope_query(),), (failure,), torch.device('cpu'))
+    try:
+        n, margin, valid = evaluator.resolve_with_validity(pending)
+        assert n.tolist() == [6] and margin.tolist() == [-3.] and valid.tolist() == [False]
+        assert evaluator.last_query_diagnostics[0]['category'] == 'numerical'
+    finally:
+        evaluator.close()
 
 
 def test_nondefault_z_sole_matches_sequential_and_subprocess() -> None:
@@ -604,7 +643,8 @@ def test_batched_path_preserves_invalid_and_solver_failure_semantics() -> None:
     assert [item.message for item in old] == [item.message for item in new]
     assert [item.diagnostic for item in old] == [item.diagnostic for item in new]
     assert old[0].status == CertificateStatus.INVALID_INPUT
-    assert old[1].status == CertificateStatus.SOLVER_FAILURE
+    assert old[1].status == CertificateStatus.INVALID_INPUT
+    assert old[1].diagnostic['kind'] == 'lookup_failure'
 
 
 def test_exact_alpha_cache_is_bounded_without_rounding() -> None:
