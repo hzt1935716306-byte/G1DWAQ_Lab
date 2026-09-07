@@ -30,9 +30,42 @@ TASKS = {
     'context_reward': 'g1_plane_v1_estimator_context_reward_matched',
 }
 COMPATIBILITY = ('protocol_hash', 'manifest_hash', 'metrics_version', 'metrics_config_hash',
-                 'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode')
+                 'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode',
+                 'evaluation_runtime_sha256')
 STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERED',
             'FELL', 'OUT_OF_TEST_AREA', 'EVALUATION_ERROR'}
+
+# This allowlist is intentionally explicit. Only sources that can alter native
+# inference, trial execution, physical judging, or recovery metrics belong here.
+EVALUATION_RUNTIME_SOURCES = (
+    'tools/evaluation/g1_recovery_eval.py',
+    'tools/evaluation/g1_recovery_protocol.py',
+    'tools/evaluation/g1_recovery_metrics.py',
+    'legged_lab/envs/base/base_env.py',
+    'legged_lab/envs/g1/g1_dwaq_env.py',
+    'legged_lab/envs/g1/g1_plane_v1_env.py',
+    'legged_lab/envs/g1/g1_slope_matched_config.py',
+    'legged_lab/envs/g1/g1_plane_v1_matched_config.py',
+    'legged_lab/envs/g1/g1_plane_v1_rl_only_config.py',
+    'legged_lab/recovery/state_extractor.py',
+    'legged_lab/recovery/plane_certificate_runtime.py',
+    'legged_lab/recovery/g1_certificate_runtime.py',
+    'legged_lab/recovery/certificate.py',
+    'legged_lab/recovery/certificate_process_pool.py',
+    'legged_lab/recovery/certificate_ipc.py',
+    'legged_lab/recovery/plane_adapter.py',
+    'legged_lab/recovery/plane_nominal_params.py',
+    'legged_lab/recovery/recovery_context.py',
+    'legged_lab/recovery/plane_v1.py',
+    'legged_lab/recovery/stage2_reward.py',
+    'rsl_rl/rsl_rl/modules/actor_critic.py',
+    'rsl_rl/rsl_rl/modules/actor_critic_DWAQ.py',
+    'rsl_rl/rsl_rl/modules/normalizer.py',
+    'rsl_rl/rsl_rl/runners/on_policy_runner.py',
+    'rsl_rl/rsl_rl/runners/dwaq_on_policy_runner.py',
+)
+REPORT_SOURCE_PATHS = ('tools/evaluation/g1_recovery_report.py', 'tools/evaluation/README.md')
+REPORT_SOURCE_DIRS = ('tools/evaluation/tests', 'tools/evaluation/docs')
 
 
 def resolve_input_path(path):
@@ -351,11 +384,19 @@ def load_prepared(root):
 def code_identity():
     def git(*args):
         return subprocess.check_output(['git', '-C', str(LAB), *args], text=True).strip()
-    roots = [LAB / 'tools/evaluation', LAB / 'legged_lab', LAB / 'rsl_rl/rsl_rl']
+    runtime = {name: sha256(LAB / name) for name in EVALUATION_RUNTIME_SOURCES}
+    report_names = list(REPORT_SOURCE_PATHS)
+    for directory in REPORT_SOURCE_DIRS:
+        report_names.extend(p.relative_to(LAB).as_posix() for p in sorted((LAB / directory).rglob('*'))
+                            if p.is_file() and p.suffix in ('.py', '.md', '.json'))
+    report = {name: sha256(LAB / name) for name in sorted(set(report_names))}
     return {'evaluation_code_commit': git('rev-parse', 'HEAD'),
-            'evaluation_code_sha256': digest({p.relative_to(LAB).as_posix(): sha256(p)
-                                              for root in roots for p in root.rglob('*.py')}),
-            'evaluation_code_dirty': bool(git('status', '--porcelain', '--', 'tools/evaluation', 'legged_lab', 'rsl_rl/rsl_rl'))}
+            'evaluation_runtime_sha256': digest(runtime),
+            'evaluation_runtime_sources': runtime,
+            'evaluation_runtime_dirty': bool(git('status', '--porcelain', '--', *EVALUATION_RUNTIME_SOURCES)),
+            'report_code_sha256': digest(report),
+            'report_code_sources': report,
+            'report_code_dirty': bool(git('status', '--porcelain', '--', *REPORT_SOURCE_PATHS, *REPORT_SOURCE_DIRS))}
 
 
 def inspect_checkpoint(task, checkpoint, alias, stage='unknown', estimator=None, identity_manifest=None):
@@ -535,7 +576,7 @@ def register_model(root, identity):
 
 def evaluation_key(identity):
     keys = COMPATIBILITY + ('task_name', 'checkpoint_sha256', 'estimator_sha256', 'native_nominal_sha256',
-                           'agent_config_sha256', 'env_config_sha256', 'evaluation_code_sha256')
+                           'agent_config_sha256', 'env_config_sha256')
     fields = {k: identity[k] for k in keys}
     if identity.get('identity_schema_version', 1) >= 2:
         fields.update({k: identity.get(k) for k in ('native_capability_sha256', 'native_configuration_sha256',

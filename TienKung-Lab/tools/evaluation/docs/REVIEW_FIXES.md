@@ -17,7 +17,7 @@
 
 ## 可重复验证
 
-评测回归与相关原生契约测试合计 **135 项通过**；另外通过三个真实 NumPy 版本的独立兼容脚本、修改文件语法检查和 `git diff --check`。CPU stub、合成权重及 LP 单元测试均不替代真实 USD/PhysX 验收。
+评测回归与相关原生契约测试合计 **146 项通过**；另外通过三个真实 NumPy 版本的独立兼容脚本、修改文件语法检查和 `git diff --check`。CPU stub、合成权重及 LP 单元测试均不替代真实 USD/PhysX 验收。
 
 从 `TienKung-Lab` 执行：
 
@@ -48,3 +48,15 @@ NumPy 1.24.4 与 2.4.0 使用官方 PyPI wheel、校验官方 SHA 后安装在�
 旧模型没有训练批次/预算时保持未知，不从展示名、seed 或 checkpoint 文件名推断。同工程旧资源首次登记的 SHA 标记为 observed_at_registration；它只证明登记时的字节内容，不能倒推历史训练输入。迁移或补充身份使用 `configs/identity.example.yaml` 和 `--identity_manifest`。
 
 新任务身份、资源和预算均进入评测身份；原生环境、求解器、网络/runner 与评测源代码也纳入代码内容 SHA，代码或资源更改不能静默续入旧 run。
+
+## Evaluation Final Polish（2026-09-07）
+
+| 项目 | 最终修复 |
+|---|---|
+| 正式表隔离 | 正式结果必须同时为 final、`lite_full`、390 条，并与 prepared 的 150 个 E0 + 240 个 E1 manifest 逐项相同。`first_N_per_experiment` 进入 Development / Smoke Evaluation，模型状态区分 FULL_EVAL_COMPLETE、DEV_SUBSET_COMPLETE、PENDING_FULL_EVAL、PARTIAL 和 INVALID。 |
+| DOCX 完整性 | 模型表使用 9 个明确列宽；所有 Word 表在序列化前校验 header、宽度和每行 cell 数，禁止 `zip` 静默截列。 |
+| 坡面 origin | 每批固定坡面选择后分别更新 terrain 与 scene 的 origin tensor，并立即检查二者一致；reset 后原有 mesh、origin、signed slope 和 normal 断言继续执行。 |
+| 代码身份 | `evaluation_runtime_sha256` 改用明确的运行时文件 allowlist，进入评测 key 和兼容分组；报告、文档和测试归入 `report_code_sha256`，只作 provenance。历史 `BASELINE_IDENTITIES.json` 保留交付当时的旧字段，不改写成新证据；下一次登记将生成拆分后的身份。 |
+| Detector evidence | 真实 baseline source 必须匹配协议、指标、共同参考、physics profile、inference mode 和 runtime；full manifest 必须完全相同，开发 manifest 必须是 E0/E1 各自确定前 N 条的逐项精确子集。冻结 gate 会按 evaluation ID 重新验证 source 归档、trace SHA、subset、manifest 和实际物理 hash。 |
+
+新增 simulator-free 回归覆盖正式/开发/中间结果隔离、Word XML 9 列与防截断、两个独立 origin tensor 的同步、runtime/report hash 的 key 与兼容规则，以及 detector source 的合法开发子集和 manifest/metrics/physics/runtime/protocol 拒绝路径。

@@ -89,15 +89,18 @@ main(['report','--output_root',sys.argv[1]])
     subprocess.run([sys.executable, '-c', code, str(tmp_path)], env={**os.environ, 'PYTHONPATH': str(LAB / 'tools/evaluation')}, check=True, capture_output=True)
 
 
-def synthetic_run(tmp_path, alias='synthetic_A'):
+def synthetic_run(tmp_path, alias='synthetic_A', full=False):
     """Construct a marked synthetic in-memory result for report presentation only."""
     prepare(tmp_path)
     p, rows, info = load_prepared(tmp_path)
-    plans = [rows[0], next(r for r in rows if r['experiment'] == 'E1')]
+    plans = rows if full else [rows[0], next(r for r in rows if r['experiment'] == 'E1')]
     i = {**info, 'synthetic': True, 'model_alias': alias, 'method': 'ppo_plain', 'task_name': TASKS['ppo_plain'],
          'checkpoint_sha256': digest(alias), 'estimator_sha256': None, 'native_nominal_sha256': None,
-         'agent_config_sha256': 'test', 'env_config_sha256': 'test', 'evaluation_code_sha256': 'test',
-         'actual_physics_hash': 'synthetic_physics', 'training_iteration': 100, 'training_seed': 42, 'checkpoint_stage': 'intermediate'}
+         'agent_config_sha256': 'test', 'env_config_sha256': 'test',
+         'evaluation_runtime_sha256': 'test_runtime', 'report_code_sha256': 'test_report',
+         'actual_physics_hash': 'synthetic_physics', 'training_iteration': 100, 'training_seed': 42,
+         'checkpoint_stage': 'final' if full else 'intermediate',
+         'subset': 'lite_full' if full else 'first_1_per_experiment'}
     i['manifest_hash'] = digest(plans)
     path = tmp_path / 'synthetic_only' / alias
     path.mkdir(parents=True)
@@ -126,13 +129,12 @@ def test_synthetic_cannot_import_or_register(tmp_path):
 
 
 def test_synthetic_report_tables_pairing_and_docx(tmp_path):
-    run = synthetic_run(tmp_path)
-    run['identity']['checkpoint_stage'] = 'final'
+    run = synthetic_run(tmp_path, full=True)
     other = copy.deepcopy(run)
     other['id'] = 'synthetic_B'; other['identity']['model_alias'] = 'synthetic_B'; other['identity']['method'] = 'dwaq'
     blocks = [('text', 'SYNTHETIC TEST DATA — NOT EXPERIMENT RESULTS')] + report_blocks(tmp_path, [run, other], [], [run, other])
     text = markdown(blocks, tmp_path / 'report')
-    assert '共同成功 n' in text and '1/1 (1 pushed)' in text and '待评测' in text
+    assert '共同成功 n' in text and '240/240 (240 pushed)' in text and '待评测' in text
     assert 'SYNTHETIC TEST DATA' in text
     data = word_document(blocks)
     with zipfile.ZipFile(io.BytesIO(data)) as z:

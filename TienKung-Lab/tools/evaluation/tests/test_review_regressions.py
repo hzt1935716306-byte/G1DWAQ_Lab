@@ -235,10 +235,10 @@ def test_run_archive_revalidates_native_files_and_effective_inputs(checkpoint_fa
 
 
 def test_main_table_and_budget_lineage_selection(tmp_path, monkeypatch):
-    early = synthetic_run(tmp_path, 'early')
-    final = copy.deepcopy(early)
-    final['id'] = 'final'; final['identity'].update(checkpoint_stage='final', model_alias='final', training_iteration=9999,
-                                                  training_run_id='training-A', training_transitions=2400000)
+    early = synthetic_run(tmp_path, 'early', full=True)
+    early['identity']['checkpoint_stage'] = 'intermediate'
+    final = synthetic_run(tmp_path, 'final', full=True)
+    final['identity'].update(training_iteration=9999, training_run_id='training-A', training_transitions=2400000)
     early['identity'].update(training_run_id='training-A', training_transitions=240000, training_iteration=1000)
     repeat = copy.deepcopy(early)
     repeat['id'] = 'independent'; repeat['identity']['training_run_id'] = 'training-B'

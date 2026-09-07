@@ -345,6 +345,9 @@ def make_evaluation_environment(args, p, identity, snapshot):
             self.scene.terrain.terrain_types[:] = types
             origins = self.eval_origin_table[0, types]
             self.scene.terrain.env_origins[:] = origins
+            self.scene.env_origins[:] = origins
+            if not torch.allclose(self.scene.terrain.env_origins, self.scene.env_origins):
+                raise ValueError('Scene/terrain origins diverged after fixed-slope selection')
             self.eval_slopes[:] = torch.tensor([r['slope_deg'] for r in plans], device=self.device)
             self.eval_commands[:] = torch.tensor([[r['command_vx'], r['command_vy'], r['command_yaw']] for r in plans], device=self.device)
             self.reset(ids)
@@ -465,6 +468,7 @@ def execute_run(args):
     if not (root / 'prepared.json').exists():
         prepare(root, args.protocol)
     p, manifest, prepared = load_prepared(root)
+    full_manifest = manifest
     identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage,
                                   args.estimator_checkpoint, args.identity_manifest)
     snapshot = snapshot_checkpoint(root, identity)
@@ -484,11 +488,8 @@ def execute_run(args):
         if not gate_path.exists():
             raise ValueError('Frozen protocol requires manually approved detector validation evidence')
         gate = read_json(gate_path)
-        if gate.get('status') != 'PASSED' or not gate.get('reviewer') or len(gate.get('reviewed_traces', [])) < 20:
-            raise ValueError('Detector gate must include reviewer and at least 20 reviewed trace SHAs')
-        for field in ('manifest_hash', 'metrics_version', 'metrics_config_hash', 'metrics_reference_sha256', 'physics_profile_hash'):
-            if gate.get(field) != prepared[field]:
-                raise ValueError('Detector gate belongs to a different protocol/metrics configuration')
+        from g1_recovery_report import validate_detector_gate
+        validate_detector_gate(root, p, full_manifest, prepared, identity, gate)
     identity['trials'] = len(manifest)
     key = evaluation_key(identity)
     with lock(root / '.run-selection.lock'):

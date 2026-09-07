@@ -77,7 +77,7 @@ python tools/evaluation/g1_recovery_eval.py run \
 
 Baseline/RL-only 不传 `--estimator_checkpoint`，不创建估计器或 certificate worker。PPO 使用原生 ActorCritic；DWAQ 使用原生 encoder/latent/history/Actor；Plane 使用原生冻结估计器和 context 更新链。全部 `eval()` / 无梯度，权重严格加载并检查没有变化。
 
-小规模开发验收可附 `--trial_limit 2`，表示 **E0、E1 各取固定前 2 条**，形成单独 manifest hash，不会伪装成完整 Lite 或并入全量表。完整协议保持 `1.0-dev`，直到人工审查至少 20 条覆盖两个 baseline 的推扰轨迹和无扰动片段。若正常行走大量不达标，停止冻结，不自动扩大阈值。
+小规模开发验收可附 `--trial_limit 2`，表示 **E0、E1 各取固定前 2 条**，形成单独 manifest hash。`first_N_per_experiment` 的 COMPLETE 只显示为 `DEV_SUBSET_COMPLETE`，进入 `Development / Smoke Evaluation`，不进入正式 E0/E1 主表、累计曲线、baseline 比较或内部消融。只有 `checkpoint_stage=final`、`subset=lite_full` 且 manifest 与 prepared 中 150 个 E0 + 240 个 E1 逐项完全相同的结果才是 `FULL_EVAL_COMPLETE`。完整协议保持 `1.0-dev`，直到人工审查至少 20 条覆盖两个 baseline 的推扰轨迹和无扰动片段。若正常行走大量不达标，停止冻结，不自动扩大阈值。
 
 同身份完整评测默认直接返回 `ALREADY_COMPLETE`。中断只补尚未提交的 trial；已有 trial 不作为额外样本。显式复测使用 `--new_attempt`，旧 attempt 保留在历史中，主表只取一个 attempt。含执行错误的 attempt 不能写完成标记，重试错误 trial 应创建新 attempt。
 
@@ -118,7 +118,7 @@ python tools/evaluation/g1_recovery_eval.py import-results \
   --output_root experiments/g1_recovery_eval --update_report
 ```
 
-只接收有完整 SHA 索引的真实结果，按身份与内容去重；同名不覆盖。不同协议、指标、manifest、实际物理参数或推理模式分别成组；PARTIAL/INVALID 单列，不参与排名。主表只取显式 final；intermediate 和 unknown 在演进章节。等预算消融要求 final、相同 seed、已知且相等的累计 transition 数；不同/未知预算明确标注。上一 checkpoint 必须属于同一 `training_run_id`、方法和 seed。恢复时间只比较双方成功的 trial 交集；累计曲线保留失败分母。W&B 可附 `--wandb`，网络失败只写独立上传状态，不破坏已封存结果。
+只接收有完整 SHA 索引的真实结果，按身份与内容去重；同名不覆盖。不同协议、指标、manifest、实际物理参数、推理模式或 evaluation runtime 分别成组；PARTIAL/INVALID 单列，不参与排名。正式主表只取显式 final、`lite_full` 且逐项匹配 prepared 完整 manifest 的结果；intermediate、unknown 和开发子集在各自章节展示。等预算消融要求 final、相同 seed、已知且相等的累计 transition 数；不同/未知预算明确标注。上一 checkpoint 必须属于同一 `training_run_id`、方法和 seed。恢复时间只比较双方成功的 trial 交集；累计曲线保留失败分母。W&B 可附 `--wandb`，网络失败只写独立上传状态，不破坏已封存结果。
 
 人工分析写到 `report/notes.yaml`，以 model_alias/evaluation_id 关联。每次重建备份旧 MD/Word；Markdown 引用的本地图片复制到该历史版本的 `assets/`，链接随之改写，删除当前 `figures/` 后历史仍独立可读。Word 图片原本即内嵌。检测到 Word/MD 被直接修改时，先备份并把原文迁移到 notes 的 `migrated_document_edits`。
 
@@ -173,4 +173,5 @@ python tools/evaluation/g1_recovery_eval.py reanalyze \
 - DWAQ 原生 VAE 推理仍随机采样；以 reset_seed、trial 内步号和 `native_dwaq_v1` 固定每次随机流，保留原生结构与采样，避免 batch/续测改变 latent 样本。
 - TerrainImporter 用确定列生成 mesh，生成后关闭 curriculum；评测子类绕过 matched 的地形重建构造函数，每次 reset 校验 USD mesh、origin、法向量和 signed slope。
 - 物理参数实际快照含资产、质量、惯量、驱动刚度/阻尼、接触材料和仿真步长。记录 context 的有效性，不因 certificate 理论域退出删除物理 trial。
-- 冻结版必须另附 `detector_validation.json`：`status: PASSED`、reviewer、至少 20 条 reviewed_traces 和 manifest/metrics/reference/physics 哈希。本框架不会自动把开发测试标成实测验收通过。
+- `evaluation_runtime_sha256` 只覆盖显式列出的原生推理、trial 执行、物理判断和恢复指标源文件，并进入 evaluation key 与严格兼容性；`report_code_sha256` 覆盖报告、文档和测试，仅记录 provenance，不触发 390 条物理 trial 重跑。
+- 冻结版必须另附 `detector_validation.json`：`status: PASSED`、reviewer、至少 20 条来自两个 baseline 的真实 reviewed trace SHA，以及 protocol、metrics、reference、physics、inference 和 evaluation runtime 身份。每个 source evaluation ID、subset、manifest hash 和实际物理 hash 都会重新打开归档验证；开发子集必须逐项等于当前 prepared full manifest 中 E0/E1 各自确定的前 N 条。1.0-dev 到 1.0 只允许这个精确的协议版本冻结差异。本框架不会自动把开发测试标成实测验收通过。

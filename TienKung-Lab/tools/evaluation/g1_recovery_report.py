@@ -21,7 +21,7 @@ import numpy as np
 import yaml
 
 from g1_recovery_protocol import (
-    COMPATIBILITY, TASKS, RunStore, atomic_write, compatible, digest, evaluation_key, jsonl,
+    COMPATIBILITY, TASKS, RunStore, atomic_write, code_identity, compatible, digest, evaluation_key, jsonl,
     load_prepared, load_yaml, lock, nominal_reference, read_json, read_jsonl, sha256, write_json,
 )
 from g1_recovery_metrics import METRICS_VERSION, RecoveryDetector, TrialMachine, paired_comparison, summarize
@@ -49,7 +49,23 @@ def table(headers, rows):
     return ('table', headers, [[str(x) for x in row] for row in rows])
 
 
-def load_runs(root, final_only=True):
+def is_full_lite_run(run, full_manifest):
+    """Formal tables require the exact prepared 150 + 240 trial assignment."""
+    manifest = run['manifest']
+    return (run['identity'].get('checkpoint_stage') == 'final'
+            and run['identity'].get('subset') == 'lite_full'
+            and len(manifest) == 390
+            and sum(row['experiment'] == 'E0' for row in manifest) == 150
+            and sum(row['experiment'] == 'E1' for row in manifest) == 240
+            and manifest == full_manifest)
+
+
+def is_development_subset(run):
+    return bool(re.fullmatch(r'first_[1-9][0-9]*_per_experiment', run['identity'].get('subset', '')))
+
+
+def load_runs(root, formal_only=True):
+    _, full_manifest, _ = load_prepared(root)
     runs, excluded, seen = [], [], set()
     for path in sorted((root / 'runs').glob('*')):
         if not path.is_dir() or path.name.startswith('.'):
@@ -64,6 +80,8 @@ def load_runs(root, final_only=True):
                                  f"成功 {s['successes']}，已执行失败 {s['failures_executed']}，pending {s['pending']}"))
                 continue
             identity, records = RunStore(path).validate()
+            if not identity.get('evaluation_runtime_sha256'):
+                raise ValueError('Legacy result lacks evaluation_runtime_sha256; reevaluation required')
             if identity['method'].startswith('context') and identity.get('identity_schema_version', 1) < 2:
                 raise ValueError('Legacy Plane result lacks SHA-bound native solver inputs; reevaluation required')
             content = sha256(path / 'completion.json')
@@ -87,8 +105,8 @@ def load_runs(root, final_only=True):
         if key not in selected or rank(run) > rank(selected[key]):
             selected[key] = run
     selected_runs = list(selected.values())
-    return ([r for r in selected_runs if r['identity'].get('checkpoint_stage') == 'final']
-            if final_only else selected_runs), excluded, runs
+    return ([r for r in selected_runs if is_full_lite_run(r, full_manifest)]
+            if formal_only else selected_runs), excluded, runs
 
 
 def compatible_run(a, b):
@@ -152,13 +170,14 @@ def curve_plots(root, group, group_id):
 
 
 def report_blocks(root, runs, excluded, history, plots=True):
-    runs = [r for r in runs if r['identity'].get('checkpoint_stage') == 'final']
     p, manifest, prepared = load_prepared(root)
+    runs = [r for r in runs if is_full_lite_run(r, manifest)]
+    development = [r for r in history if is_development_subset(r)]
     models = load_yaml(root / 'models.yaml')['models']
     blocks = [('heading', 1, 'G1 可重复评测实验记录'),
               ('heading', 2, '当前结论摘要'),
-              ('text', f"主表 final 评测：{len(runs)}；全部完成记录：{len(history)}。" +
-               ('当前没有可进入 final 主表的结果。' if not runs else
+              ('text', f"正式 full-Lite final 评测：{len(runs)}；开发子集：{len(development)}；全部完成记录：{len(history)}。" +
+               ('当前没有可进入正式主表的结果。' if not runs else
                 '以下仅为当前 checkpoint 的观察结果，不代表多 seed 稳定优势或理论证明。')),
               ('heading', 2, '协议与版本'),
               ('text', f"{p['protocol_id']} / {p['protocol_version']}；指标 {p['metrics']['version']}。"),
@@ -176,20 +195,37 @@ def report_blocks(root, runs, excluded, history, plots=True):
         if not (path.parent / 'completion.json').exists():
             raw = read_json(path)
             status_path = path.parent / 'summary.json'
-            partial_models[raw['checkpoint_sha256']] = read_json(status_path).get('status', 'PARTIAL') if status_path.exists() else 'PARTIAL'
+            status = read_json(status_path).get('status', 'PARTIAL') if status_path.exists() else 'PARTIAL'
+            partial_models[raw['checkpoint_sha256']] = 'INVALID' if status == 'INVALID' else 'PARTIAL'
     for model in models:
-        complete = [r for r in history if r['identity']['checkpoint_sha256'] == model.get('checkpoint_sha256')]
+        full_complete = [r for r in runs if r['identity']['checkpoint_sha256'] == model.get('checkpoint_sha256')]
+        dev_complete = [r for r in development if r['identity']['checkpoint_sha256'] == model.get('checkpoint_sha256')]
+        status = ('FULL_EVAL_COMPLETE' if full_complete else
+                  partial_models.get(model.get('checkpoint_sha256')) or
+                  ('DEV_SUBSET_COMPLETE' if dev_complete else 'PENDING_FULL_EVAL'))
         rows.append([model['model_alias'], model['task_name'], model.get('training_iteration', 'unknown'),
                      model.get('training_run_id') or '未知', fmt(model.get('training_transitions')),
                      model.get('training_seed', 'unknown'), model.get('checkpoint_stage', 'unknown'),
-                     'COMPLETE' if complete else partial_models.get(model.get('checkpoint_sha256'), model['status']), (model.get('checkpoint_sha256') or 'N/A')[:12]])
+                     status, (model.get('checkpoint_sha256') or 'N/A')[:12]])
     blocks.append(table(['模型', 'Task', '迭代', '训练批次 ID', 'Transitions', 'Seed', '阶段', '状态', 'SHA 前缀'], rows))
+    blocks += [('heading', 2, 'Development / Smoke Evaluation'),
+               ('text', '开发子集仅用于流水线和检测器人工检查，不进入 E0/E1 正式主表、累计曲线、baseline 比较或内部消融排名。')]
+    if development:
+        blocks.append(table(['模型', '评测 ID', '阶段', 'Subset', 'E0 执行/指定', 'E1 执行/指定', '状态'], [[
+            run['identity']['model_alias'], run['id'], run['identity'].get('checkpoint_stage', 'unknown'),
+            run['identity']['subset'],
+            f"{run['summary']['E0']['moving']['executed'] + run['summary']['E0']['standing']['executed']}/"
+            f"{run['summary']['E0']['moving']['designated'] + run['summary']['E0']['standing']['designated']}",
+            f"{run['summary']['E1']['executed']}/{run['summary']['E1']['designated']}", 'DEV_SUBSET_COMPLETE']
+            for run in development]))
+    else:
+        blocks.append(('text', '尚无完成的开发子集。'))
     groups = defaultdict(list)
     for run in runs:
         i = run['identity']
         group_id = digest({k: i[k] for k in COMPATIBILITY} | {'actual_physics_hash': i['actual_physics_hash']})[:12]
         groups[group_id].append(run)
-    blocks += [('heading', 2, 'E0 正常运动总表'), ('text', '主表仅包含显式 final 模型；intermediate/unknown 在演进章节展示。Moving 与 standing 分开；RMSE 单位 m/s，姿态波动单位 rad。')]
+    blocks += [('heading', 2, 'E0 正常运动总表'), ('text', '主表仅包含显式 final 且完整执行 150 个 E0 + 240 个 E1 的 Lite 模型；开发子集和 intermediate/unknown 不参与。Moving 与 standing 分开；RMSE 单位 m/s，姿态波动单位 rad。')]
     if not runs:
         blocks.append(('text', '待评测：E0 每模型 150 个指定 trial。'))
     for gid, group in groups.items():
@@ -353,6 +389,17 @@ def markdown(blocks, report_dir):
     return '\n'.join(lines)
 
 
+def table_widths(headers, weights=None):
+    if weights is None:
+        weights = ([1.7, 2.6, .6, 1.4, .8, .55, .65, 1.35, 1.0]
+                   if headers[0:2] == ['模型', 'Task'] else [1] * len(headers))
+    if len(weights) != len(headers):
+        raise ValueError(f'Table column width count {len(weights)} does not match header count {len(headers)}')
+    if not weights or any(weight <= 0 for weight in weights):
+        raise ValueError('Table column weights must be positive')
+    return [int(14500 * weight / sum(weights)) for weight in weights]
+
+
 def word_document(blocks):
     """OOXML with landscape A4, fixed table width, CJK font, image captions and PAGE field."""
     ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -369,10 +416,11 @@ def word_document(blocks):
         elif b[0] == 'text':
             body.append(paragraph(b[1]))
         elif b[0] == 'table':
-            weights = [2.2, 3.5, .65, .6, .8, 1.9, 1.3] if b[1][0:2] == ['模型', 'Task'] else [1] * len(b[1])
-            widths = [int(14500 * w / sum(weights)) for w in weights]
+            widths = table_widths(b[1])
             rows = []
             for j, row in enumerate([b[1]] + b[2]):
+                if len(row) != len(b[1]):
+                    raise ValueError(f'Table row has {len(row)} cells but header has {len(b[1])}')
                 cells = ''.join(f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>{paragraph(v)}</w:tc>' for v, width in zip(row, widths))
                 rows.append('<w:tr>' + ('<w:trPr><w:tblHeader/></w:trPr>' if j == 0 else '') + cells + '</w:tr>')
             body.append('<w:tbl><w:tblPr><w:tblW w:w="14500" w:type="dxa"/><w:tblLayout w:type="fixed"/>'
@@ -544,14 +592,117 @@ def upload_wandb(run, protocol):
         return False
 
 
+DETECTOR_COMPATIBILITY = ('protocol_hash', 'metrics_version', 'metrics_config_hash',
+                          'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode')
+
+
+def detector_protocol_hashes(protocol, prepared):
+    hashes = {prepared['protocol_hash']}
+    if protocol['protocol_version'] == '1.0':
+        development = json.loads(json.dumps(protocol))
+        development['protocol_version'] = '1.0-dev'
+        hashes.add(digest(development))
+    return hashes
+
+
+def validate_detector_source(run, full_manifest, prepared, evaluation_runtime_sha256,
+                             allowed_protocol_hashes=None):
+    identity, source_manifest = run['identity'], run['manifest']
+    if identity.get('synthetic'):
+        raise ValueError('Synthetic run is not detector evidence')
+    if identity.get('method') not in ('ppo_plain', 'dwaq'):
+        raise ValueError('Detector evidence must come from a baseline method')
+    if identity.get('checkpoint_stage') != 'final':
+        raise ValueError('Detector evidence must use an explicitly final baseline checkpoint')
+    allowed_protocol_hashes = allowed_protocol_hashes or {prepared['protocol_hash']}
+    if identity.get('protocol_hash') not in allowed_protocol_hashes:
+        raise ValueError('Detector source protocol_hash mismatch')
+    for field in DETECTOR_COMPATIBILITY[1:]:
+        if identity.get(field) != prepared[field]:
+            raise ValueError(f'Detector source {field} mismatch')
+    if identity.get('evaluation_runtime_sha256') != evaluation_runtime_sha256:
+        raise ValueError('Detector source evaluation_runtime_sha256 mismatch')
+    if not identity.get('actual_physics_hash'):
+        raise ValueError('Detector source lacks actual_physics_hash')
+    if identity.get('manifest_hash') != digest(source_manifest):
+        raise ValueError('Detector source manifest identity mismatch')
+    subset = identity.get('subset')
+    if subset == 'lite_full':
+        if source_manifest != full_manifest:
+            raise ValueError('Detector full manifest differs from current prepared manifest')
+    else:
+        match = re.fullmatch(r'first_([1-9][0-9]*)_per_experiment', subset or '')
+        if not match:
+            raise ValueError('Detector source subset is not a supported deterministic subset')
+        count = int(match.group(1))
+        expected = [row for experiment in ('E0', 'E1')
+                    for row in [item for item in full_manifest if item['experiment'] == experiment][:count]]
+        if source_manifest != expected:
+            raise ValueError('Detector development manifest is not the exact prepared deterministic subset')
+    return {'evaluation_id': run['id'], 'method': identity['method'], 'subset': subset,
+            'manifest_hash': identity['manifest_hash'], 'actual_physics_hash': identity['actual_physics_hash'],
+            'protocol_hash': identity['protocol_hash'],
+            'evaluation_runtime_sha256': identity['evaluation_runtime_sha256']}
+
+
+def validate_detector_gate(root, protocol, full_manifest, prepared, identity, gate):
+    if gate.get('status') != 'PASSED' or not gate.get('reviewer'):
+        raise ValueError('Detector gate must include reviewer and at least 20 reviewed trace SHAs')
+    runtime_hash = identity['evaluation_runtime_sha256']
+    allowed = detector_protocol_hashes(protocol, prepared)
+    if gate.get('protocol_hash') not in allowed:
+        raise ValueError('Detector gate belongs to a different protocol')
+    for field in ('manifest_hash', 'metrics_version', 'metrics_config_hash',
+                  'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode'):
+        if gate.get(field) != prepared[field]:
+            raise ValueError('Detector gate belongs to a different protocol/metrics/physics configuration')
+    if gate.get('evaluation_runtime_sha256') != runtime_hash:
+        raise ValueError('Detector gate belongs to a different evaluation runtime')
+    source_entries = gate.get('sources')
+    if not source_entries:
+        raise ValueError('Detector gate has no revalidatable source evaluations')
+    available_traces, validated = set(), []
+    for claimed in source_entries:
+        if Path(claimed['evaluation_id']).name != claimed['evaluation_id']:
+            raise ValueError('Detector source evaluation ID is unsafe')
+        source_path = Path(root) / 'runs' / claimed['evaluation_id']
+        if not (source_path / 'completion.json').exists():
+            raise ValueError(f'Detector source is not sealed COMPLETE: {source_path.name}')
+        source_identity, records = RunStore(source_path).validate()
+        source = {'id': source_path.name, 'path': source_path, 'identity': source_identity,
+                  'records': records, 'manifest': read_jsonl(source_path / 'manifest_snapshot.jsonl')}
+        actual = validate_detector_source(source, full_manifest, prepared, runtime_hash, allowed)
+        if actual != claimed:
+            raise ValueError(f'Detector source metadata changed: {source_path.name}')
+        validated.append(actual)
+        available_traces.update(record['trace_sha256'] for record in records)
+    reviewed = {item.get('trace_sha256') if isinstance(item, dict) else item
+                for item in (gate.get('reviewed_traces') or [])}
+    if len(reviewed) < 20:
+        raise ValueError('Detector gate must include at least 20 distinct reviewed trace SHAs')
+    if None in reviewed or not reviewed.issubset(available_traces):
+        raise ValueError('Detector gate references a trace outside its validated sources')
+    if {source['method'] for source in validated} != {'ppo_plain', 'dwaq'}:
+        raise ValueError('Detector gate must include both baseline methods')
+    return validated
+
+
 def detector_validation_report(root):
     """Evidence inventory for manual detector acceptance; never auto-relax thresholds/freeze."""
     root = Path(root)
     p, manifest, info = load_prepared(root)
-    runs, excluded, _ = load_runs(root, final_only=False)
-    candidates = [r for r in runs if r['identity']['method'] in ('ppo_plain', 'dwaq')
-                  and r['identity']['metrics_config_hash'] == info['metrics_config_hash']
-                  and r['identity']['metrics_reference_sha256'] == info['metrics_reference_sha256']]
+    runs, excluded, _ = load_runs(root, formal_only=False)
+    runtime_hash = code_identity()['evaluation_runtime_sha256']
+    allowed = detector_protocol_hashes(p, info)
+    candidates, rejected, sources = [], [], []
+    for run in runs:
+        if run['identity'].get('method') not in ('ppo_plain', 'dwaq'):
+            continue
+        try:
+            sources.append(validate_detector_source(run, manifest, info, runtime_hash, allowed))
+            candidates.append(run)
+        except ValueError as exc:
+            rejected.append({'evaluation_id': run['id'], 'reason': str(exc)})
     rows, push_ids = [], []
     for run in candidates:
         intervals, passed = 0, 0
@@ -568,8 +719,15 @@ def detector_validation_report(root):
                                  'trace_sha256': trial['trace_sha256']})
         rows.append([run['identity']['model_alias'], intervals, passed,
                      fmt(passed / intervals if intervals else None, True)])
-    evidence = {k: info[k] for k in ('manifest_hash', 'metrics_version', 'metrics_config_hash', 'metrics_reference_sha256', 'physics_profile_hash')}
+    evidence = {k: info[k] for k in ('protocol_hash', 'manifest_hash', 'metrics_version', 'metrics_config_hash',
+                                     'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode')}
     evidence.update(status='PENDING_MANUAL_VALIDATION' if push_ids else 'NOT_RUN',
+                    evaluation_runtime_sha256=runtime_hash, sources=sources,
+                    source_evaluation_ids=[source['evaluation_id'] for source in sources],
+                    source_subsets={source['evaluation_id']: source['subset'] for source in sources},
+                    source_manifest_hashes={source['evaluation_id']: source['manifest_hash'] for source in sources},
+                    actual_physics_hashes={source['evaluation_id']: source['actual_physics_hash'] for source in sources},
+                    rejected_sources=rejected, load_exclusions=excluded,
                     pushed_trajectories=push_ids, minimum_required=20, automatic_freeze=False)
     blocks = [('heading', 1, 'DETECTOR VALIDATION / 恢复检测器验收'),
               ('text', '状态：' + evidence['status']),
