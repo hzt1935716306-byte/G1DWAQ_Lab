@@ -258,7 +258,6 @@ def make_evaluation_environment(args, p, identity, snapshot):
     if hasattr(cfg, 'debug_save_num'):
         cfg.debug_save_num = 0
     if method.startswith('context'):
-        cfg.plane_recovery.slopes_degrees = tuple(p['slopes_deg'])
         cfg.push_curriculum.enable_push_curriculum = False
         # Preserve context/reward/certificate cadence, including reward-off certificate.
     metrics_cfg = p['metrics']
@@ -352,6 +351,19 @@ def make_evaluation_environment(args, p, identity, snapshot):
 
         def update_terrain_levels(self, env_ids):
             return {}  # Evaluation-only, including the constructor's first reset.
+
+        def _terrain_log(self, level):
+            # Plane's training logger requires all seven curriculum slopes.
+            # Evaluation uses fixed manifest columns, independent of that native
+            # configuration and learning iteration; report their actual occupancy.
+            slopes = p['slopes_deg']
+            types = self.scene.terrain.terrain_types
+            log = {'EvaluationTerrain/curriculum_enabled': 0.,
+                   'EvaluationTerrain/max_abs_slope_deg': float(max(map(abs, slopes)))}
+            for index, slope in enumerate(slopes):
+                log[f'EvaluationTerrain/P_slope_{slope:g}_deg'] = float(
+                    (types == index).to(torch.float32).mean().item())
+            return log
 
         def get_recovery_plane_geometry(self):
             a = torch.deg2rad(self.eval_slopes)

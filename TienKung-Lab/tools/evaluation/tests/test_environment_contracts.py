@@ -87,6 +87,41 @@ def test_commands_are_reapplied_without_sampling():
     assert torch.equal(cmd.vel_command_b, cmd._env.eval_commands)
 
 
+@pytest.mark.parametrize('training_level', [0, 1, 2])
+def test_fixed_plane_logging_does_not_require_training_curriculum_slopes(training_level):
+    cls = env_class(); env = cls.__new__(cls)
+    native_slopes = (-15., -10., -5., 0., 5., 10., 15.)
+    env.cfg = NS(plane_recovery=NS(slopes_degrees=native_slopes))
+    env.scene = NS(terrain=NS(terrain_types=torch.tensor([0, 0, 1, 2])),
+                   env_origins=torch.zeros(4, 3))
+    env.num_envs = 4; env.device = 'cpu'
+    env.eval_slopes = torch.tensor([-10., -10., 0., 10.])
+    env.eval_history_calls = 7
+    log = env._terrain_log(training_level)
+    assert log == {'EvaluationTerrain/curriculum_enabled': 0.,
+                   'EvaluationTerrain/max_abs_slope_deg': 10.,
+                   'EvaluationTerrain/P_slope_-10_deg': .5,
+                   'EvaluationTerrain/P_slope_0_deg': .25,
+                   'EvaluationTerrain/P_slope_10_deg': .25}
+    assert env.cfg.plane_recovery.slopes_degrees == native_slopes
+    assert env.eval_history_calls == 7
+    normals, _, valid = env.get_recovery_plane_geometry()
+    assert valid.all()
+    torch.testing.assert_close(torch.rad2deg(torch.atan2(-normals[:, 0], normals[:, 2])), env.eval_slopes)
+    # Exercise the production configuration overrides, not a copied fixture.
+    tree = ast.parse((LAB / 'tools/evaluation/g1_recovery_eval.py').read_text())
+    function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                    and n.name == 'make_evaluation_environment')
+    context = next(n for n in function.body if isinstance(n, ast.If)
+                   and ast.unparse(n.test) == "method.startswith('context')")
+    cfg = NS(plane_recovery=NS(slopes_degrees=native_slopes),
+             push_curriculum=NS(enable_push_curriculum=True))
+    exec(compile(ast.Module(body=[context], type_ignores=[]), 'actual_context_overrides', 'exec'),
+         dict(cfg=cfg, method='context_reward', p={'slopes_deg': [-10, 0, 10]}))
+    assert cfg.plane_recovery.slopes_degrees == native_slopes
+    assert cfg.push_curriculum.enable_push_curriculum is False
+
+
 def test_gt_metrics_are_not_actor_arguments():
     tree = ast.parse((LAB / 'tools/evaluation/g1_recovery_eval.py').read_text())
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
