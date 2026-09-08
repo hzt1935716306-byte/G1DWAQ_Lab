@@ -47,84 +47,89 @@ def compare(left,right,plans,model):
         if changed:diffs.append(dict(trial_id=tid,fields=sorted(set(changed)),left={k:a.get(k) for k in fields},right={k:b.get(k) for k in fields}))
     return dict(passed=not diffs,trials=len(plans),different_trials=len(diffs),field_counts=counts,differences=diffs,left=str(left),right=str(right),tolerances={'time_s':1e-7,'margin':1e-6},criterion='Conservative exact discrete outcomes and event timeline; any difference retains64')
 
+def execute(spec,model,n,stage):
+    target=ROOT/stage/model/f'n{n}';log=ROOT/f'{stage}_{model}_n{n}.log'
+    if target.exists() or log.exists():raise ValueError('Do not overwrite performance attempts')
+    command=[PYTHON,'-u','-B',str(LAB/'tools/evaluation/g1_batch_profile.py'),'run','--model',model,'--num_envs',str(n),'--device','cuda:0']
+    if stage=='screen':command+=['--screen_seconds',str(spec['screen_seconds'])]
+    start=time.time();reason=None
+    with log.open('xb',buffering=0) as stream:
+        proc=subprocess.Popen(command,cwd=LAB,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+        write_json(ROOT/'execution_status.json',dict(status='PERFORMANCE_ONLY_RUNNING',pid=os.getpid(),stage=stage,model=model,n=n,child_pid=proc.pid))
+        while proc.poll() is None:
+            if (target/'performance_summary.json').exists():
+                try:proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:stop_owned(proc)
+                break
+            if (target/'failure.json').exists():
+                reason=read_json(target/'failure.json')['error'];stop_owned(proc);break
+            progress=target/'progress.json'
+            if progress.exists():
+                state=read_json(progress);age=time.time()-state.get('updated_unix',progress.stat().st_mtime)
+                if state['status']=='INITIALIZING' and time.time()-start>900:reason='INITIALIZATION_TIMEOUT'
+                elif state['status']=='RUNNING' and age>spec['hang_no_step_seconds']:reason='HANG_NO_PROGRESS'
+                elif state['status']=='VALIDATING' and age>900:reason='AUDIT_OR_SAVE_TIMEOUT'
+                if reason:stop_owned(proc);break
+            elif time.time()-start>900:reason='STARTUP_TIMEOUT';stop_owned(proc);break
+            time.sleep(3)
+    if (target/'performance_summary.json').exists():return read_json(target/'performance_summary.json')
+    samples=read_jsonl(target/'telemetry.jsonl') if (target/'telemetry.jsonl').exists() else []
+    values=lambda k:[x[k] for x in samples if k in x]
+    progress=read_json(target/'progress.json') if (target/'progress.json').exists() else {}
+    tail=log.read_text(errors='replace')[-20000:]
+    result=dict(status='PERFORMANCE_ONLY_FAILED',reason=reason or 'PROCESS_EXIT_WITHOUT_COMPLETION',returncode=proc.returncode,wall_time_s=time.time()-start,
+        OOM=any(x in tail.lower() for x in ('out of memory','cuda_error_out_of_memory')),
+        formal_statistics_eligible=False,last_progress=progress,
+        gpu_utilization_mean_percent=float(np.mean(values('gpu_utilization_percent'))) if values('gpu_utilization_percent') else None,
+        peak_vram_mib=max(values('gpu_vram_mib'),default=None),peak_ram_bytes=max(values('process_tree_ram_bytes'),default=None),
+        cpu_utilization_mean_percent=float(np.mean(values('cpu_percent'))) if values('cpu_percent') else None,
+        certificate_query_count=progress.get('certificate_query_count'),certificate_profile=progress.get('certificate_profile'),
+        peak_sampled_queued_chunks=max(values('certificate_queued_chunks_sample'),default=None),
+        EVALUATION_ERROR=sum(read_json(x)['status']=='EVALUATION_ERROR' for x in (target/'trial_records').glob('*.json')))
+    write_json(ROOT/f'{stage}_{model}_n{n}_stopped.json',result)
+    return result
+
+def choose_candidate(spec,summaries):
+    shared=set.intersection(*(set(summaries[m]) for m in spec['models']))
+    eligible=[n for n in shared if all(summaries[m][n]['warmed_policy_steps']>=100 and
+        (not m.startswith('context') or summaries[m][n]['certificate_query_count']>0) for m in spec['models'])]
+    gains={n:math.prod(summaries[m][n]['physics_env_steps_per_s']/summaries[m][64]['physics_env_steps_per_s'] for m in spec['models'])**.5 for n in eligible} if 64 in eligible else {}
+    candidate=max(gains,key=gains.get) if gains else 64
+    return (candidate if gains.get(candidate,0)>=1.1 else 64),gains
+
 def main():
     gate=read_json(COHORT/'development/profiling_gate_status.json')
     if gate['status']!='READY_FOR_PERFORMANCE_ONLY':raise ValueError('DWAQ must finish and seal before profiling')
-    spec=prepare();write_json(ROOT/'execution_status.json',dict(status='PERFORMANCE_ONLY_RUNNING',pid=os.getpid()))
-    summaries={};stops={}
+    spec=prepare();summaries={};stops={}
     for model in spec['models']:
-        summaries[model]={};baseline_batches={}
+        summaries[model]={}
         for n in spec['candidates']:
-            target=ROOT/model/f'n{n}';log=ROOT/f'{model}_n{n}.log'
-            if target.exists():raise ValueError('Do not overwrite performance attempts')
-            command=[PYTHON,'-u','-B',str(LAB/'tools/evaluation/g1_batch_profile.py'),'run','--model',model,'--num_envs',str(n),'--device','cuda:0']
-            start=time.time();reason=None;completed_seen=0
-            with log.open('xb',buffering=0) as stream:
-                proc=subprocess.Popen(command,cwd=LAB,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
-                write_json(ROOT/'execution_status.json',dict(status='PERFORMANCE_ONLY_RUNNING',pid=os.getpid(),model=model,n=n,child_pid=proc.pid))
-                while proc.poll() is None:
-                    summary=target/'performance_summary.json';failure=target/'failure.json';progress=target/'progress.json'
-                    if summary.exists():
-                        for _ in range(6):
-                            if proc.poll() is not None:break
-                            time.sleep(10)
-                        if proc.poll() is None:stop_owned(proc)
-                        break
-                    if failure.exists():reason='EVALUATION_ERROR: '+read_json(failure)['error'];stop_owned(proc);break
-                    if progress.exists():
-                        s=read_json(progress);age=time.time()-s.get('updated_unix',progress.stat().st_mtime)
-                        if age>spec['hang_no_step_seconds'] and s['status']!='INITIALIZING':reason='HANG_NO_PROGRESS';stop_owned(proc);break
-                        if s['status']=='INITIALIZING' and time.time()-start>900:reason='INITIALIZATION_TIMEOUT';stop_owned(proc);break
-                        # Compare completed physical batches at the same fixed prefix; no comparison during replay.
-                        if n>64 and s['status']=='RUNNING':
-                            metrics=sorted((target/'batch_metrics').glob('*.json'))
-                            if metrics:
-                                v=read_json(metrics[-1]);count=v['completed'];base=baseline_batches.get(count)
-                                if count>=spec['minimum_slowdown_completed'] and base and v['elapsed_s']>spec['slowdown_ratio']*base:
-                                    reason='CLEARLY_SLOWER_THAN64_AT_SAME_PREFIX';stop_owned(proc);break
-                    time.sleep(5)
-            if not (target/'performance_summary.json').exists():
-                reason=reason or 'PROCESS_EXIT_WITHOUT_PERFORMANCE_COMPLETION'
-                stopped=dict(reason=reason,returncode=proc.returncode,wall_time_s=time.time()-start,formal_statistics_eligible=False,next_larger_candidates_skipped=True)
-                if (target/'progress.json').exists():stopped['last_progress']=read_json(target/'progress.json')
-                samples=read_jsonl(target/'telemetry.jsonl') if (target/'telemetry.jsonl').exists() else []
-                values=lambda k:[x[k] for x in samples if k in x]
-                peak=lambda k:max(values(k),default=None)
-                mean=lambda k:float(np.mean(values(k))) if values(k) else None
-                records=[read_json(x) for x in (target/'trial_records').glob('*.json')]
-                last=stopped.get('last_progress',{});elapsed=last.get('execution_wall_s')
-                text=log.read_text(errors='replace')[-10000:]
-                stopped.update(EVALUATION_ERROR=sum(r['status']=='EVALUATION_ERROR' for r in records),
-                    OOM=any(x in text.lower() for x in ('out of memory','cuda_error_out_of_memory')),
-                    completed_trials_per_min=len(records)*60/elapsed if elapsed else None,
-                    physics_vector_steps_per_s=last.get('physics_vector_steps',0)/elapsed if elapsed else None,
-                    gpu_utilization_mean_percent=mean('gpu_utilization_percent'),peak_vram_mib=peak('gpu_vram_mib'),
-                    cpu_utilization_mean_percent=mean('cpu_percent'),peak_ram_bytes=peak('process_tree_ram_bytes'),
-                    certificate_query_count=last.get('certificate_query_count'),query_failure_count=last.get('query_failure_count'),
-                    certificate_profile=last.get('certificate_profile'),peak_sampled_queued_chunks=peak('certificate_queued_chunks_sample'),
-                    aborted_incomplete_trials='Not classified as task outcomes; PERFORMANCE_ONLY aborted grade')
-                write_json(ROOT/f'{model}_n{n}_stopped.json',stopped);stops[model]=stopped;break
-            s=read_json(target/'performance_summary.json');summaries[model][n]=s
-            if n==64:
-                baseline_batches={v['completed']:v['elapsed_s'] for v in [read_json(x) for x in (target/'batch_metrics').glob('*.json')]}
-            elif s['trial_execution_wall_time_s']>spec['slowdown_ratio']*summaries[model][64]['trial_execution_wall_time_s']:
-                stops[model]=dict(reason='CLEARLY_SLOWER_COMPLETE',n=n,next_larger_candidates_skipped=True);break
-    shared=set.intersection(*(set(x) for x in summaries.values()))
-    gains={n:math.prod(summaries[m][n]['completed_trials_per_min']/summaries[m][64]['completed_trials_per_min'] for m in spec['models'])**.5 for n in shared} if 64 in shared else {}
-    candidate=max(gains,key=gains.get) if gains else 64
-    if gains.get(candidate,0)<1.1:candidate=64
-    plans=read_jsonl(ROOT/'manifest.jsonl');comparisons={}
-    ppo_ref=read_json(COHORT/'completed_models/ppo_plain.json');old=COHORT/'runs'/ppo_ref['evaluation_id']
-    if 64 in summaries['ppo_plain']:
-        comparisons['ppo_reproduces_sealed64']=compare(old,ROOT/'ppo_plain/n64',plans,'ppo_plain')
+            result=execute(spec,model,n,'screen')
+            if result['status']!='PERFORMANCE_ONLY_COMPLETE':stops[model]=result;break
+            summaries[model][n]=result
+            if n!=64 and result['warmed_policy_steps']>=100 and result['physics_env_steps_per_s']<summaries[model][64]['physics_env_steps_per_s']/spec['slowdown_ratio']:
+                stops[model]=dict(reason='CLEARLY_SLOWER_SCREEN',n=n,next_larger_candidates_skipped=True);break
+    candidate,gains=choose_candidate(spec,summaries);validation={};comparisons={}
+    plans=[p for p in read_jsonl(ROOT/'manifest.jsonl') if p['trial_id'] in set(spec['validation_trial_ids'])]
     if candidate!=64:
-        comparisons['ppo_64_vs_candidate']=compare(ROOT/'ppo_plain/n64',ROOT/f'ppo_plain/n{candidate}',plans,'ppo_plain')
-        comparisons['context_64_vs_candidate']=compare(ROOT/'context_only/n64',ROOT/f'context_only/n{candidate}',plans,'context_only')
-        comparisons['ppo_sealed_vs_candidate']=compare(old,ROOT/f'ppo_plain/n{candidate}',plans,'ppo_plain')
+        for model in spec['models']:
+            validation[model]={}
+            for n in [64,candidate]:
+                result=execute(spec,model,n,'invariance');validation[model][n]=result
+                if result['status']!='PERFORMANCE_ONLY_COMPLETE' or not result['validation_targets_complete']:break
+        complete=all(all(validation.get(m,{}).get(n,{}).get('validation_targets_complete',False) for n in [64,candidate]) for m in spec['models'])
+        if complete:
+            old=COHORT/'runs'/read_json(COHORT/'completed_models/ppo_plain.json')['evaluation_id']
+            comparisons['ppo_reproduces_sealed64']=compare(old,ROOT/'invariance/ppo_plain/n64',plans,'ppo_plain')
+            for model in spec['models']:
+                comparisons[model+'_64_vs_candidate']=compare(ROOT/'invariance'/model/'n64',ROOT/'invariance'/model/f'n{candidate}',plans,model)
+            comparisons['ppo_sealed_vs_candidate']=compare(old,ROOT/'invariance/ppo_plain'/f'n{candidate}',plans,'ppo_plain')
+    passed=bool(comparisons) and all(x['passed'] for x in comparisons.values())
+    faster=bool(validation) and all(validation[m].get(candidate,{}).get('validation_trials_per_min',0)>1.1*validation[m][64].get('validation_trials_per_min',float('inf')) for m in spec['models'])
     decision=dict(status='PERFORMANCE_ONLY_ANALYSIS_COMPLETE',formal_statistics_eligible=False,best_performance_candidate=candidate,
-        geometric_throughput_gains=gains,all_invariance_passed=bool(comparisons) and all(v['passed'] for v in comparisons.values()),
-        selected_execution_batch_size=candidate if candidate!=64 and comparisons and all(v['passed'] for v in comparisons.values()) else 64,
-        summaries=summaries,stops=stops,comparison_summaries={k:{a:b for a,b in v.items() if a!='differences'} for k,v in comparisons.items()},
+        geometric_screen_environment_step_gains=gains,all_invariance_passed=passed,confirmed_fixed_subset_speedup=faster,
+        selected_execution_batch_size=candidate if passed and faster else 64,summaries=summaries,validation=validation,stops=stops,
+        comparison_summaries={k:{a:b for a,b in v.items() if a!='differences'} for k,v in comparisons.items()},
         next_formal_model='BLOCKED_PENDING_AGENT_REVIEW',threshold_changed=False)
     for name,data in comparisons.items():write_json(ROOT/'invariance'/f'{name}.json',data)
     write_json(ROOT/'decision.json',decision);write_json(ROOT/'execution_status.json',dict(status='PERFORMANCE_ONLY_ANALYSIS_COMPLETE',pid=os.getpid()))

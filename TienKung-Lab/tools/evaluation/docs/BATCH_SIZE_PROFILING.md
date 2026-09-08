@@ -12,11 +12,22 @@ in `completed_models`, never receive a formal robustness completion seal, and ar
 excluded from the five-model report and paired statistics. Raw profiling traces,
 events, process failures and resource telemetry are retained.
 
-The immutable plan selects 32 complete canonical 64-trial batches evenly across
-the fixed 252-batch formal manifest: 2,048 unique trials spanning all eight suites.
-No seed is introduced and no padding or duplicate trial counts are used. Each of
-64, 128, 256, 512, 1,024 and 2,048 uses this same manifest and unchanged detector,
-physics primitives, native model resources and checkpoint.
+The immutable workload selects 64 canonical 64-trial blocks: 4,096 unique
+trial IDs spanning all eight suites. The first 128 IDs are predeclared validation
+targets, 16 per suite. Candidates are 64, 128, 256, 512, 1,024, **2,046** (the
+latest user-specified value), and 4,096. No padding or duplicate trial is used;
+a short tail is never launched. A common workload does not imply that every
+90-second screen completes the same number of trials.
+
+Each screen has a 90-second execution budget (initialization/save/audit excluded).
+Unfinished traces are retained as censored PERFORMANCE_ONLY data, never failures
+or formal outcomes. Rank warmed environment physics steps/s across both models;
+require 100 policy steps and nonzero Context queries. This is only screening.
+Then run 64 and the fastest shared candidate until the same 128 target trials
+finish. Other environments execute genuine additional workload. Final selection
+requires >10% faster completion of that identical target subset for both models,
+plus every invariance comparison passing. Completed-workload throughput and total
+wall time are also reported; initialization can make short validation slower.
 
 PPO and Context-only are measured separately. Throughput is completed trials per
 minute of physical trial execution, excluding initialization and offline replay.
@@ -35,13 +46,10 @@ where the native IPC interface batches queries. No missing timing is replaced by
 zero or relabeled as per-query latency. Queue depth excludes in-flight chunks.
 
 A grade stops on OOM, process failure, initialization timeout (900 s), or 180 s
-without policy-step progress. Clear slowdown means over 1.20 times the 64-env
-execution duration for an identical completed trial prefix of at least 256 trials,
-or over 1.20 times total execution duration. No larger grade for that model is
-launched afterwards. All grades use the same thresholds declared before execution.
+without policy-step progress. A warmed screen over 20% slower in environment
+steps/s than 64 stops further larger grades for that model. Audit/save timeout is
+900 s. These criteria are fixed before any measurement.
 
-The performance candidate maximizes geometric mean speed gain for PPO and
-Context-only among jointly completed sizes. Less than 10% gain retains 64.
 Invariance then compares the exact trial set and outcome/event timelines for PPO
 64 versus candidate, Context-only 64 versus candidate, and PPO against the sealed
 64-env source. Recovery, readiness and terminal outcomes must match. Time tolerance
@@ -58,6 +66,6 @@ python -B tools/evaluation/g1_batch_profile_control.py
 ```
 
 Do not resume the paused formal orchestration parent until the profiling decision
-has been reviewed. If 64 is retained, the existing formal runtime can resume
-unchanged. If a larger size passes, formal execution metadata support and identity
+has been reviewed. The authorized audit-policy transition must be recorded before resuming
+formal execution, while preserving the physical computation. If a larger size passes, formal execution metadata support and identity
 compatibility must first be reviewed; never silently alter the committed protocol.
