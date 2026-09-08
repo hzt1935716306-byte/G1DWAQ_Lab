@@ -34,6 +34,8 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument("--estimator_checkpoint", type=str, default=None,
+                    help="CoM velocity estimator checkpoint for estimator-based Plane tasks")
 parser.add_argument("--terrain", type=str, default="flat",
                     choices=["stairs", "stairs_slope", "flat", "rough"],
                     help="Terrain type for play: stairs (纯台阶最难), stairs_slope (台阶+斜坡), flat (平地), rough (训练地形)")
@@ -89,6 +91,8 @@ def play():
 
     env_class_name = args_cli.task
     env_cfg, agent_cfg = task_registry.get_cfgs(env_class_name)
+    if args_cli.estimator_checkpoint is not None:
+        env_cfg.estimator_checkpoint_path = args_cli.estimator_checkpoint
 
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.events.push_robot = None
@@ -305,7 +309,33 @@ def play():
     env_cfg.scene.seed = agent_cfg.seed
 
     env_class = task_registry.get_task_class(env_class_name)
-    env = env_class(env_cfg, args_cli.headless)
+
+    class PlayEnv(env_class):
+        def _terrain_log(self, level):
+            if self.cfg.scene.terrain_type == "plane":
+                # Plane importers have no curriculum indices, including when
+                # Plane V1 emits terrain diagnostics on every policy step.
+                return {"Play/flat_terrain": 1.0}
+            return super()._terrain_log(level)
+
+        def get_recovery_plane_geometry(self):
+            if self.cfg.scene.terrain_type == "plane":
+                # A plain TerrainImporter has no generated-tile indices. Its
+                # horizontal plane is nevertheless known exactly and valid.
+                normal = torch.zeros((self.num_envs, 3), device=self.device)
+                normal[:, 2] = 1.0
+                return (normal, self.scene.env_origins.clone(),
+                        torch.ones(self.num_envs, dtype=torch.bool, device=self.device))
+            return super().get_recovery_plane_geometry()
+
+        def update_terrain_levels(self, env_ids):
+            # Matched task constructors rebuild the training generator and can
+            # re-enable curriculum after play configured a plane. Disable the
+            # curriculum hook before the constructor's first reset as well as
+            # later resets; plane importers have no terrain_levels attribute.
+            return {}
+
+    env = PlayEnv(env_cfg, args_cli.headless)
 
     log_root_path = os.path.join("logs", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
