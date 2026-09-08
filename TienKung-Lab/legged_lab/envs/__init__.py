@@ -318,3 +318,32 @@ task_registry.register(
     G1DwaqSlopeNoSysDMatchedEnvCfg(),
     G1DwaqSlopeNoSysDMatchedAgentCfg(),
 )
+
+# Separate reward ablations; retain the original registrations above verbatim.
+from legged_lab.envs.g1.g1_reward_shaping_ablation_config import (
+    G1PlaneV1EstimatorContextNoRewardMatchedV2EnvCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2AgentCfg,
+    G1DwaqSlopeNoSysDMatchedV2EnvCfg,
+    G1DwaqSlopeNoSysDMatchedV2AgentCfg,
+    G1DwaqSlopeNoSysDMatchedV3EnvCfg,
+    G1DwaqSlopeNoSysDMatchedV3AgentCfg,
+)
+
+task_registry.register(
+    "g1_plane_v1_estimator_context_no_reward_matched_v2",
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2EnvCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedV2AgentCfg(),
+)
+task_registry.register(
+    "g1_dwaq_slope_nosys_d_matched_v2",
+    G1DwaqSlopeBaselineMatchedEnv,
+    G1DwaqSlopeNoSysDMatchedV2EnvCfg(),
+    G1DwaqSlopeNoSysDMatchedV2AgentCfg(),
+)
+task_registry.register(
+    "g1_dwaq_slope_nosys_d_matched_v3",
+    G1DwaqSlopeBaselineMatchedEnv,
+    G1DwaqSlopeNoSysDMatchedV3EnvCfg(),
+    G1DwaqSlopeNoSysDMatchedV3AgentCfg(),
+)
