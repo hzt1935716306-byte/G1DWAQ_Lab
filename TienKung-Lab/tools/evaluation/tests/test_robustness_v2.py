@@ -143,7 +143,12 @@ def test_archived_substep_physics_replay(p,duration,tmp_path):
         m.add_physics(dict(time=start+.005,start_time=start,dt_s=.005,mass_kg=30.,terminal=False,
             force_requested_world_n=f.tolist(),force_world_n=f.tolist(),composed_force_world_n=f.tolist(),
             force_active=bool(np.any(f)),application_point_world_m=[0,0,.8],whole_robot_com_world_m=[0,0,.8],
-            application_link_position_world_m=[0,0,.8],torque_about_com_world_nm=[0,0,0],composed_torque_about_link_world_nm=[0,0,0]))
+            application_link_position_world_m=[0,0,.8],torque_about_com_world_nm=[0,0,0],composed_torque_about_link_world_nm=[0,0,0],
+            application_link_quaternion_wxyz=[1,0,0,0],lever_arm_world_m=[0,0,0],arm_torque_world_nm=[0,0,0],
+            free_torque_world_nm=[0,0,0],equivalent_torque_world_nm=[0,0,0],force_link_n=f.tolist(),
+            equivalent_torque_link_nm=[0,0,0],composed_force_link_n=f.tolist(),composed_torque_link_nm=[0,0,0],
+            composer_positions_none=True,composer_is_global=False,declared_world_offset_m=arm.tolist(),
+            application_point_semantics='whole_robot_com_plus_world_offset'))
     store=RobustnessStore(tmp_path);store.save_trial(m.result(),m.trace(),m.all_events())
     assert validate_trial((str(tmp_path),m.plan,p))==m.plan['trial_id']
 

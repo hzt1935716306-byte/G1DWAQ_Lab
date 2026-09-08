@@ -175,7 +175,7 @@ def generate_plan(p):
     return rows
 
 
-def prepare(root, standard_index, config=CONFIG):
+def prepare(root, standard_index, config=CONFIG, *, wrench_smoke=False):
     root = Path(root).resolve()
     protected = (LAB / 'experiments/g1_recovery_eval_v2').resolve()
     if root.is_relative_to(protected) or root.is_relative_to((LAB / 'experiments/g1_recovery_eval').resolve()):
@@ -185,11 +185,15 @@ def prepare(root, standard_index, config=CONFIG):
     if {r['model'] for r in index['models']} != set(MODEL_ORDER) or len(index['models']) != 5:
         raise ValueError('Five-model standard index required')
     rows = generate_plan(p)
+    if wrench_smoke:rows = select_wrench_smoke(rows)
     info = {**contract, 'schema_version': 1, 'protocol_hash': digest(p), 'manifest_hash': digest(rows),
         'standard_index_sha256': sha256(standard_index), 'metrics_version': COMMON_VERSION,
         'metrics_config_hash': digest(p['metrics']), 'metrics_reference_sha256': None,
         'physics_profile_hash': digest(p['physics']), 'inference_mode': p['physics']['inference_mode'],
         'counts_per_model': COUNTS, 'trials_per_model': len(rows), 'total_new_robustness_trials': 5 * len(rows)}
+    if wrench_smoke:
+        info.update(validation_mode='wrench_frame_fix_physical_smoke', num_envs=4,
+            counts_per_model={'force_pulse':4}, total_new_robustness_trials=8)
     files = {'protocol.yaml': yaml.safe_dump(p, sort_keys=False), 'manifest.jsonl': jsonl(rows),
              'standard_benchmark_five_model_index.json': Path(standard_index).read_bytes(),
              'common_detector_config.yaml': yaml.safe_dump(p['metrics']['detector'], sort_keys=True)}
@@ -214,4 +218,19 @@ def load_prepared(root):
         raise ValueError('Candidate detector identity mismatch')
     if sha256(root / 'standard_benchmark_five_model_index.json') != info['standard_index_sha256']:
         raise ValueError('Standard index changed')
+    if info.get('validation_mode'):
+        if info['validation_mode']!='wrench_frame_fix_physical_smoke' or info.get('num_envs')!=4:
+            raise ValueError('Unknown physical validation mode')
+        if rows!=select_wrench_smoke(generate_plan(p)):raise ValueError('Validation plan differs from fixed four trials')
     return p, rows, info
+
+
+def select_wrench_smoke(rows):
+    """Predeclared, single condition: four cardinal directions, both feet/phases.
+
+    Preserve full-plan trial IDs, seeds and initial states. No outcome selection.
+    """
+    selected=[r for r in rows if r['family']=='force_pulse' and
+        r['equivalent_delta_v_mps']==.5 and r['duration_s']==.05 and r['repeat_id'] in (0,33,66,99)]
+    if len(selected)!=4:raise ValueError('Four fixed physical smoke trials required')
+    return selected

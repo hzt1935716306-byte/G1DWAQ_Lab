@@ -14,6 +14,7 @@ from g1_robustness_protocol import validate_protocol, waveform, waveform_sha
 from g1_robustness_physics import vector_world, force_and_arm
 from g1_robustness_trial import replay
 from g1_common_task_detector import EPS
+from g1_world_wrench import verify_wrench_sample
 
 
 def verify_physics(plan,record,events,trace,p):
@@ -64,7 +65,8 @@ def verify_physics(plan,record,events,trace,p):
         actual=np.asarray(s['force_world_n']);composed=np.asarray(s['composed_force_world_n'])
         point=np.asarray(s['application_point_world_m']);com=np.asarray(s['whole_robot_com_world_m']);link=np.asarray(s['application_link_position_world_m'])
         if not all(np.isfinite(x).all() for x in (actual,composed,point,com,link)):raise ValueError('Nonfinite wrench evidence')
-        tolerance=max(.002,float(np.linalg.norm(force))*2e-4)
+        verify_wrench_sample(s)
+        tolerance=64*np.finfo(np.float32).eps*max(1,float(np.linalg.norm(force)))
         if not np.allclose(actual,force,atol=tolerance,rtol=0) or not np.allclose(composed,force,atol=tolerance,rtol=0):raise ValueError('Actual force differs from requested input')
         if not np.allclose(point-com,arm,atol=1e-4,rtol=0):raise ValueError('Application moment arm differs from protocol')
         if not np.allclose(s['torque_about_com_world_nm'],np.cross(point-com,actual),atol=tolerance,rtol=0):raise ValueError('Wrong torque about robot CoM')
@@ -122,8 +124,12 @@ class RobustnessStore(RunStore):
     def validate(self,require_complete=True,workers=1):
         i=read_json(self.path/'identity.json');p=load_yaml(self.path/'protocol_snapshot.yaml')
         contract=validate_protocol(p);manifest=read_jsonl(self.path/'manifest_snapshot.jsonl')
-        if i.get('evaluation_role')!='complete_robustness_suite' or i.get('synthetic'):
+        if i.get('evaluation_role') not in ('complete_robustness_suite','wrench_frame_fix_physical_smoke') or i.get('synthetic'):
             raise ValueError('Explicit real robustness role required')
+        if i['evaluation_role']=='wrench_frame_fix_physical_smoke':
+            from g1_robustness_protocol import generate_plan,select_wrench_smoke
+            if i.get('validation_mode')!='wrench_frame_fix_physical_smoke' or manifest!=select_wrench_smoke(generate_plan(p)):
+                raise ValueError('Physical smoke manifest/role mismatch')
         if digest(p)!=i['protocol_hash'] or digest(manifest)!=i['manifest_hash']:raise ValueError('Protocol/plan identity mismatch')
         if any(i[k]!=v for k,v in contract.items()) or digest(p['metrics'])!=i['metrics_config_hash']:
             raise ValueError('Common detector configuration changed')

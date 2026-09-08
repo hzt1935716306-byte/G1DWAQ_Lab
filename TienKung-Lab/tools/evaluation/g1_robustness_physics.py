@@ -4,6 +4,7 @@ import math
 import numpy as np
 from g1_robustness_protocol import waveform, waveform_sha
 from g1_common_task_detector import EPS
+from g1_world_wrench import application_point_world, set_world_wrenches, clear_wrench
 
 
 def vector_world(plan, yaw):
@@ -51,6 +52,9 @@ class PhysicalInterventions:
         self.body_id=int(ids[0]);self.enabled=False;self.machines=[];self.waves={};self.pending=[]
         self.original_write=env.scene.write_data_to_sim
         self.original_update=env.scene.update
+        self.resetting=set()
+        self.original_reset=env.reset
+        env.reset=self.reset
         env.scene.write_data_to_sim=self.write
         env.scene.update=self.update
 
@@ -66,12 +70,23 @@ class PhysicalInterventions:
 
     def clear(self):
         self.enabled=False
-        self.env.robot.permanent_wrench_composer.reset()
+        clear_wrench(self.env.robot.permanent_wrench_composer)
+        self.pending=[]
+
+    def reset(self,env_ids):
+        ids=[int(i) for i in env_ids]
+        self.resetting.update(ids)
+        clear_wrench(self.env.robot.permanent_wrench_composer,env_ids)
+        try:return self.original_reset(env_ids)
+        finally:
+            clear_wrench(self.env.robot.permanent_wrench_composer,env_ids)
+            self.resetting.difference_update(ids)
 
     def start(self,index,machine,frame):
         env=self.env;mass=float(env.eval_masses[index].sum().item())
         machine.start_intervention(dict(time=machine.t,duration_s=machine.plan['duration_s'],
             mass_kg=mass,heading_yaw=frame['yaw'],application_body='torso_link',
+            application_point_semantics='whole_robot_com_plus_world_offset',
             vector_frame=machine.plan['vector_frame'],force_application=self.p['robustness']['force_application']))
         if machine.plan['family'] in ('velocity_jump','velocity_ood'):
             self.impact(index,machine,vector_world(machine.plan,frame['yaw']),machine.t,0)
@@ -100,16 +115,23 @@ class PhysicalInterventions:
             native_notification=notified))
 
     def write(self):
-        env=self.env;torch=self.torch
+        try:return self._write()
+        except BaseException:
+            self.clear()
+            raise
+
+    def _write(self):
+        env=self.env
         if not self.enabled:return self.original_write()
         before_history=env.eval_history_calls
         time=(int(env.sim_step_counter)-self.base_counter-1)*self.dt
-        forces=np.zeros((env.num_envs,1,3),dtype=np.float32)
-        points=np.zeros_like(forces);self.pending=[]
-        com=((env.eval_masses[...,None]*env.robot.data.body_com_pos_w).sum(1)/env.eval_masses.sum(1,keepdim=True)).detach().cpu().numpy()
-        link=env.robot.data.body_link_pos_w[:,self.body_id].detach().cpu().numpy()
+        forces=np.zeros((env.num_envs,3));free=np.zeros_like(forces);self.pending=[]
+        com=((env.eval_masses[...,None]*env.robot.data.body_com_pos_w).sum(1)/env.eval_masses.sum(1,keepdim=True)).detach().cpu().numpy().astype(float)
+        link=env.robot.data.body_link_pos_w[:,self.body_id].detach().cpu().numpy().astype(float)
+        q=env.robot.data.body_link_quat_w[:,self.body_id].detach().cpu().numpy().astype(float)
+        points=link.copy();metadata=[]
         for i,m in enumerate(self.machines):
-            if m.status or m.onset is None or i in self.endpoint_frames:continue
+            if i in self.resetting or m.status or m.onset is None or i in self.endpoint_frames:continue
             plan=m.plan;elapsed=time-m.onset;mass=float(env.eval_masses[i].sum().item())
             if plan['family']=='repeated_impulse' and m.first_terminal_physics_time is None:
                 j=self.next_impact[i]
@@ -119,36 +141,27 @@ class PhysicalInterventions:
                     raise ValueError('Missed scheduled repeated impact')
             force,arm=force_and_arm(plan,mass,elapsed,self.waves.get(i),self.dt)
             if m.first_terminal_physics_time is not None:force[:]=0
-            forces[i,0]=force;points[i,0]=com[i]+arm
-            self.pending.append((i,dict(time=time+self.dt,start_time=time,dt_s=self.dt,
-                force_active=bool(np.any(force)),force_world_n=forces[i,0].astype(float).tolist(),
-                application_point_world_m=points[i,0].astype(float).tolist(),whole_robot_com_world_m=com[i].astype(float).tolist(),
-                application_link_position_world_m=link[i].astype(float).tolist(),
-                torque_about_com_world_nm=np.cross(points[i,0]-com[i],forces[i,0]).astype(float).tolist(),
-                force_requested_world_n=force.tolist(),mass_kg=mass)))
-        composer=env.robot.permanent_wrench_composer
-        # Global wrenches must be re-expressed using the current link orientation.
-        # The installed composer caches poses until reset; reset every substep.
-        composer.reset()
-        composer.set_forces_and_torques(forces=torch.tensor(forces,device=env.device),
-            torques=torch.zeros_like(torch.tensor(forces,device=env.device)),
-            positions=torch.tensor(points,device=env.device),body_ids=[self.body_id],is_global=True)
-        from isaaclab.utils.math import quat_apply
-        q=env.robot.data.body_link_quat_w[:,self.body_id]
-        actual_f=quat_apply(q,composer.composed_force_as_torch[:,self.body_id]).detach().cpu().numpy()
-        actual_tau=quat_apply(q,composer.composed_torque_as_torch[:,self.body_id]).detach().cpu().numpy()
-        for i,sample in self.pending:
-            expected_tau=np.cross(points[i,0]-link[i],forces[i,0])
-            tolerance=max(.002,float(np.linalg.norm(forces[i,0]))*2e-4)
-            if not np.allclose(actual_f[i],forces[i,0],atol=tolerance,rtol=0) or not np.allclose(actual_tau[i],expected_tau,atol=tolerance,rtol=0):
-                raise ValueError('Applied world wrench differs from declared force/application point')
-            sample['composed_force_world_n']=actual_f[i].astype(float).tolist()
-            sample['composed_torque_about_link_world_nm']=actual_tau[i].astype(float).tolist()
+            forces[i]=force
+            points[i]=application_point_world('whole_robot_com_plus_world_offset',link[i],q[i],
+                declared_offset=arm,whole_robot_com=com[i])
+            metadata.append((i,dict(time=time+self.dt,start_time=time,dt_s=self.dt,
+                force_active=bool(np.any(force)),whole_robot_com_world_m=com[i].tolist(),
+                application_point_semantics='whole_robot_com_plus_world_offset',
+                declared_world_offset_m=arm.tolist(),
+                torque_about_com_world_nm=np.cross(points[i]-com[i],force).tolist(),mass_kg=mass)))
+        samples=set_world_wrenches(env.robot.permanent_wrench_composer,forces,points,free,link,q,self.body_id,env.device)
+        self.pending=[(i,{**sample,**samples[i]}) for i,sample in metadata]
         result=self.original_write()
         if env.eval_history_calls!=before_history:raise ValueError('External wrench advanced actor history')
         return result
 
     def update(self,*args,**kwargs):
+        try:return self._update(*args,**kwargs)
+        except BaseException:
+            self.clear()
+            raise
+
+    def _update(self,*args,**kwargs):
         result=self.original_update(*args,**kwargs)
         if self.enabled and self.pending:
             env=self.env;torch=self.torch
@@ -157,6 +170,7 @@ class PhysicalInterventions:
             terminal=torch.any(torch.max(torch.linalg.vector_norm(history,dim=-1),dim=1)[0]>1.,dim=1).detach().cpu().numpy()
             for i,sample in self.pending:
                 sample['terminal']=bool(terminal[i]);m=self.machines[i]
+                if terminal[i]:clear_wrench(env.robot.permanent_wrench_composer,[i])
                 # Archive every disturbance substep plus the first zero-force
                 # interval and any later first terminal event. Post-release GT
                 # trajectories remain complete at native 50 Hz.

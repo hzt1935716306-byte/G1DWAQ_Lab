@@ -59,9 +59,17 @@ def execute(args):
     immutable_json(root/'runtime_commit.json',{k:code[k] for k in ('evaluation_code_commit','evaluation_runtime_sha256','evaluation_runtime_sources')})
     identity=model_identity(root,args.model,read_json(root/'standard_benchmark_five_model_index.json'))
     snapshot=snapshot_checkpoint(root,identity)
-    identity.update(prepared,evaluation_role='complete_robustness_suite',subset='complete_paired_16128',
+    smoke=prepared.get('validation_mode')=='wrench_frame_fix_physical_smoke'
+    if smoke:
+        from g1_wrench_validation import require_gate
+        require_gate(root.parent/'api_smoke.json',code)
+        if args.model not in ('ppo_plain','dwaq'):raise ValueError('Physical smoke is PPO/DWAQ only')
+        if args.model=='dwaq':
+            from g1_wrench_validation import check_model_smoke
+            check_model_smoke(root,'ppo_plain')
+    identity.update(prepared,evaluation_role='wrench_frame_fix_physical_smoke' if smoke else 'complete_robustness_suite',subset='fixed_four_force_pulse' if smoke else 'complete_paired_16128',
         trials=len(manifest),synthetic=False,realized_environment_schema_version=1)
-    args.task=identity['task_name'];args.num_envs=p['robustness']['num_envs'];args.headless=True
+    args.task=identity['task_name'];args.num_envs=prepared['num_envs'] if smoke else p['robustness']['num_envs'];args.headless=True
     key=evaluation_key(identity);run=root/'runs'/(key+'-attempt-0001');run.mkdir(parents=True,exist_ok=True)
     store=RobustnessStore(run)
     with lock(root/'.physical-execution.lock'),lock(run/'.run.lock'):
@@ -80,7 +88,7 @@ def execute(args):
             for field in ('evaluation_code_commit','evaluation_runtime_sha256','checkpoint_sha256','manifest_hash'):
                 if previous[field]!=identity[field]:raise ValueError('Resume identity mismatch: '+field)
             if (run/'effective_env_config.yaml').exists():store.validate(require_complete=False,workers=8)
-        done={r['trial_id'] for r in store.records()};app=None;machines=[]
+        done={r['trial_id'] for r in store.records()};app=None;machines=[];controller=None
         try:
             os.chdir(LAB);sys.path.insert(0,str(LAB));sys.path.insert(0,str(LAB/'rsl_rl'))
             from isaaclab.app import AppLauncher
@@ -147,7 +155,8 @@ def execute(args):
             immutable_json(root/'completed_models'/f'{args.model}.json',dict(model=args.model,evaluation_id=run.name,
                 completion_sha256=sha256(run/'completion.json')))
             print({'status':'COMPLETE','evaluation_id':run.name},flush=True)
-        except Exception as exc:
+        except BaseException as exc:
+            if controller is not None:controller.clear()
             for m in machines:
                 if m.plan['trial_id'] not in done and m.frames:
                     m.finish('EVALUATION_ERROR');m.events.append({'event':'execution_error','time':m.t,'error':str(exc)})
@@ -155,6 +164,7 @@ def execute(args):
             write_json(run/'failure.json',{'status':'INVALID','error':repr(exc),'completed_trials':len(done)})
             raise
         finally:
+            if controller is not None:controller.clear()
             if app is not None:app.close()
     return {'status':'COMPLETE','evaluation_id':run.name}
 

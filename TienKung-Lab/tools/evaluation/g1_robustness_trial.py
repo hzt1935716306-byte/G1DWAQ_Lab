@@ -153,6 +153,13 @@ class RobustnessTrial(CommonTaskTrialMachine):
             actual_rms_acceleration_mps2=force_rms/mass if force_rms is not None else None,
             peak_force_n=max((float(np.linalg.norm(s['force_world_n'])) for s in active),default=None),
             force_applied_duration_s=sum(s['dt_s'] for s in active),
+            actual_start_time=active[0]['start_time'] if active else None,
+            actual_end_time=active[-1]['time'] if active else None,
+            actual_duration=sum(s['dt_s'] for s in active),
+            physics_substeps_applied=len(active),
+            release_zero_wrench_verified=any(abs(s['start_time']-(self.release_time or 0))<=EPS
+                and not np.any(s['composed_force_world_n']) and not np.any(s['composed_torque_about_link_world_nm'])
+                for s in physical),
             actual_force_lag_one_correlation=(float(np.corrcoef(np.asarray([s['force_world_n'][:2] for s in active])[:-1].ravel(),
                 np.asarray([s['force_world_n'][:2] for s in active])[1:].ravel())[0,1])
                 if self.plan['family']=='random_force' and len(active)>2 and np.std([s['force_world_n'][:2] for s in active])>0 else None),
