@@ -40,6 +40,7 @@ STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERE
 # This allowlist is intentionally explicit. Only sources that can alter native
 # inference, trial execution, physical judging, or recovery metrics belong here.
 EVALUATION_RUNTIME_SOURCES = (
+    'tools/evaluation/g1_reduced_budget.py',
     'tools/evaluation/g1_world_wrench.py',
     'tools/evaluation/g1_wrench_validation.py',
     'tools/evaluation/g1_complete_robustness.py',

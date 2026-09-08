@@ -71,6 +71,9 @@ def execute(args):
             check_model_smoke(root,'ppo_plain')
     identity.update(prepared,evaluation_role='wrench_frame_fix_physical_smoke' if smoke else 'complete_robustness_suite',subset='fixed_four_force_pulse' if smoke else 'complete_paired_16128',
         trials=len(manifest),synthetic=False,realized_environment_schema_version=1)
+    if prepared.get('budget_mode')=='reduced_budget_v1':
+        identity.update(subset='reduced_budget_v1_pending',execution_batch_size=64,
+            reduced_manifest_sha256=prepared['reduced_manifest_sha256'])
     args.task=identity['task_name'];args.num_envs=prepared['num_envs'] if smoke else p['robustness']['num_envs'];args.headless=True
     key=evaluation_key(identity);run=root/'runs'/(key+'-attempt-0001');run.mkdir(parents=True,exist_ok=True)
     store=RobustnessStore(run)
@@ -117,12 +120,18 @@ def execute(args):
                 # and stochastic native DWAQ inference remain paired by original trial.
                 for offset in range(0,len(manifest),args.num_envs):
                     selected=manifest[offset:offset+args.num_envs]
+                    active_count=len(selected)
+                    if prepared.get('budget_mode')=='reduced_budget_v1':
+                        from g1_reduced_budget import execution_rows
+                        selected,active_count=execution_rows(manifest,offset,args.num_envs)
                     if all(r['trial_id'] in done for r in selected):continue
                     controller.clear();obs,extra=env.begin_batch(selected)
                     machines=[RobustnessTrial(r,p) for r in selected]
+                    for inactive in machines[active_count:]:inactive.status='NOT_SCHEDULED'
                     controller.begin(machines)
                     frames=env.physical_snapshot()
                     for i,m in enumerate(machines):
+                        if i>=active_count:continue
                         state={'root_state_world':env.robot.data.root_state_w[i].cpu().tolist(),
                             'joint_position':env.robot.data.joint_pos[i].cpu().tolist(),
                             'joint_velocity':env.robot.data.joint_vel[i].cpu().tolist()}
@@ -151,6 +160,9 @@ def execute(args):
                     progress={'model':args.model,'evaluation_id':run.name,'completed':len(done),'designated':len(manifest),
                         'elapsed_s':time.monotonic()-start,'last_batch_offset':offset}
                     write_json(run/'progress.json',progress);print(progress,flush=True)
+                    if (root/'STOP_AFTER_BATCH').exists():
+                        controller.clear()
+                        return {'status':'PARTIAL','evaluation_id':run.name,'completed':len(done)}
                 controller.clear()
                 if any(not torch.equal(v.cpu(),weights[k]) for k,v in runner.alg.policy.state_dict().items()):raise ValueError('Policy weights changed')
             store.complete(workers=8)

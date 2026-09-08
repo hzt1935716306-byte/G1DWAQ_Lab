@@ -218,6 +218,10 @@ def load_prepared(root):
         raise ValueError('Candidate detector identity mismatch')
     if sha256(root / 'standard_benchmark_five_model_index.json') != info['standard_index_sha256']:
         raise ValueError('Standard index changed')
+    if info.get('budget_mode'):
+        if info['budget_mode']!='reduced_budget_v1':raise ValueError('Unknown reduced budget mode')
+        from g1_reduced_budget import validate_pending
+        validate_pending(root,p,rows,info)
     if info.get('validation_mode'):
         if info['validation_mode']!='wrench_frame_fix_physical_smoke' or info.get('num_envs')!=4:
             raise ValueError('Unknown physical validation mode')
