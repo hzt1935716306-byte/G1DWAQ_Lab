@@ -108,7 +108,9 @@ def validate_trial(args):
         expected=reconstructed.result()
         # Initial state comes from the physical reset, not the recovery adapter.
         for k,v in expected.items():
-            if r.get(k)!=v:raise ValueError(f'{tid}: online/offline result mismatch: {k}')
+            if r.get(k)!=v:
+                from g1_run_audit import ReplayMismatch
+                raise ReplayMismatch(k,r.get(k),v)
         rebuilt=reconstructed.trace()
         for k in ('physical_contact','physical_touchdown_flags','alternating_touchdown_flag','post_push_sample','post_sham_sample'):
             if not np.array_equal(rebuilt[k],data[k]):raise ValueError('Physical event or sample phase differs on replay')
@@ -121,7 +123,12 @@ class RobustnessStore(RunStore):
         # each trial is quadratic for 16,128 trials; tables are derived at seal.
         pass
 
-    def validate(self,require_complete=True,workers=1):
+    def validate(self,require_complete=True,workers=1,*,validation_level='light',allow_synthetic=False):
+        from g1_run_audit import validate_store
+        return validate_store(self,require_complete,workers=workers,
+                              validation_level=validation_level,allow_synthetic=allow_synthetic)
+
+    def _validate_light(self,require_complete=True,*,allow_synthetic=False):
         i=read_json(self.path/'identity.json');p=load_yaml(self.path/'protocol_snapshot.yaml')
         contract=validate_protocol(p);manifest=read_jsonl(self.path/'manifest_snapshot.jsonl')
         if i.get('evaluation_role') not in ('complete_robustness_suite','wrench_frame_fix_physical_smoke') or i.get('synthetic'):
@@ -148,13 +155,12 @@ class RobustnessStore(RunStore):
         if e['native_inputs']!={k:v['sha256'] for k,v in i['resources'].items()}:raise ValueError('Native runtime inputs mismatch')
         plans={r['trial_id']:r for r in manifest};records=self.records()
         if len(plans)!=len(manifest) or any(r['trial_id'] not in plans for r in records):raise ValueError('Unassigned/duplicate trial')
-        jobs=[(str(self.path),plans[r['trial_id']],p) for r in records]
-        if workers>1:
-            with ProcessPoolExecutor(max_workers=workers,mp_context=multiprocessing.get_context('spawn')) as pool:
-                for count,_ in enumerate(pool.map(validate_trial,jobs,chunksize=8),1):
-                    if count%128==0:print(f'Replay validated {count}/{len(jobs)}',flush=True)
-        else:
-            for job in jobs:validate_trial(job)
+        from g1_run_audit import light_trace
+        for r in records:
+            if any(r.get(k)!=v for k,v in plans[r['trial_id']].items()):raise ValueError('Record differs from assigned trial')
+            if r.get('status') not in STATUSES|{'SHAM_COMPLETED'}:raise ValueError('Unknown status')
+            light_trace(self.path/'traces'/f"{r['trial_id']}.npz",r,common=True,robustness=True)
+            read_jsonl(self.path/'trial_events'/f"{r['trial_id']}.jsonl")
         if require_complete:
             if len(records)!=len(manifest) or any(r['status']=='EVALUATION_ERROR' for r in records):raise ValueError('Incomplete/invalid run')
             completion=read_json(self.path/'completion.json')
@@ -164,7 +170,7 @@ class RobustnessStore(RunStore):
         return i,records
 
     def complete(self,workers=8):
-        identity,records=self.validate(require_complete=False,workers=workers)
+        identity,records=self.validate(require_complete=False,workers=workers,validation_level='sampled')
         if len(records)!=identity['trials'] or any(r['status']=='EVALUATION_ERROR' for r in records):
             raise ValueError('Cannot seal missing/invalid trials')
         atomic_write(self.path/'trials.csv',csv_bytes(records))
@@ -176,5 +182,6 @@ class RobustnessStore(RunStore):
         if (self.path/'completion.json').exists():raise ValueError('Run already sealed')
         write_json(self.path/'completion.json',dict(status='COMPLETE',files=files,trial_count=len(records),
             protocol_hash=identity['protocol_hash'],manifest_hash=identity['manifest_hash'],
-            validation='all recorded trials replayed through identical online/offline robustness machine'))
+            validation='light structure and deterministic sampled replay; final full audit is explicit',
+            validation_level='sampled',sampled_replay_audit_sha256=sha256(self.path/'sampled_replay_audit.json')))
         return identity,records

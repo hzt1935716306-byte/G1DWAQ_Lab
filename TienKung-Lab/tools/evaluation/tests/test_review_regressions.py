@@ -236,6 +236,7 @@ def test_run_archive_revalidates_native_files_and_effective_inputs(checkpoint_fa
     path = run['path']
     (path / 'completion.json').unlink()
     identity.update({k: run['identity'][k] for k in protocol.COMPATIBILITY})
+    identity['evaluation_runtime_sha256'] = protocol.digest(identity['evaluation_runtime_sources'])
     identity['synthetic'] = True
     write_json(path / 'identity.json', identity)
     write_json(path / 'native_configuration.json', identity['native_configuration'])

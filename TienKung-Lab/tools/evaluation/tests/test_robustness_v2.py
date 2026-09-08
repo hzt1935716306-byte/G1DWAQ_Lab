@@ -181,6 +181,17 @@ def test_report_template_five_models_and_figures(tmp_path,monkeypatch,p,rows):
         (old/'traces').mkdir(exist_ok=True);np.savez_compressed(old/'traces'/f'{record["trial_id"]}.npz',**trace)
         index['models'].append({'model':model,'evaluation_id':model,'completion_sha256':sha256(old/'completion.json')})
     write_json(root/'standard_benchmark_five_model_index.json',index)
+    # This is a presentation fixture, not a physical run. Exercise explicit LIGHT
+    # dispatch while real integrity checks are tested with archived runs elsewhere.
+    from g1_recovery_protocol import RunStore,read_json
+    from g1_robustness_store import RobustnessStore
+    def fixture_light(self,*args,**kwargs):
+        assert self.path.is_relative_to(tmp_path)
+        assert kwargs.get('validation_level','light')=='light'
+        identity=read_json(self.path/'identity.json') if (self.path/'identity.json').exists() else {}
+        return identity,[read_json(x) for x in sorted((self.path/'trial_records').glob('*.json'))]
+    monkeypatch.setattr(RunStore,'validate',fixture_light)
+    monkeypatch.setattr(RobustnessStore,'validate',fixture_light)
     result=report.build_report(root)
     md=__import__('pathlib').Path(result['markdown']).read_text()
     assert 'Context-only' in md and 'OUT-OF-DOMAIN' in md and '16. Experimental Integrity' in md

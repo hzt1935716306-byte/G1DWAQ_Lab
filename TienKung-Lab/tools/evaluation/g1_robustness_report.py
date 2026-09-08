@@ -22,14 +22,15 @@ def build_report(root):
         entry=read_json(root/'completed_models'/f'{model}.json');run=root/'runs'/entry['evaluation_id']
         if sha256(run/'completion.json')!=entry['completion_sha256']:raise ValueError('New completion changed')
         completion=read_json(run/'completion.json')
-        # Verify every archived byte before interpreting any outcome.
-        for name,h in completion['files'].items():
-            if sha256(run/name)!=h:raise ValueError('Sealed evidence changed: '+name)
-        identities[model]=read_json(run/'identity.json')
-        models[model]=[read_json(x) for x in sorted((run/'trial_records').glob('*.json'))]
+        from g1_robustness_store import RobustnessStore
+        from g1_run_audit import report_audit_status
+        identities[model],models[model]=RobustnessStore(run).validate(validation_level='light')
+        report_audit_status(run)
         old=next(x for x in index['models'] if x['model']==model);oldrun=LAB/'experiments/g1_recovery_eval_v2/runs'/old['evaluation_id']
         if sha256(oldrun/'completion.json')!=old['completion_sha256']:raise ValueError('Standard completion changed')
-        standard[model]=[read_json(x) for x in sorted((oldrun/'trial_records').glob('*.json'))]
+        from g1_recovery_protocol import RunStore
+        _,standard[model]=RunStore(oldrun).validate(validation_level='light')
+        report_audit_status(oldrun)
         standard_mechanisms[model]=[]
         if model.startswith('context'):
             for r in standard[model]:
@@ -53,7 +54,9 @@ def build_report(root):
             atomic_write(report/'mechanism_trials'/model/f'{r["trial_id"]}.json',__import__('json').dumps(m,allow_nan=False))
             mechanisms[model].append({k:v for k,v in m.items() if k not in ('touchdowns','refresh_trajectory')})
         print('Report loaded '+model,flush=True)
-    for key in ('evaluation_code_commit','evaluation_runtime_sha256','actual_physics_hash','realized_environment_hash','candidate_parameters_sha256','protocol_hash','manifest_hash','metrics_config_hash'):
+    from g1_audit_compatibility import validate_cohort_runtime
+    runtime_admission=validate_cohort_runtime(root,list(identities.values()))
+    for key in ('actual_physics_hash','realized_environment_hash','candidate_parameters_sha256','protocol_hash','manifest_hash','metrics_config_hash'):
         if len({i[key] for i in identities.values()})!=1:raise ValueError('Cannot pool unequal identity: '+key)
     for model,rows in models.items():
         if len(rows)!=sum(COUNTS.values()):raise ValueError('Incomplete paired suite')
@@ -250,6 +253,8 @@ def build_report(root):
         x=suites['extreme_main'][a];y=suites['extreme_main'][b]
         blocks.append(('text',f"{LABELS[a]} vs {LABELS[b]}: main-envelope designated sustained recovery difference {100*(x['recovered_sustained_and_survived']['designated_rate']-y['recovered_sustained_and_survived']['designated_rate']):+.2f} percentage points; 90% recovery limits {limit(limits['overall'][a]['recovered_sustained_and_survived']['0.9'])} vs {limit(limits['overall'][b]['recovered_sustained_and_survived']['0.9'])} m/s. Standard time/steps and all family results above determine whether the benefit is ordinary tracking, strong-disturbance success, or both."))
     heading(16,'Experimental Integrity')
+    blocks.append(('text','Runtime compatibility: '+str(runtime_admission)+'. Full-file code/runtime revisions are reported explicitly; physical identity checks remain strict.'))
+    table(['Model','Sampled replay','Explicit final full replay'],[[LABELS[m],*[report_audit_status(root/'runs'/read_json(root/'completed_models'/f'{m}.json')['evaluation_id'])[k] for k in ('sampled','full')]] for m in MODEL_ORDER])
     table(['Model','Commit','Checkpoint SHA','Runtime hash','Realized environment hash'],[[LABELS[m],identities[m]['evaluation_code_commit'],identities[m]['checkpoint_sha256'],identities[m]['evaluation_runtime_sha256'],identities[m]['realized_environment_hash']] for m in MODEL_ORDER])
     blocks.append(('text',f'Raw standard root: {LAB / "experiments/g1_recovery_eval_v2"}. New raw root: {root}. Standard and new runtimes are distinct cohorts; never pool trial outcomes across these protocols. OOD ±20 deg is a separate appendix. Threshold changed: NO. W/H changed: NO. Retraining: NO. Historical deletion: NO. New robustness trials: 80,640; standard supplement: 390.'))
     write_json(report/'summaries.json',{'standard':standards,'suites':suites,'identities':identities,'main_table':{'columns':headers,'rows':main}})

@@ -463,7 +463,11 @@ def code_identity():
         report_names.extend(p.relative_to(LAB).as_posix() for p in sorted((LAB / directory).rglob('*'))
                             if p.is_file() and p.suffix in ('.py', '.md', '.json'))
     report = {name: sha256(LAB / name) for name in sorted(set(report_names))}
-    return {'evaluation_code_commit': git('rev-parse', 'HEAD'),
+    audit_names = ('tools/evaluation/g1_run_audit.py', 'tools/evaluation/g1_audit_compatibility.py',
+                   'tools/evaluation/g1_recovery_protocol.py', 'tools/evaluation/g1_robustness_store.py')
+    audit = {name: sha256(LAB / name) for name in audit_names}
+    return {'audit_code_sha256': digest(audit), 'audit_code_sources': audit,
+            'evaluation_code_commit': git('rev-parse', 'HEAD'),
             'evaluation_runtime_sha256': digest(runtime),
             'evaluation_runtime_sources': runtime,
             'evaluation_runtime_dirty': bool(git('status', '--porcelain', '--', *EVALUATION_RUNTIME_SOURCES)),
@@ -715,7 +719,12 @@ class RunStore:
         events = [e for r in records for e in read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))]
         atomic_write(self.path / 'events.csv', csv_bytes(events))
 
-    def validate(self, require_complete=True, *, allow_synthetic=False):
+    def validate(self, require_complete=True, *, allow_synthetic=False, validation_level='light', workers=1):
+        from g1_run_audit import validate_store
+        return validate_store(self, require_complete, allow_synthetic=allow_synthetic,
+                              validation_level=validation_level, workers=workers)
+
+    def _validate_light(self, require_complete=True, *, allow_synthetic=False):
         identity = read_json(self.path / 'identity.json')
         if identity.get('synthetic') and not allow_synthetic:
             raise ValueError('Synthetic results cannot enter the real registry')
@@ -779,52 +788,13 @@ class RunStore:
             if sha256(trace) != r['trace_sha256']:
                 raise ValueError('Corrupt trace')
             read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))
-            import numpy as np
-            with np.load(trace, allow_pickle=False) as data:
-                required = {'time', 'root_velocity', 'root_velocity_world', 'com_velocity', 'roll_pitch',
-                            'yaw', 'forces', 'root_position', 'fell', 'timeout', 'out_of_test_area', 'plane_json'}
-                if common and r['status'] != 'EVALUATION_ERROR':
-                    required |= {'command', 'root_quaternion_wxyz', 'root_clearance_m', 'local_plane_normal',
-                                 'local_plane_point', 'angular_velocity_world_z', 'data_valid', 'gravity_tilt_rad',
-                                 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag', 'post_push_sample'}
-                if not required.issubset(data.files) or len(data['time']) == 0:
-                    raise ValueError('Missing required trace fields/frames')
-                if any(len(data[k]) != len(data['time']) for k in required):
-                    raise ValueError('Trace frame counts differ')
-                if len(data['time']) > 1 and not np.allclose(np.diff(data['time']), .02, atol=1e-7):
-                    raise ValueError('Trace must contain every 50 Hz frame')
-                if r.get('survived'):
-                    intervention_time = r.get('sham_marker_time') if r.get('sham_applied') else r.get('actual_push_time')
-                    deadline = protocol['e0']['warmup_s'] + protocol['e0']['observation_s'] if r['experiment'] == 'E0' else intervention_time + protocol['e1']['observation_s']
-                    if data['time'][-1] < deadline - 1e-7:
-                        raise ValueError('Survival claimed before fixed observation deadline')
-                if r['status'] != 'EVALUATION_ERROR' and any(not np.isfinite(data[k]).all() for k in required - {'plane_json'}):
-                    raise ValueError('Non-finite physical trace without EVALUATION_ERROR')
-                if common and r['status'] != 'EVALUATION_ERROR':
-                    from g1_common_task_trial import replay_common_trial
-                    replayed = replay_common_trial(expected[r['trial_id']], protocol, data, r)
-                    actual_record = replayed.result()
-                    from g1_development_validation import ACCEPTANCE_FIELDS
-                    for key in ('status', 'push_applied', 'survived', 'first_post_push_sample_time',
-                                'first_recovery_entry', 'first_confirmation', 'sustained_recovery_entry',
-                                'recovered_once_and_survived', 'recovered_sustained_and_survived',
-                                'relapse_count', 'out_of_domain_duration_after_confirmation',
-                                'recovery_time', 'recovery_steps', 'confirmation_steps',
-                                'intervention_marker_applied', 'sham_applied', 'sham_marker_time',
-                                'sham_task_entry', 'sham_task_confirmation', 'sham_continuity', 'sham_detection_latency',
-                                'sham_complete_windows', 'sham_task_gate_failed_windows', *ACCEPTANCE_FIELDS):
-                        if r.get(key) != actual_record.get(key):
-                            raise ValueError('Common record disagrees with physical replay: ' + key)
-                    rebuilt = replayed.trace()
-                    for key in ('post_push_sample', 'physical_contact', 'physical_touchdown_flags', 'alternating_touchdown_flag'):
-                        if not np.array_equal(data[key], rebuilt[key]):
-                            raise ValueError('Common physical event/sample-role mismatch: ' + key)
-                    if r.get('sham'):
-                        if 'post_sham_sample' not in data or not np.array_equal(data['post_sham_sample'], rebuilt['post_sham_sample']):
-                            raise ValueError('Sham post-marker sample-role mismatch')
-                        events = read_jsonl(self.path / 'trial_events' / (r['trial_id'] + '.jsonl'))
-                        if canonical(events) != canonical(replayed.all_events()):
-                            raise ValueError('Sham event replay mismatch; no physical velocity jump permitted')
+            from g1_run_audit import light_trace
+            times = light_trace(trace, r, common=common)
+            if r.get('survived'):
+                intervention_time = r.get('sham_marker_time') if r.get('sham_applied') else r.get('actual_push_time')
+                deadline = protocol['e0']['warmup_s'] + protocol['e0']['observation_s'] if r['experiment'] == 'E0' else intervention_time + protocol['e1']['observation_s']
+                if times[-1] < deadline - 1e-7:
+                    raise ValueError('Survival claimed before fixed observation deadline')
             if r['status'] == 'RECOVERED_AND_SURVIVED' and not (r['push_applied'] and r['survived']
                     and r['recovery_time'] is not None and r['recovery_steps'] is not None):
                 raise ValueError('Inconsistent recovered-and-survived result')
@@ -847,7 +817,7 @@ class RunStore:
         return identity, records
 
     def complete(self, summary):
-        self.validate()
+        self.validate(validation_level='sampled')
         if summary.get('status') != 'COMPLETE':
             raise ValueError('Summary is not complete')
         if not (self.path / 'effective_env_config.yaml').exists() or not (self.path / 'run.log').exists():
@@ -856,7 +826,8 @@ class RunStore:
         write_json(self.path / 'summary.json', summary)
         files = {str(p.relative_to(self.path)): sha256(p) for p in self.path.rglob('*')
                  if p.is_file() and p.name not in ('completion.json', '.run.lock')}
-        write_json(self.path / 'completion.json', {'status': 'COMPLETE', 'completed_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'files': files})
+        write_json(self.path / 'completion.json', {'status': 'COMPLETE', 'validation_level': 'sampled',
+            'sampled_replay_audit_sha256': sha256(self.path / 'sampled_replay_audit.json'), 'completed_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'files': files})
 
 
 def register_result(root, run):

@@ -260,27 +260,27 @@ def store_fixture(tmp_path, machines):
 
 def test_store_recomputes_sham_e0_and_realized_environment(tmp_path, machines):
     store = store_fixture(tmp_path, machines)
-    assert len(store.validate(allow_synthetic=True)[1]) == 8
+    assert len(store.validate(allow_synthetic=True, validation_level="full")[1]) == 8
     sham = next(m for m in machines if m.sham)
     path = store.path/'trial_records'/f"{sham.plan['trial_id']}.json"
     original = protocol.read_json(path)
     for field, value in [('sham_continuity',False), ('sham_detection_latency',99), ('sham_marker_time',99), ('push_applied',True)]:
         protocol.write_json(path, {**original, field:value})
-        with pytest.raises((ValueError, KeyError)): store.validate(allow_synthetic=True)
+        with pytest.raises((ValueError, KeyError)): store.validate(allow_synthetic=True, validation_level="full")
     protocol.write_json(path, original)
     events_path = store.path/'trial_events'/f"{sham.plan['trial_id']}.jsonl"
     events = protocol.read_jsonl(events_path)
     protocol.atomic_write(events_path, protocol.jsonl(events+[dict(event='velocity_jump', time=sham.sham_marker_time)]))
-    with pytest.raises(ValueError, match='Sham event replay'): store.validate(allow_synthetic=True)
+    with pytest.raises(ValueError, match='replay mismatch'): store.validate(allow_synthetic=True, validation_level="full")
     protocol.atomic_write(events_path, protocol.jsonl(events))
     e0_path = store.path/'trial_records'/f"{machines[0].plan['trial_id']}.json"
     e0 = protocol.read_json(e0_path)
     protocol.write_json(e0_path, {**e0, 'common_task_gate_pass_windows': e0['common_task_gate_pass_windows']+1})
-    with pytest.raises(ValueError, match='physical replay'): store.validate(allow_synthetic=True)
+    with pytest.raises(ValueError, match='replay mismatch'): store.validate(allow_synthetic=True, validation_level="full")
     protocol.write_json(e0_path, e0)
     effective = protocol.load_yaml(store.path/'effective_env_config.yaml'); effective['terrain_mesh_sha256'] = 'changed'
     protocol.atomic_write(store.path/'effective_env_config.yaml', yaml.safe_dump(effective))
-    with pytest.raises(ValueError, match='Realized environment hash'): store.validate(allow_synthetic=True)
+    with pytest.raises(ValueError, match='Realized environment hash'): store.validate(allow_synthetic=True, validation_level="full")
 
 
 def test_runner_rejects_noncommon_before_checkpoint_or_simulator(tmp_path, monkeypatch):

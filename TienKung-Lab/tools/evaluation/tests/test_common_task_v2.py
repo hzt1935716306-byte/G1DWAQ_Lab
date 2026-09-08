@@ -234,13 +234,13 @@ def test_common_storage_revalidates_gate_timing_events_and_snapshot(tmp_path):
     protocol.atomic_write(dest/'manifest_snapshot.jsonl', protocol.jsonl([m.plan]))
     store = protocol.RunStore(dest)
     store.save_trial(record, trace, m.all_events())
-    assert store.validate(allow_synthetic=True)[1][0]['recovered_sustained_and_survived']
+    assert store.validate(allow_synthetic=True, validation_level="full")[1][0]['recovered_sustained_and_survived']
     with pytest.raises(ValueError, match='Synthetic'):
         store.validate()
     stored = store.records()[0]; stored['recovery_steps'] += 1
     protocol.write_json(dest/'trial_records'/f"{record['trial_id']}.json", stored)
     with pytest.raises(ValueError, match='replay'):
-        store.validate(allow_synthetic=True)
+        store.validate(allow_synthetic=True, validation_level="full")
     stored['recovery_steps'] -= 1
     protocol.write_json(dest/'trial_records'/f"{record['trial_id']}.json", stored)
     trace['post_push_sample'][:] = False
@@ -249,7 +249,7 @@ def test_common_storage_revalidates_gate_timing_events_and_snapshot(tmp_path):
     path.write_bytes(stream.getvalue()); stored['trace_sha256'] = protocol.sha256(path)
     protocol.write_json(dest/'trial_records'/f"{record['trial_id']}.json", stored)
     with pytest.raises(ValueError, match='sample-role'):
-        store.validate(allow_synthetic=True)
+        store.validate(allow_synthetic=True, validation_level="full")
 
 
 def test_old_sealed_run_validates_without_mutation():

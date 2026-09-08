@@ -20,7 +20,9 @@ ESTIMATOR=LAB/'logs/g1_com_velocity_estimator/v2_iteration_long_5000_random_init
 
 def immutable_json(path,value):
     if path.exists():
-        if read_json(path)!=value:raise ValueError('Immutable paired identity differs: '+str(path))
+        if read_json(path)!=value:
+            from g1_audit_compatibility import admit_immutable
+            if not admit_immutable(path,value):raise ValueError('Immutable paired identity differs: '+str(path))
     else:write_json(path,value)
 
 

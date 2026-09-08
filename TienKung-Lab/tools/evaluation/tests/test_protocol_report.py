@@ -312,9 +312,9 @@ def test_complete_storage_integrity_uses_real_validator(tmp_path, monkeypatch):
     atomic_write(path / 'effective_env_config.yaml', yaml.safe_dump({'actual_physics': physics}))
     atomic_write(path / 'run.log', 'SYNTHETIC TEST ONLY\n')
     original_validate = RunStore.validate
-    def test_validate(self, require_complete=True):
+    def test_validate(self, require_complete=True, **kwargs):
         assert self.path.is_relative_to(tmp_path)
-        return original_validate(self, require_complete, allow_synthetic=True)
+        return original_validate(self, require_complete, allow_synthetic=True, **kwargs)
     monkeypatch.setattr(RunStore, 'validate', test_validate)
     store.complete(summarize(store.records(), run['manifest']))
     store.validate()

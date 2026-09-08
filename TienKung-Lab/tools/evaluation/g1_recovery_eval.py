@@ -766,9 +766,12 @@ def reanalyze(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation', 'diagnose-common', 'run-development'):
+    for name in ('prepare', 'run', 'report', 'import-results', 'register', 'reanalyze', 'detector-validation', 'diagnose-common', 'run-development', 'audit'):
         cmd = sub.add_parser(name)
         cmd.add_argument('--output_root', default=None)
+        if name == 'audit':
+            cmd.add_argument('--mode', choices=('sampled','full'), default='full')
+            cmd.add_argument('--workers', type=int, default=None)
         if name in ('prepare', 'run', 'reanalyze', 'diagnose-common', 'run-development'):
             cmd.add_argument('--protocol', default=str(COMMON_PROTOCOL if name in ('diagnose-common', 'run-development') else DEFAULT_PROTOCOL))
         if name in ('run', 'run-development', 'register'):
@@ -799,7 +802,10 @@ def main(argv=None):
     if args.output_root is None:
         common = hasattr(args, 'protocol') and is_common(load_yaml(args.protocol))
         args.output_root = str(LAB / 'experiments' / ('g1_recovery_eval_v2' if common else 'g1_recovery_eval'))
-    if args.command == 'prepare':
+    if args.command == 'audit':
+        from g1_run_audit import explicit_audit
+        result = explicit_audit(args.output_root, args.mode, args.workers)
+    elif args.command == 'prepare':
         result = prepare(args.output_root, args.protocol)
     elif args.command == 'register':
         identity = inspect_checkpoint(args.task, args.checkpoint, args.model_alias, args.checkpoint_stage,
@@ -830,6 +836,8 @@ def main(argv=None):
             from g1_recovery_report import build_report
             build_report(args.output_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == 'audit' and result.get('status') == 'AUDIT_FAILED':
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':

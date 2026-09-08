@@ -94,7 +94,9 @@ def load_runs(root, formal_only=True):
             manifest = read_jsonl(path / 'manifest_snapshot.jsonl')
             if 'actual_physics_hash' not in identity:
                 raise ValueError('Missing measured physics profile')
-            runs.append({'id': path.name, 'path': path, 'identity': identity, 'records': records,
+            from g1_run_audit import report_audit_status
+            audit_status = report_audit_status(path)
+            runs.append({'audit_status': audit_status, 'id': path.name, 'path': path, 'identity': identity, 'records': records,
                          'manifest': manifest, 'summary': summarize(records, manifest)})
         except (ValueError, KeyError, OSError) as exc:
             excluded.append((path.name, 'INVALID', str(exc)))
@@ -637,6 +639,9 @@ def build_report(root, formats=('md', 'docx')):
         preserve_existing(report)
         runs, excluded, history = load_runs(root)
         blocks = report_blocks(root, runs, excluded, history)
+        blocks.append(('heading', 2, 'Trace replay audit policy'))
+        blocks.append(('text', 'Report reads LIGHT validation and saved audits only; no automatic FULL replay.'))
+        blocks.append(table(['Run', 'Sampled audit', 'Explicit full audit'], [[r['id'], r.get('audit_status', {}).get('sampled', 'SAMPLED_REPLAY_NOT_AVAILABLE'), r.get('audit_status', {}).get('full', 'FULL_EXPLICIT_AUDIT_NOT_AVAILABLE')] for r in history]))
         outputs = {}
         for ext in formats:
             path = report / f'G1_RECOVERY_EXPERIMENTS.{ext}'
