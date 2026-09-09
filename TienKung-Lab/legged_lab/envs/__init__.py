@@ -347,3 +347,16 @@ task_registry.register(
     G1DwaqSlopeNoSysDMatchedV3EnvCfg(),
     G1DwaqSlopeNoSysDMatchedV3AgentCfg(),
 )
+
+# Reward-on counterpart; existing tasks and registrations stay unchanged.
+from legged_lab.envs.g1.g1_plane_reward_matched_v2_config import (
+    G1PlaneV1EstimatorContextRewardMatchedV2EnvCfg,
+    G1PlaneV1EstimatorContextRewardMatchedV2AgentCfg,
+)
+
+task_registry.register(
+    'g1_plane_v1_estimator_context_reward_matched_v2',
+    G1PlaneV1BaselineMatchedEnv,
+    G1PlaneV1EstimatorContextRewardMatchedV2EnvCfg(),
+    G1PlaneV1EstimatorContextRewardMatchedV2AgentCfg(),
+)

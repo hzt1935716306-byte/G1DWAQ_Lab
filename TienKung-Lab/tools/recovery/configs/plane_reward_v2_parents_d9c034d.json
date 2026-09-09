@@ -1,0 +1,25 @@
+{
+  "base_commit": "d9c034deee7d04cdc8bdfb3410653693c7f5621c",
+  "tasks": {
+    "g1_plane_v1_estimator_context_reward_matched": {
+      "env_sha256": "b85477cce6cbe54cd8038ad4dc178fd3082c19a244c3d5c75292c48b1dab41e9",
+      "agent_sha256": "5c3b95d87752a23c75bb29a72953832f530454bc6bf8e1390123d133011dafbe"
+    },
+    "g1_plane_v1_estimator_context_no_reward_matched": {
+      "env_sha256": "3d59e215aed355400d52207690bf7a2737fe6ecf517037850ecb40fb07957a1a",
+      "agent_sha256": "03f7984454745a34f42e4de7716274877742c36c7cd6ffb8d1bc6847b6dc1271"
+    },
+    "g1_plane_v1_estimator_context_no_reward_matched_v2": {
+      "env_sha256": "7fb593f498be5fc7e256e3f1ef86abbfa69dac496a5ba9a43a76c4458e1f97cd",
+      "agent_sha256": "e681f2b7e53bf359d22c3d1c66a1e0a08fdc3f4d1f1a4142a58e222272871548"
+    },
+    "g1_dwaq_slope_nosys_d_matched_v2": {
+      "env_sha256": "1fa61fb264736182d838e4af143e97dcff43bc612a3c738ded1c9894c9ddfc0c",
+      "agent_sha256": "7a74d41df7d1046061451a942bf89592ce745be4f6909599bcfba7dfccf0ac76"
+    },
+    "g1_dwaq_slope_nosys_d_matched_v3": {
+      "env_sha256": "1e978b455a1271ef41f5c9dea6e1b0176536bcd067e063f03301a580dd0611f6",
+      "agent_sha256": "3a1040c30d4d664220913c619aa072b16b69216a5908e9a7c765756c058b1c28"
+    }
+  }
+}
