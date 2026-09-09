@@ -28,7 +28,7 @@ def immutable_json(path,value):
 
 def model_identity(root,model,index):
     row=next(r for r in index['models'] if r['model']==model)
-    old=LAB/'experiments/g1_recovery_eval_v2/runs'/row['evaluation_id']
+    old=LAB/row.get('run_path', 'experiments/g1_recovery_eval_v2/runs/'+row['evaluation_id'])
     if sha256(old/'completion.json')!=row['completion_sha256']:raise ValueError('Standard seal changed')
     identity=read_json(old/'identity.json')
     mapping={k:identity[k] for k in ('checkpoint_sha256','agent_config_sha256','env_config_sha256')}

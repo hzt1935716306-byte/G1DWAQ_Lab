@@ -27,6 +27,8 @@ TASKS = {
     'ppo_plain': 'g1_slope_nosys_d_matched',
     'ppo_symmetric': 'g1_slope_sys_d_matched',
     'dwaq': 'g1_dwaq_slope_nosys_d_matched',
+    'dwaq_no_idle': 'g1_dwaq_slope_nosys_d_matched_v2',
+    'dwaq_no_swing': 'g1_dwaq_slope_nosys_d_matched_v3',
     'rl_only': 'g1_plane_v1_rl_only_matched',
     'context_only': 'g1_plane_v1_estimator_context_no_reward_matched',
     'context_reward': 'g1_plane_v1_estimator_context_reward_matched',
@@ -40,6 +42,7 @@ STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERE
 # This allowlist is intentionally explicit. Only sources that can alter native
 # inference, trial execution, physical judging, or recovery metrics belong here.
 EVALUATION_RUNTIME_SOURCES = (
+    'legged_lab/envs/g1/g1_reward_shaping_ablation_config.py',
     'tools/evaluation/g1_reduced_budget.py',
     'tools/evaluation/g1_world_wrench.py',
     'tools/evaluation/g1_wrench_validation.py',
@@ -254,6 +257,8 @@ def load_yaml(path):
 def method_for(task):
     for method, name in TASKS.items():
         if task == name:
+            if method in ('dwaq_no_idle', 'dwaq_no_swing'):
+                return 'dwaq'
             return method
     raise ValueError(f'Unsupported task: {task}; privileged tasks are excluded')
 

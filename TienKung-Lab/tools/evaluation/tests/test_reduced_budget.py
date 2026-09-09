@@ -75,7 +75,8 @@ def test_physical_step_loop_exactly_unchanged():
 
 def test_queue_only_proof_rejects_a_physics_change():
     name='tools/evaluation/g1_complete_robustness.py';old=source_at(BASE_COMMIT,name)
-    expected=expected_queue_source(name,old);current=(LAB/name).read_text()
+    from g1_dwaq_ablation_execute import expected_source
+    expected=expected_source(name,expected_queue_source(name,old));current=(LAB/name).read_text()
     assert current==expected
     assert current.replace('env.step(actions)','env.step(actions * 0.9)')!=expected
 
