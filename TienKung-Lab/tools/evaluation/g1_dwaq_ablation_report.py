@@ -64,16 +64,50 @@ def build_report(root=ROOT):
     def text(s):blocks.append(('text',s))
     def table(h,r):blocks.append(('table',h,[[str(v) for v in row] for row in r]))
     def rate(a,k):return rate_text(a[k]['count'],a['designated_real'])
+    blocks.append(('heading',2,'先看结论：三个DWAQ直接比较'))
+    table(['模型','标准持续恢复/240','域内持续恢复/1696','域内实际施扰/1696','域内≤5落脚/1696'],
+        [[labels[m],rate(summaries['标准E1'][m],'recovered_sustained_and_survived'),
+          rate(summaries['域内抗扰'][m],'recovered_sustained_and_survived'),
+          summaries['域内抗扰'][m]['actually_pushed'],rate(summaries['域内抗扰'][m],'recovery_within_5_touchdowns')]
+         for m in ('dwaq',*RUNS)])
+    ranked=sorted(('dwaq',*RUNS),key=lambda m:summaries['域内抗扰'][m]['recovered_sustained_and_survived']['designated_rate'],reverse=True)
+    text('本次固定清单的域内持续恢复排序：'+' > '.join(labels[m] for m in ranked)+'。')
+    text('这里比较的是完成整项评测任务的能力，准备失败也计入分母。未实际施扰不等于被推倒；'
+         '各模型实际施扰的子集不同，不能仅凭条件于施扰的成功率判断谁更抗推。'
+         '时间和落脚数的中位数只统计成功试验，不能单独作为综合排名。')
+    blocks.append(('heading',2,'E0：无扰动命令跟踪'))
+    commands=sorted({r['command_name'] for r in standard['dwaq'] if r['experiment']=='E0'})
+    e0=[]
+    for cmd in commands:
+        for m in order:
+            rows=[r for r in standard[m] if r['experiment']=='E0' and r['command_name']==cmd]
+            def mean(field):
+                values=[r[field] for r in rows if r.get(field) is not None]
+                return fmt(float(np.mean(values))) if values else 'N/A'
+            e0.append([labels[m],cmd,sum(r['status']=='E0_COMPLETED' for r in rows),len(rows),mean('com_xy_velocity_rmse'),mean('root_xy_velocity_rmse')])
+    table(['模型','命令','正常完成','指定数','CoM速度RMSE (m/s)','root速度RMSE (m/s)'],e0)
+    text('E0没有真实扰动，正常完成不属于恢复失败；此处RMSE为各trial指标的算术平均。')
     for name,data in summaries.items():
         blocks.append(('heading',2,name+('（OOD探索，不计入域内排名）' if name==NAMES['extreme_ood'] else '')))
-        table(['模型','指定真实扰动','实际施扰','生存','持续恢复','≤5落脚恢复','中位时间(s)','中位落脚数'],
-            [[labels[m],d['designated_real'],d['actually_pushed'],rate(d,'survived'),rate(d,'recovered_sustained_and_survived'),
+        table(['模型','指定真实扰动','实际施扰','生存/实际施扰','持续恢复/指定','≤5落脚/指定','中位时间(s)','中位落脚数'],
+            [[labels[m],d['designated_real'],d['actually_pushed'],rate_text(d['survived']['count'],d['actually_pushed']),rate(d,'recovered_sustained_and_survived'),
               rate(d,'recovery_within_5_touchdowns'),fmt(d['recovery_time']['median']),fmt(d['recovery_steps']['median'])] for m,d in data.items()])
         if name in ('标准E1','域内抗扰'):
             parent=data['dwaq']
             for m in RUNS:
                 delta=100*(data[m]['recovered_sustained_and_survived']['designated_rate']-parent['recovered_sustained_and_survived']['designated_rate'])
                 text(f"{labels[m]}相对原DWAQ：持续恢复率差值{delta:+.2f}个百分点。恢复时间/步数仅统计实际成功者。")
+    for name in ('标准E1','域内抗扰'):
+        blocks.append(('heading',2,name+'：首次恢复、落脚与复发'))
+        table(['模型','曾通过准备条件（含sham）','一次恢复/指定','持续恢复/实际施扰','≤3落脚/指定','累计复发次数'],
+            [[labels[m],d['readiness_passed'],rate(d,'recovered_once_and_survived'),rate_text(d['recovered_sustained_and_survived']['count'],d['actually_pushed']),rate(d,'recovery_within_3_touchdowns'),d['relapse_count']] for m,d in summaries[name].items()])
+        text('曾通过准备条件不等于最终施扰：等待触地或施扰前复核仍可能失败；实际施扰数以上方主表为准。')
+        table(['模型','准备失败','其中施扰前readiness丢失','跌倒','存活未持续恢复'],
+            [[labels[m],sum(r['status']=='PRECONDITION_FAILED' for r in rows),
+              sum(r.get('precondition_failure_reason')=='READINESS_LOST_BEFORE_PUSH' for r in rows),
+              sum(r['status']=='FELL' for r in rows),
+              sum(bool(r['push_applied'] and r['survived'] and not r['recovered_sustained_and_survived']) for r in rows)]
+             for m,rows in groups[name].items()])
     font=Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
     if font.exists():font_manager.fontManager.addfont(str(font));plt.rcParams['font.family']=font_manager.FontProperties(fname=str(font)).get_name()
     plt.rcParams['axes.unicode_minus']=False
@@ -109,7 +143,7 @@ def build_report(root=ROOT):
     finally:analysis.PAIR_COMPARISONS=previous
     holm(tests);write_json(report/'paired_statistics.json',tests)
     blocks.append(('heading',2,'配对统计：域内持续恢复'))
-    table(['对比','差值(百分点)','95% CI','Holm p'],[[labels[t['model_a']]+' vs '+labels[t['model_b']],fmt(100*t['effect']),[fmt(100*x) if x is not None else 'N/A' for x in t['ci95']],fmt(t['holm_p'],4)] for t in tests if t['cohort']=='域内抗扰' and t['endpoint']=='recovered_sustained_and_survived'])
+    table(['对比','差值(百分点)','95% CI','Holm p'],[[labels[t['model_a']]+' vs '+labels[t['model_b']],fmt(100*t['effect']),[fmt(100*x) if x is not None else 'N/A' for x in t['ci95']],('<0.0001' if t['holm_p']<0.0001 else fmt(t['holm_p'],4))] for t in tests if t['cohort']=='域内抗扰' and t['endpoint']=='recovered_sustained_and_survived'])
     blocks.append(('text','统计比较包含原DWAQ、无idle与无swing；成功率使用exact McNemar，时间/步数仅配对双方均成功的trial使用Wilcoxon。完整数据包含效应量、95%区间及Holm校正。'))
     write_json(report/'summary.json',summaries);write_json(report/'new_sources.json',sources)
     atomic_write(report/'DWAQ_REWARD_ABLATION_COMPARISON.md',markdown(blocks,report))
