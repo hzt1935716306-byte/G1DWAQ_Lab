@@ -13,6 +13,10 @@ def test_unknown_variant_rejected():
 def test_task_identities_remain_distinct():
     assert len({TASKS[k] for k in ('dwaq','dwaq_no_idle','dwaq_no_swing')}) == 3
 
+def test_context_v2_preserves_native_family_and_distinct_task():
+    assert method_for(TASKS['context_only_v2']) == 'context_only'
+    assert TASKS['context_only_v2'] != TASKS['context_only']
+
 @pytest.mark.parametrize('rows', [
     [{'trial_id':'a','status':'FELL'}],
     [{'trial_id':'a','status':'FELL'},{'trial_id':'a','status':'FELL'}],

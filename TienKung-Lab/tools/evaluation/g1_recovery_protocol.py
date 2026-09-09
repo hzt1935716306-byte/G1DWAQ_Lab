@@ -31,6 +31,7 @@ TASKS = {
     'dwaq_no_swing': 'g1_dwaq_slope_nosys_d_matched_v3',
     'rl_only': 'g1_plane_v1_rl_only_matched',
     'context_only': 'g1_plane_v1_estimator_context_no_reward_matched',
+    'context_only_v2': 'g1_plane_v1_estimator_context_no_reward_matched_v2',
     'context_reward': 'g1_plane_v1_estimator_context_reward_matched',
 }
 COMPATIBILITY = ('protocol_hash', 'manifest_hash', 'metrics_version', 'metrics_config_hash',
@@ -259,6 +260,8 @@ def method_for(task):
         if task == name:
             if method in ('dwaq_no_idle', 'dwaq_no_swing'):
                 return 'dwaq'
+            if method == 'context_only_v2':
+                return 'context_only'
             return method
     raise ValueError(f'Unsupported task: {task}; privileged tasks are excluded')
 
