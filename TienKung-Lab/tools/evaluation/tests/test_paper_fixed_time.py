@@ -61,3 +61,18 @@ def test_impulse_ledger_rejects_duplicate_physics_callback():
  from g1_paper_recovery import PhysicsImpulseLedger
  ledger=PhysicsImpulseLedger(1,.005,0);ledger.advance(1)
  with pytest.raises(ValueError,match='exactly one'):ledger.advance(1)
+
+
+def test_continuation_rejects_runtime_and_sealed_record_changes(tmp_path):
+ import pytest,json,hashlib
+ from g1_paper_execution import verify_run,runtime_key
+ b=dict(runtime=dict(evaluation_code_commit='fixed',evaluation_runtime_sha256='native',paper_sources={'sim':'source'}),checkpoint_sha256='cp',manifest_hash='plan',protocol_sha256='protocol',num_envs=64)
+ (tmp_path/'binding.json').write_text(json.dumps(b));(tmp_path/'records').mkdir();record=tmp_path/'records/a.json';record.write_text('{}')
+ h=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+ (tmp_path/'completion.json').write_text(json.dumps(dict(status='COMPLETE',episodes=1,binding_sha256=h(tmp_path/'binding.json'),records_sha256={'a.json':h(record)})))
+ expected={k:b[k] for k in ['checkpoint_sha256','manifest_hash','protocol_sha256','num_envs']};expected.update(runtime=runtime_key(b),episodes=1)
+ verify_run(tmp_path,expected,True)
+ bad=copy.deepcopy(expected);bad['runtime']['evaluation_code_commit']='other'
+ with pytest.raises(ValueError,match='runtime'):verify_run(tmp_path,bad,True)
+ record.write_text('{"edited":true}')
+ with pytest.raises(ValueError,match='record changed'):verify_run(tmp_path,expected,True)

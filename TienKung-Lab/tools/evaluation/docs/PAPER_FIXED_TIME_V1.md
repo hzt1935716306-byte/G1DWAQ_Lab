@@ -137,3 +137,15 @@ This64-trial diagnostic completed with all applied pulses at40 physical steps;
 falls remain valid outcomes. This is not evidence of bitwise repeatability across
 runs. Formal execution is stopped pending an explicitly versioned continuation;
 never merge the incomplete old B1 attempt or validation into formal statistics.
+
+## Authorized continuation after the fix
+
+`g1_paper_execution.py` freezes an explicit execution index before continuing.
+A keeps its complete same-runtime three-method cohort. B1/B2/C_force/C_load use
+one repaired runtime for all methods. The judge, reset plan and direction
+function AST must match the retained A implementation. Each selected attempt
+is bound to its checkpoint, manifest, protocol, batch size, runtime and completion
+seal. The failed PPO B1 attempt-001 is retained but excluded; attempt-002 repeats
+the same full B1 plan. Reports check the selected cohorts, with no cross-suite
+pooling. Resume with `python -B tools/evaluation/g1_paper_queue.py` from the frozen
+commit. An unexpected error stops this queue; it does not silently retry seeds.

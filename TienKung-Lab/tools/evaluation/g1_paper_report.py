@@ -7,16 +7,20 @@ from g1_paper_recovery import ROOT,MODELS
 from g1_recovery_protocol import read_json,write_json,sha256
 
 def load(stage):
-    data={};formal_runtime=None
+    data={}
+    jobs=None
+    if stage=='formal':
+        from g1_paper_execution import PLAN,verify_run
+        jobs=read_json(PLAN)['jobs']
     for m in MODELS:
         records=[];seen=set()
-        for seal in sorted((ROOT/stage/m).glob('**/completion.json')):
+        seals=sorted((ROOT/stage/m).glob('**/completion.json')) if jobs is None else [Path(j['run'])/'completion.json' for j in jobs if j['model']==m]
+        for seal in seals:
             run=seal.parent;c=read_json(seal)
             binding=read_json(run/'binding.json')
-            key=(binding['runtime']['evaluation_runtime_sha256'],binding['runtime']['paper_sources'],binding['protocol_sha256'],binding['num_envs'])
-            if stage=='formal':
-                if formal_runtime is not None and key!=formal_runtime:raise ValueError('Different formal runtime/physics protocol')
-                formal_runtime=key
+            if jobs is not None:
+                expected=next(j for j in jobs if Path(j['run'])==run)
+                verify_run(run,expected,True)
             for f,h in c['records_sha256'].items():
                 path=run/'records'/f
                 if sha256(path)!=h:raise ValueError('Sealed record changed')
@@ -62,6 +66,7 @@ def report(stage):
     fmt=lambda v:'N/A' if v is None else f'{v:.3f}'
     for m,rr in data.items():
         summ[m]={s:stats([r for r in rr if r['suite']==s]) for s in ['A','B1','B2','C_force','C_load']}
+    if stage=='formal':lines+=['A retains the complete pre-fix runtime cohort. B/C use a common repaired runtime across methods. Judge/reset definitions are unchanged; runtime hashes are in execution_continuation.json. No cross-suite pooling.','']
     lines+=['## A: normal walking','']
     table(['Method','slope deg','command m/s','success','XY velocity RMSE m/s','yaw RMSE rad/s','tracking duration mean s'],[[m,s,v,rate(sum(r['episode_success'] for r in a),len(a)),fmt(np.mean([r['velocity_rmse_mps'] for r in a if r['velocity_rmse_mps'] is not None])) if a else 'N/A',fmt(np.mean([r['yaw_rate_rmse_radps'] for r in a if r['yaw_rate_rmse_radps'] is not None])) if a else 'N/A',fmt(np.mean([r['tracking_duration_s'] for r in a])) if a else 'N/A'] for m,rr in data.items() for s in [-10,0,10] for v in [.5,1.] for a in [[r for r in rr if r['suite']=='A' and r['slope_deg']==s and r['command_vx']==v]]])
     for suite in ['B1','B2']:
