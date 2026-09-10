@@ -96,17 +96,21 @@ def report(stage):
         for col,field in enumerate(['recovery_time','recovery_steps']):
             values=[[r[field] for r in rr if r['suite']==suite and r['recovered']] for rr in data.values()];axes[row,col].boxplot([a or [np.nan] for a in values],tick_labels=list(data));axes[row,col].set(title=suite,ylabel='Recovery time (s)' if col==0 else 'Physical touchdowns (count)')
     fig.tight_layout();fig.savefig(out/'fig3_time_steps.png',dpi=160);plt.close(fig)
+    colors={'ppo':'tab:blue','dwaq':'tab:orange','ours':'tab:green'}
     tid='B1_s+0_v0.5_d0_a0.6_r000';fig,axes=plt.subplots(4,1,figsize=(11,9),sharex=True)
     for m,rr in data.items():
         r=next((r for r in rr if r['trial_id']==tid),None)
         if r is None:continue
         with np.load(Path(r['run'])/'traces'/(tid+'.npz')) as z:
-            ts=z['time'];axes[0].plot(ts,np.linalg.norm(z['com_velocity'][:,:2]-z['command'][:,:2],axis=1),label=m);axes[1].plot(ts,np.rad2deg(z['roll_pitch'][:,0]),label=m+' roll');axes[1].plot(ts,np.rad2deg(z['roll_pitch'][:,1]),'--',label=m+' pitch')
+            ts=z['time'];axes[0].plot(ts,np.linalg.norm(z['com_velocity'][:,:2]-z['command'][:,:2],axis=1),label=m);axes[1].plot(ts,np.rad2deg(z['roll_pitch'][:,0]),label=m+' roll',color=colors[m]);axes[1].plot(ts,np.rad2deg(z['roll_pitch'][:,1]),'--',label=m+' pitch',color=colors[m])
             for j in range(2):axes[j+2].step(ts,z['physical_contact'][:,j].astype(float)+list(data).index(m)*1.3,label=m,where='post')
         for ax in axes:
             if r['actual_onset'] is not None:ax.axvspan(r['actual_onset'],r['actual_release'],alpha=.07)
-            if r['first_confirmation'] is not None:ax.axvline(r['first_confirmation'],alpha=.4,linestyle='--')
-    for ax,label in zip(axes,['XY velocity error (m/s)','Roll / pitch (deg)','Left contact (offset by method)','Right contact (offset by method)']):ax.set_ylabel(label);ax.legend(fontsize=7)
+            if r['first_confirmation'] is not None:ax.axvline(r['first_confirmation'],alpha=.7,linestyle='--',color=colors[m],label=m+' confirmation' if ax is axes[0] else None)
+    for ax,label in zip(axes,['XY velocity error (m/s)','Roll / pitch (deg)','Left foot contact','Right foot contact']):ax.set_ylabel(label);ax.legend(fontsize=7)
+    for ax in axes[2:]:ax.set_yticks([.5,1.8,3.1],list(data))
+    axes[0].axhline(.2,color='gray',linestyle=':',label='velocity threshold')
+    axes[0].legend(fontsize=7)
     axes[-1].set_xlabel('Episode time (s)');fig.tight_layout();fig.savefig(out/'fig4_trace.png',dpi=160);plt.close(fig)
     lines+=['## Figures','',*[f'![{name}]({name}.png)' for name in ['fig1_strength','fig2_cumulative','fig3_time_steps','fig4_trace']],'','Representative trace fixed before results: '+tid+'. Same ID for all methods; failures/censoring shown without replacement.','D skipped: no matched reward-on V2 checkpoint available.','']
     write_json(out/'summary.json',summ);(out/'RESULTS.md').write_text('\n'.join(lines))
