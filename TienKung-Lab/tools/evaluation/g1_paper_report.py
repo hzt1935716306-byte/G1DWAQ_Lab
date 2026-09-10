@@ -57,7 +57,7 @@ def report(stage):
         expected={r['trial_id'] for r in read_json(ROOT/'formal_frozen_manifest.json')}
         if len(expected)!=6420 or any({r['trial_id'] for r in rr}!=expected for rr in data.values()):
             raise ValueError('Formal report requires all6420 paired episodes per method')
-    out=ROOT/stage/'report';out.mkdir(parents=True,exist_ok=True);summ={};lines=['# G1 fixed-time slope recovery: PPO / DWAQ V3 / Ours','',f'Stage: {stage}; independent candidate protocol. Training seed42 only; repeat-block evaluation bootstrap does not measure training-seed uncertainty. No readiness selection. All failures retained.','']
+    out=ROOT/stage/'report';out.mkdir(parents=True,exist_ok=True);summ={};lines=['# G1 fixed-time slope recovery: '+' / '.join(data),'',f'Stage: {stage}; independent candidate protocol. Training seed42 only; repeat-block evaluation bootstrap does not measure training-seed uncertainty. No readiness selection. All failures retained.','']
     def table(headers,rows):
         lines.append('| '+' | '.join(headers)+' |');lines.append('| '+' | '.join(['---']*len(headers))+' |')
         for row in rows:lines.append('| '+' | '.join(str(x) for x in row)+' |')
