@@ -29,7 +29,7 @@ def execute(args):
     if (out/'binding.json').exists() and read_json(out/'binding.json')!=binding:raise ValueError('Existing run runtime/input mismatch; preserve and use new attempt')
     write_json(out/'binding.json',binding)
     if (out/'failure.json').exists():raise ValueError('Prior evaluation error preserved; requires inspected new attempt')
-    snapshot=snapshot_checkpoint(ROOT/args.model,identity)
+    snapshot=snapshot_checkpoint(Path(getattr(args,'snapshot_root',ROOT))/args.model,identity)
     os.chdir(LAB);sys.path.insert(0,str(LAB));sys.path.insert(0,str(LAB/'rsl_rl'))
     from isaaclab.app import AppLauncher
     app=AppLauncher(headless=True,device=args.device).app
@@ -37,14 +37,18 @@ def execute(args):
     try:
         p=load_yaml(LAB/'tools/evaluation/configs/g1_recovery_eval_lite_v2.yaml')
         # Reuse only physical GT adapter schema; old common judge is NEVER called.
-        p['slopes_deg']=[-10,0,10];p['manifest_seed']=26101000
+        physical_protocol=read_json(ROOT/('protocol.json' if args.stage=='pilot' else 'protocol_frozen.json'))
+        p['slopes_deg']=physical_protocol['slopes_deg'];p['manifest_seed']=physical_protocol.get('terrain_seed',26101000)
         envargs=argparse.Namespace(task=identity['task_name'],num_envs=args.num_envs,device=args.device,headless=True)
         env,runner,policy,weights,effective=make_evaluation_environment(envargs,p,identity,snapshot)
         effective['realized_slopes_deg']=measure_realized_slopes(env.eval_mesh,effective['terrain_origins'],p['slopes_deg'])
         effective['versions']=runtime_environment_versions();(out/'effective_environment.yaml').write_text(yaml.safe_dump(effective,sort_keys=False))
         # Paired physical baseline independent of native observation/network structures.
         contract={k:effective[k] for k in ['actual_physics_hash','realized_slopes_deg']};contract['base_masses']=env.robot.root_physx_view.get_masses().cpu().tolist()
-        cpath=ROOT/('paired_physics_'+str(args.num_envs)+'.json')
+        if getattr(args,'contract_root',None) is not None:
+            contract['terrain_mesh_sha256']=effective['terrain_mesh_sha256']
+            contract['terrain_origins_sha256']=digest(effective['terrain_origins'])
+        cpath=Path(getattr(args,'contract_root',ROOT))/('paired_physics_'+str(args.num_envs)+'.json')
         if cpath.exists() and read_json(cpath)!=contract:raise ValueError('Methods physical baseline differs')
         write_json(cpath,contract)
         native_ranges=env.cfg.commands.ranges
