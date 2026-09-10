@@ -23,6 +23,12 @@ def main():
             child=subprocess.Popen(command,cwd=LAB,env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
             sealed_at=None
             while child.poll() is None:
+                if (out/'failure.json').exists():
+                    os.killpg(child.pid,signal.SIGTERM)
+                    try:child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid,signal.SIGKILL);child.wait()
+                    break
                 seal=out/'completion.json'
                 if seal.exists():
                     if sealed_at is None:sealed_at=time.monotonic()

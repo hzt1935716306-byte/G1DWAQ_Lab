@@ -38,6 +38,22 @@ def plans(pilot=False):
     return rows
 
 
+class PhysicsImpulseLedger:
+    """Integrate only completed simulation steps, never reset/forward writes."""
+    def __init__(self, num_envs, dt, initial_counter):
+        self.dt=dt;self.last_counter=initial_counter
+        self.pending=np.zeros((num_envs,3));self.impulse=np.zeros_like(self.pending)
+        self.steps=np.zeros(num_envs,dtype=int)
+    def write(self, forces):
+        self.pending[:]=forces
+    def advance(self, counter):
+        if counter!=self.last_counter+1:
+            raise ValueError('Impulse ledger requires exactly one callback per physical step')
+        self.impulse+=self.pending*self.dt
+        self.steps+=np.any(self.pending!=0,axis=1)
+        self.last_counter=counter
+
+
 class Trial:
     def __init__(self,plan):
         self.plan=plan;self.contact=PhysicalTouchdowns(5.,3.,2,.08);self.frames=[];self.events=[];self.status=None;self.onset=None;self.release=None;self.hold_start=None;self.confirmation=None;self.steps=None;self.pre_state=None;self.count_start=None;self.last_t=None

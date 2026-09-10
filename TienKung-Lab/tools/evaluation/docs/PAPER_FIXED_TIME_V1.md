@@ -115,3 +115,25 @@ verified against pilot_admission.json; original plans and failed startup attempt
 remain preserved. App shutdown occasionally hangs after a complete seal; the
 queue verifies record hashes and terminates only its own process group after20s.
 This cleanup is distinct from an incomplete or failed experiment.
+
+## Reset/write impulse accounting correction
+
+The first formal PPO B1 attempt stopped on the40-physics-step pulse assertion.
+BaseEnv.reset and the evaluation reset adapter each call write_data_to_sim,
+without advancing physics. Counting writes therefore overcounts impulse for
+other robots still under force when one robot resets. PhysicsImpulseLedger now
+integrates after each completed physics substep and rejects duplicate callbacks.
+Force construction, physical dt, recovery judge and native code are unchanged.
+
+A separate validation stage can execute a fixed slice of the frozen formal plan
+without entering formal reports. The failing batch was checked with:
+
+```bash
+$PY -B tools/evaluation/g1_paper_sim.py --model ppo --stage validation \
+  --suite B1 --offset 192 --limit 64 --attempt reset-impulse-fix-001
+```
+
+This64-trial diagnostic completed with all applied pulses at40 physical steps;
+falls remain valid outcomes. This is not evidence of bitwise repeatability across
+runs. Formal execution is stopped pending an explicitly versioned continuation;
+never merge the incomplete old B1 attempt or validation into formal statistics.

@@ -3,7 +3,7 @@ import argparse,copy,json,os,sys,time,traceback
 from pathlib import Path
 import numpy as np
 import yaml
-from g1_paper_recovery import ROOT,Trial,direction,VERSION
+from g1_paper_recovery import ROOT,Trial,direction,VERSION,PhysicsImpulseLedger
 from g1_recovery_protocol import LAB,read_json,write_json,sha256,load_yaml,digest,code_identity
 
 
@@ -17,8 +17,9 @@ def execute(args):
     for field in ['checkpoint_sha256','env_config_sha256','agent_config_sha256','native_configuration_sha256','resources']:
         if fresh[field]!=identity[field]:raise ValueError('Pinned native identity changed: '+field)
     identity=CheckpointIdentity(identity,inputs=fresh.inputs)
-    rows=read_json(ROOT/(('formal_frozen' if args.stage=='formal' else args.stage)+'_manifest.json'))
+    rows=read_json(ROOT/(('formal_frozen' if args.stage in ('formal','validation') else args.stage)+'_manifest.json'))
     if args.suite:rows=[r for r in rows if r['suite']==args.suite]
+    rows=rows[args.offset:]
     if args.limit:rows=rows[:args.limit]
     out=ROOT/args.stage/args.model/(args.suite or 'all')/args.attempt
     out.mkdir(parents=True,exist_ok=True)
@@ -51,7 +52,7 @@ def execute(args):
         ids,body_names=env.robot.find_bodies('torso_link',preserve_order=True)
         if body_names!=['torso_link']:raise ValueError('Unique torso required')
         body=int(ids[0]);base_mass=env.robot.root_physx_view.get_masses().clone();base_inertia=env.robot.root_physx_view.get_inertias().clone();total=base_mass.sum(1)
-        original_write=env.scene.write_data_to_sim;original_update=env.scene.update;enabled=False;base_counter=0;impulses=np.zeros((args.num_envs,3));force_steps=np.zeros(args.num_envs,int);substep_falls={}
+        original_write=env.scene.write_data_to_sim;original_update=env.scene.update;enabled=False;base_counter=0;impulses=np.zeros((args.num_envs,3));force_steps=np.zeros(args.num_envs,int);substep_falls={};ledger=None
         def write():
             if not enabled:return original_write()
             t=(int(env.sim_step_counter)-base_counter-1)*env.physics_dt
@@ -66,11 +67,12 @@ def execute(args):
                     forces[j]=direction(plan,True)*magnitude;active.append(j)
             link=env.robot.data.body_link_pos_w[:,body].detach().cpu().numpy();q=env.robot.data.body_link_quat_w[:,body].detach().cpu().numpy();point=env.robot.data.body_com_pos_w[:,body].detach().cpu().numpy()
             set_world_wrenches(env.robot.permanent_wrench_composer,forces,point,np.zeros_like(forces),link,q,body,env.device)
-            for j in active:impulses[j]+=forces[j]*env.physics_dt;force_steps[j]+=1
+            ledger.write(forces)
             return original_write()
         def update(*a,**kw):
             result=original_update(*a,**kw)
             if enabled:
+                ledger.advance(int(env.sim_step_counter))
                 contact=env.contact_sensor.data.net_forces_w_history[:,:,env.termination_contact_cfg.body_ids]
                 fall=torch.any(torch.max(torch.linalg.vector_norm(contact,dim=-1),dim=1)[0]>1.,dim=1).cpu().tolist()
                 for j in range(active_count):
@@ -98,7 +100,8 @@ def execute(args):
                 env.eval_masses=mass.to(env.device)
                 obs,extra=env.begin_batch(padded);machines=[Trial(r) for r in padded]
                 for j in range(active_count,env.num_envs):machines[j].status='NOT_SCHEDULED'
-                impulses[:]=0;force_steps[:]=0;substep_falls.clear();base_counter=int(env.sim_step_counter);enabled=True
+                substep_falls.clear();base_counter=int(env.sim_step_counter)
+                ledger=PhysicsImpulseLedger(args.num_envs,env.physics_dt,base_counter);impulses=ledger.impulse;force_steps=ledger.steps;enabled=True
                 frames=env.physical_snapshot()
                 for j,m in enumerate(machines[:active_count]):m.feed({**frames[j],'time':0.})
                 for step in range(1,601):
@@ -129,7 +132,7 @@ def execute(args):
                         if m.status:
                             tid=m.plan['trial_id'];record=m.result();record.update(method=args.model,task=identity['task_name'],checkpoint=identity['checkpoint_path'],checkpoint_sha256=identity['checkpoint_sha256'],training_seed=identity.get('training_seed'),mass_kg=float(mass[j].sum()),original_mass_kg=float(total[j]),payload_mass_kg=float(mass[j].sum()-total[j]),applied_impulse_Ns=impulses[j].tolist(),force_substeps=int(force_steps[j]),first_fall_time=substep_falls.get(j))
                             if m.plan['suite']=='B1' and m.onset is not None and record['observation_end']>=m.release-1e-9 and m.status!='FELL':
-                                if force_steps[j]!=40:raise ValueError('Force pulse not exactly0.2s')
+                                if force_steps[j]!=40:raise ValueError(f'Force pulse not exactly0.2s: trial={tid}, steps={force_steps[j]}, onset={m.onset}, release={m.release}')
                                 expected=direction(m.plan,True)*float(total[j])*m.plan['strength']
                                 if not np.allclose(impulses[j],expected,atol=1e-5):raise ValueError('Impulse contract mismatch')
                             if tid not in completed:
@@ -150,4 +153,4 @@ def execute(args):
         app.close()
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--model',choices=['ppo','dwaq','ours'],required=True);p.add_argument('--stage',choices=['pilot','calibration','formal'],required=True);p.add_argument('--suite',choices=['A','B1','B2','C_force','C_load']);p.add_argument('--num_envs',type=int,default=64);p.add_argument('--device',default='cuda:0');p.add_argument('--limit',type=int);p.add_argument('--attempt',default='attempt-001');execute(p.parse_args())
+    p=argparse.ArgumentParser();p.add_argument('--model',choices=['ppo','dwaq','ours'],required=True);p.add_argument('--stage',choices=['pilot','calibration','formal','validation'],required=True);p.add_argument('--suite',choices=['A','B1','B2','C_force','C_load']);p.add_argument('--num_envs',type=int,default=64);p.add_argument('--device',default='cuda:0');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int);p.add_argument('--attempt',default='attempt-001');execute(p.parse_args())

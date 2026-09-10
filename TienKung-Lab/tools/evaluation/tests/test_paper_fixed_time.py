@@ -38,3 +38,26 @@ def test_velocity_oscillation_does_not_cancel():
  p=next(r for r in plans(True) if r['suite']=='B2');m=Trial(p);m.feed(frame(0));m.applied(frame(0),{})
  for i in range(1,601):m.feed(frame(i*.02,v=.5+(-1)**i*.3))
  assert not m.result()['recovered'] and m.result()['recovery_time'] is None
+
+
+def test_reset_scene_writes_do_not_add_force_impulse():
+ from g1_paper_recovery import PhysicsImpulseLedger
+ ledger=PhysicsImpulseLedger(2,.005,100)
+ force=np.array([[50.,0,0],[0,0,0]])
+ for i in range(1,41):
+  ledger.write(force);ledger.advance(100+i)
+  if i==10:
+   # Another robot resets: base reset and evaluator reset both write,
+   # but neither advances physics. The old write-hook counted two extra steps.
+   ledger.write(force);ledger.write(force)
+ assert ledger.steps.tolist()==[40,0]
+ assert np.allclose(ledger.impulse,[[10.,0,0],[0,0,0]])
+ ledger.write(np.zeros((2,3)));ledger.advance(141)
+ assert ledger.steps.tolist()==[40,0]
+
+
+def test_impulse_ledger_rejects_duplicate_physics_callback():
+ import pytest
+ from g1_paper_recovery import PhysicsImpulseLedger
+ ledger=PhysicsImpulseLedger(1,.005,0);ledger.advance(1)
+ with pytest.raises(ValueError,match='exactly one'):ledger.advance(1)
