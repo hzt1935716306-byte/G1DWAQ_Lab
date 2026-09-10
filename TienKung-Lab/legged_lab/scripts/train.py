@@ -247,6 +247,8 @@ def train():
         env_cfg.stage2_reward.defer_certificate_reward_to_rollout_end = True
 
     agent_cfg = update_rsl_rl_cfg(agent_cfg, args_cli)
+    if args_cli.resume_checkpoint_path is not None and not agent_cfg.resume:
+        raise ValueError("--resume_checkpoint_path requires resume=True in the selected task or CLI")
     resume_level = args_cli.resume_curriculum_level
     resume_iterations = args_cli.resume_curriculum_iterations_in_level
     if args_cli.disable_push_curriculum:
@@ -341,9 +343,22 @@ def train():
     runner_class = eval(agent_cfg.runner_class_name)
     runner = runner_class(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
+    resume_record = None
     if agent_cfg.resume:
         # get path to previous checkpoint
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        if args_cli.resume_checkpoint_path is not None:
+            resume_path = str(Path(args_cli.resume_checkpoint_path).expanduser().resolve())
+            if not Path(resume_path).is_file():
+                raise FileNotFoundError(f"Explicit resume checkpoint does not exist: {resume_path}")
+        else:
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        resume_sha256 = _sha256_file(Path(resume_path))
+        expected_resume_sha256 = getattr(agent_cfg, "parent_checkpoint_sha256", None)
+        if expected_resume_sha256 is not None and resume_sha256 != expected_resume_sha256:
+            raise RuntimeError(
+                "Resume checkpoint SHA256 mismatch: "
+                f"expected={expected_resume_sha256}, actual={resume_sha256}, path={resume_path}"
+            )
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         if args_cli.stage1a_context_warm_start:
             if not getattr(env, "_recovery_context_enabled", False):
@@ -357,11 +372,36 @@ def train():
         else:
             # A same-shape Stage2 resume preserves the model, optimizer, and iteration.
             runner.load(resume_path)
+            loaded_iteration = int(runner.current_learning_iteration)
+            expected_iteration = getattr(agent_cfg, "parent_checkpoint_iteration", None)
+            if expected_iteration is not None and loaded_iteration != int(expected_iteration):
+                raise RuntimeError(
+                    "Resume checkpoint iteration mismatch: "
+                    f"expected={expected_iteration}, actual={loaded_iteration}, path={resume_path}"
+                )
+            if getattr(agent_cfg, "resume_iteration_is_last_completed", False):
+                runner.current_learning_iteration = loaded_iteration + 1
+            resume_record = {
+                "parent_task": getattr(agent_cfg, "parent_task", None),
+                "parent_run": Path(resume_path).parent.name,
+                "parent_checkpoint": str(Path(resume_path).resolve()),
+                "parent_checkpoint_sha256": resume_sha256,
+                "parent_checkpoint_iteration": loaded_iteration,
+                "resume_start_iteration": int(runner.current_learning_iteration),
+                "fine_tune_iterations": int(agent_cfg.max_iterations),
+            }
+            print(
+                "[INFO] Exact same-shape resume: "
+                f"checkpoint_iter={loaded_iteration}, "
+                f"next_iter={runner.current_learning_iteration}, sha256={resume_sha256}"
+            )
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     if estimator_record is not None:
         dump_yaml(os.path.join(log_dir, "params", "estimator.yaml"), estimator_record)
+    if resume_record is not None:
+        dump_yaml(os.path.join(log_dir, "params", "resume_source.yaml"), resume_record)
 
     from rsl_rl.utils.training_provenance import new_training_provenance
     resources = {}
@@ -376,6 +416,8 @@ def train():
     # The parent is recorded, and the exact accumulated budget continues if known.
     runner.training_provenance = new_training_provenance(
         args_cli.task, os.path.join(log_dir, 'params'), resources, runner.training_provenance)
+    if resume_record is not None:
+        runner.training_provenance["resume_source"] = resume_record
     if args_cli.stage1a_context_warm_start:
         runner.training_transitions = None
     if runner.is_distributed:

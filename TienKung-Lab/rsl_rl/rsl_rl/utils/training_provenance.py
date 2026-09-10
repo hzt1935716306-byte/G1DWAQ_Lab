@@ -23,5 +23,7 @@ def new_training_provenance(task, params_dir, resource_paths, parent=None):
 
 def advance_training_transitions(runner):
     # Unknown legacy/warm-start pretraining budgets must remain unknown.
-    if runner.training_transitions is not None:
-        runner.training_transitions += runner.num_steps_per_env * runner.env.num_envs * runner.gpu_world_size
+    if getattr(runner, "training_transitions", None) is not None:
+        runner.training_transitions += (
+            runner.num_steps_per_env * runner.env.num_envs * getattr(runner, "gpu_world_size", 1)
+        )
