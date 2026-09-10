@@ -96,7 +96,7 @@ def report(stage):
         for col,field in enumerate(['recovery_time','recovery_steps']):
             values=[[r[field] for r in rr if r['suite']==suite and r['recovered']] for rr in data.values()];axes[row,col].boxplot([a or [np.nan] for a in values],tick_labels=list(data));axes[row,col].set(title=suite,ylabel='Recovery time (s)' if col==0 else 'Physical touchdowns (count)')
     fig.tight_layout();fig.savefig(out/'fig3_time_steps.png',dpi=160);plt.close(fig)
-    colors={'ppo':'tab:blue','dwaq':'tab:orange','ours':'tab:green'}
+    colors={m:plt.rcParams['axes.prop_cycle'].by_key()['color'][i] for i,m in enumerate(data)}
     tid='B1_s+0_v0.5_d0_a0.6_r000';fig,axes=plt.subplots(4,1,figsize=(11,9),sharex=True)
     for m,rr in data.items():
         r=next((r for r in rr if r['trial_id']==tid),None)
@@ -108,7 +108,7 @@ def report(stage):
             if r['actual_onset'] is not None:ax.axvspan(r['actual_onset'],r['actual_release'],alpha=.07)
             if r['first_confirmation'] is not None:ax.axvline(r['first_confirmation'],alpha=.7,linestyle='--',color=colors[m],label=m+' confirmation' if ax is axes[0] else None)
     for ax,label in zip(axes,['XY velocity error (m/s)','Roll / pitch (deg)','Left foot contact','Right foot contact']):ax.set_ylabel(label);ax.legend(fontsize=7)
-    for ax in axes[2:]:ax.set_yticks([.5,1.8,3.1],list(data))
+    for ax in axes[2:]:ax.set_yticks([.5+1.3*i for i in range(len(data))],list(data))
     axes[0].axhline(.2,color='gray',linestyle=':',label='velocity threshold')
     axes[0].legend(fontsize=7)
     axes[-1].set_xlabel('Episode time (s)');fig.tight_layout();fig.savefig(out/'fig4_trace.png',dpi=160);plt.close(fig)
