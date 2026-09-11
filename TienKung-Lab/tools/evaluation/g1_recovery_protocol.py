@@ -29,10 +29,13 @@ TASKS = {
     'dwaq': 'g1_dwaq_slope_nosys_d_matched',
     'dwaq_no_idle': 'g1_dwaq_slope_nosys_d_matched_v2',
     'dwaq_no_swing': 'g1_dwaq_slope_nosys_d_matched_v3',
+    'dwaq_no_idle_no_swing': 'g1_dwaq_slope_nosys_d_matched_v4',
     'rl_only': 'g1_plane_v1_rl_only_matched',
     'context_only': 'g1_plane_v1_estimator_context_no_reward_matched',
     'context_only_v2': 'g1_plane_v1_estimator_context_no_reward_matched_v2',
+    'context_only_v3': 'g1_plane_v1_estimator_context_no_reward_matched_v3',
     'context_reward': 'g1_plane_v1_estimator_context_reward_matched',
+    'context_reward_v2': 'g1_plane_v1_estimator_context_reward_matched_v2',
 }
 COMPATIBILITY = ('protocol_hash', 'manifest_hash', 'metrics_version', 'metrics_config_hash',
                  'metrics_reference_sha256', 'physics_profile_hash', 'inference_mode',
@@ -44,6 +47,8 @@ STATUSES = {'PRECONDITION_FAILED', 'RECOVERED_AND_SURVIVED', 'ALIVE_NOT_RECOVERE
 # inference, trial execution, physical judging, or recovery metrics belong here.
 EVALUATION_RUNTIME_SOURCES = (
     'legged_lab/envs/g1/g1_reward_shaping_ablation_config.py',
+    'legged_lab/envs/g1/g1_plane_reward_matched_v2_config.py',
+    'legged_lab/envs/__init__.py',
     'tools/evaluation/g1_reduced_budget.py',
     'tools/evaluation/g1_world_wrench.py',
     'tools/evaluation/g1_wrench_validation.py',
@@ -258,10 +263,12 @@ def load_yaml(path):
 def method_for(task):
     for method, name in TASKS.items():
         if task == name:
-            if method in ('dwaq_no_idle', 'dwaq_no_swing'):
+            if method in ('dwaq_no_idle', 'dwaq_no_swing', 'dwaq_no_idle_no_swing'):
                 return 'dwaq'
-            if method == 'context_only_v2':
+            if method in ('context_only_v2', 'context_only_v3'):
                 return 'context_only'
+            if method == 'context_reward_v2':
+                return 'context_reward'
             return method
     raise ValueError(f'Unsupported task: {task}; privileged tasks are excluded')
 
