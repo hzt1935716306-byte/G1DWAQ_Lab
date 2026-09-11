@@ -31,7 +31,7 @@ from g1_reduced_budget import ROOT as REDUCED, SOURCE, TARGET_COUNTS, immutable
 from g1_robustness_protocol import load_prepared as load_robustness
 
 
-ROOT = LAB / 'experiments/g1_new_variants_reduced_eval_v2'
+ROOT = LAB / 'experiments/g1_new_variants_reduced_eval_v3'
 ESTIMATOR = 'logs/g1_com_velocity_estimator/v2_iteration_long_5000_random_init_fixed/com_velocity_estimator_v2_long_best.pt'
 RESOURCE_PATHS = {
     'native_nominal': 'tools/recovery/generated/g1_plane_nominal_params_g1_slope_sys_d_candidate.yaml',
