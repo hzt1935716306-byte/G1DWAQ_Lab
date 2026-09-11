@@ -44,3 +44,11 @@ def test_new_reduced_evaluation_contains_only_requested_variants():
     assert MODELS['context_reward_v2']['native_model'] == 'context_reward'
     assert (FROZEN_REDUCED / 'manifest.jsonl').is_file()
     assert (FROZEN_REDUCED / 'paired_initial_states').is_dir()
+
+def test_reduced_reference_index_has_all_requested_native_families():
+    from collections import Counter
+    from g1_new_variants_reduced_eval import REDUCED
+    from g1_recovery_protocol import read_json
+    rows = read_json(REDUCED / 'primary_matched_source_index.json')['entries']
+    counts = Counter(row['model'] for row in rows)
+    assert all(counts[model] == 1960 for model in ('dwaq', 'context_only', 'context_reward'))

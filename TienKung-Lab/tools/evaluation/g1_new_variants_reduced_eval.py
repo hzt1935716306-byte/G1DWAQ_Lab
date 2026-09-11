@@ -161,6 +161,18 @@ def check_physics(run: Path, reference: Path) -> None:
             raise ValueError(f'Physical/detector identity differs for {field}')
 
 
+def check_reduced_physics(run: Path, native_model: str) -> None:
+    references = [row for row in read_json(REDUCED / 'primary_matched_source_index.json')['entries']
+                  if row['model'] == native_model]
+    if len(references) != 1960:
+        raise ValueError(f'{native_model}: incomplete frozen source index')
+    actual = read_json(run / 'identity.json')
+    for field in PHYSICS_FIELDS:
+        values = {row[field] for row in references}
+        if len(values) != 1 or actual[field] != next(iter(values)):
+            raise ValueError(f'Reduced physical/detector identity differs for {field}')
+
+
 def prepare_standard(alias: str, spec: dict) -> Path:
     root = ROOT / alias / 'standard'
     prepare(root, COMMON_PROTOCOL)
@@ -448,9 +460,7 @@ def run() -> None:
                 '--output_root', str(robustness_root), '--model', spec['native_model'], '--device', 'cuda:0',
             ]
             robustness_run = run_owned(command, robustness_root, alias + '_robustness', state)
-            reference_root = REDUCED / 'execution' / spec['native_model']
-            reference = read_json(reference_root / 'completed_models' / f"{spec['native_model']}.json")
-            check_physics(robustness_run, reference_root / 'runs' / reference['evaluation_id'])
+            check_reduced_physics(robustness_run, spec['native_model'])
             state['completed'].append(alias + '_robustness')
             runs[alias] = (standard_run, robustness_run)
             write_json(ROOT / 'status.json', state)
