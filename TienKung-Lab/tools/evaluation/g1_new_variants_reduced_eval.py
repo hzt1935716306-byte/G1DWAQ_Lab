@@ -31,7 +31,7 @@ from g1_reduced_budget import ROOT as REDUCED, SOURCE, TARGET_COUNTS, immutable
 from g1_robustness_protocol import load_prepared as load_robustness
 
 
-ROOT = LAB / 'experiments/g1_new_variants_reduced_eval_v1'
+ROOT = LAB / 'experiments/g1_new_variants_reduced_eval_v2'
 ESTIMATOR = 'logs/g1_com_velocity_estimator/v2_iteration_long_5000_random_init_fixed/com_velocity_estimator_v2_long_best.pt'
 RESOURCE_PATHS = {
     'native_nominal': 'tools/recovery/generated/g1_plane_nominal_params_g1_slope_sys_d_candidate.yaml',
@@ -87,7 +87,7 @@ def identity_manifest(alias: str, spec: dict) -> Path | None:
         'agent_config_sha256': sha256(checkpoint.parent / 'params/agent.yaml'),
         'env_config_sha256': sha256(checkpoint.parent / 'params/env.yaml'),
         'resources': {
-            role: {'path': path, 'sha256': sha256(LAB / path)}
+            role: {'path': str((LAB / path).resolve()), 'sha256': sha256(LAB / path)}
             for role, path in RESOURCE_PATHS.items()
         },
     }

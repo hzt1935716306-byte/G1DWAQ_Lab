@@ -36,8 +36,9 @@ def test_report_keeps_legal_failures():
                    [{'trial_id':'a'},{'trial_id':'b'}])
 
 def test_new_reduced_evaluation_contains_only_requested_variants():
-    from g1_new_variants_reduced_eval import MODELS
+    from g1_new_variants_reduced_eval import MODELS, ROOT
     assert set(MODELS) == {'dwaq_v4', 'context_only_v3', 'context_reward_v2'}
+    assert ROOT.name == 'g1_new_variants_reduced_eval_v2'
     assert MODELS['dwaq_v4']['native_model'] == 'dwaq'
     assert MODELS['context_only_v3']['checkpoint'].endswith('/model_11999.pt')
     assert MODELS['context_reward_v2']['native_model'] == 'context_reward'
