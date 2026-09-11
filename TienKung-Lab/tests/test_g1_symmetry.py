@@ -146,6 +146,7 @@ def test_actor_recovery_context_is_mirror_invariant(fake_env):
 def test_five_frame_actor_history_with_context_is_mirror_invariant(fake_env):
     fake_env.cfg.robot.actor_obs_history_length = 5
     fake_env.cfg.recovery_context = SimpleNamespace(enabled=True, mode="certificate")
+    fake_env.actor_recovery_context_dim = 3
     observations = torch.randn(6, 5 * 96 + 3)
     observations[:, -3:] = torch.tensor([0.6, -0.2, 1.0])
 
@@ -153,6 +154,46 @@ def test_five_frame_actor_history_with_context_is_mirror_invariant(fake_env):
 
     assert augmented.shape == (12, 483)
     torch.testing.assert_close(augmented[6:, -3:], observations[:, -3:])
+    mirrored_twice, _ = compute_symmetric_states(
+        fake_env, obs=augmented[6:], obs_type="policy"
+    )
+    torch.testing.assert_close(mirrored_twice[6:], observations)
+
+
+@pytest.mark.parametrize(
+    "context",
+    (
+        torch.tensor([0.5, 1.0]),  # N_norm, valid
+        torch.tensor([-0.3, 1.0]),  # margin_norm, valid
+    ),
+)
+def test_five_frame_actor_history_with_projected_context_is_mirror_invariant(
+    fake_env, context
+):
+    fake_env.cfg.robot.actor_obs_history_length = 5
+    fake_env.cfg.recovery_context = SimpleNamespace(enabled=True, mode="certificate")
+    fake_env.actor_recovery_context_dim = 2
+    history = torch.randn(6, 5 * 96)
+    observations = torch.cat((history, context.expand(6, -1)), dim=-1)
+
+    augmented, _ = compute_symmetric_states(fake_env, obs=observations, obs_type="policy")
+
+    assert augmented.shape == (12, 482)
+    torch.testing.assert_close(augmented[6:, -2:], observations[:, -2:])
+    mirrored_twice, _ = compute_symmetric_states(
+        fake_env, obs=augmented[6:], obs_type="policy"
+    )
+    torch.testing.assert_close(mirrored_twice[6:], observations)
+
+
+def test_five_frame_rl_only_actor_history_remains_480_dimensional(fake_env):
+    fake_env.cfg.robot.actor_obs_history_length = 5
+    fake_env.actor_recovery_context_dim = 0
+    observations = torch.randn(6, 5 * 96)
+
+    augmented, _ = compute_symmetric_states(fake_env, obs=observations, obs_type="policy")
+
+    assert augmented.shape == (12, 480)
     mirrored_twice, _ = compute_symmetric_states(
         fake_env, obs=augmented[6:], obs_type="policy"
     )

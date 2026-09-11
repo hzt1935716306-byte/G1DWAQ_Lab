@@ -20,6 +20,11 @@ from legged_lab.recovery.plane_certificate_runtime import (
     PlaneCalibratedG1CertificateEvaluator,
 )
 from legged_lab.recovery.baseline_matched_protocol import matched_command_standing_mask
+from legged_lab.recovery.context_projection import (
+    FULL_RECOVERY_CONTEXT_FIELDS,
+    project_actor_recovery_context,
+    validate_actor_recovery_context_fields,
+)
 from legged_lab.recovery.plane_v1 import (
     plane_v1_allowed_type_indices,
     plane_v1_context_held_mask,
@@ -69,6 +74,16 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         )
 
     def __init__(self, cfg, headless):
+        actor_fields = validate_actor_recovery_context_fields(
+            getattr(
+                cfg,
+                "actor_recovery_context_fields",
+                FULL_RECOVERY_CONTEXT_FIELDS,
+            )
+        )
+        self.actor_recovery_context_fields = actor_fields
+        self.actor_recovery_context_dim = len(actor_fields)
+
         source = str(cfg.com_velocity_source)
         estimator = None
         estimator_metadata = None
@@ -120,6 +135,23 @@ class G1PlaneV1Env(G1PlaneRecoveryEnv):
         )
         self._defer_plane_v1_reset_cleanup = False
         self._initialize_plane_v1_buffers()
+
+    def _actor_visible_recovery_context(self) -> torch.Tensor:
+        """Project the full diagnostic context without changing its stored semantics."""
+
+        return project_actor_recovery_context(
+            self._recovery_context,
+            self.actor_recovery_context_fields,
+        )
+
+    def _append_recovery_context(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        if not self._recovery_context_enabled:
+            return actor_obs
+        if actor_obs.ndim != 2 or actor_obs.shape[0] != self.num_envs:
+            raise ValueError(
+                f"unexpected actor observation shape before context: {tuple(actor_obs.shape)}"
+            )
+        return torch.cat((actor_obs, self._actor_visible_recovery_context()), dim=-1)
 
     def _initialize_plane_v1_buffers(self) -> None:
         count = self.num_envs

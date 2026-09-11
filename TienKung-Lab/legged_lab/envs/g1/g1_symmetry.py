@@ -120,8 +120,15 @@ def _mirror_observations(env, obs: torch.Tensor, obs_type: str) -> torch.Tensor:
         history_length = env.cfg.robot.actor_obs_history_length
         frame_dim = actor_frame_dim
         feet_names: tuple[str, ...] = ()
-        context_cfg = getattr(env.cfg, "recovery_context", None)
-        context_dim = 3 if context_cfg is not None and bool(context_cfg.enabled) else 0
+        runtime_context_dim = getattr(env, "actor_recovery_context_dim", None)
+        if runtime_context_dim is None:
+            # Backward-compatible fallback for every existing recovery task.
+            context_cfg = getattr(env.cfg, "recovery_context", None)
+            context_dim = 3 if context_cfg is not None and bool(context_cfg.enabled) else 0
+        else:
+            context_dim = int(runtime_context_dim)
+            if context_dim < 0:
+                raise ValueError("actor recovery context dimension must be non-negative")
     elif obs_type == "critic":
         history_length = env.cfg.robot.critic_obs_history_length
         feet_names = _feet_body_names(env)
