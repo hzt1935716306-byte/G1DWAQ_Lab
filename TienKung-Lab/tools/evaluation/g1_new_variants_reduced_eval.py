@@ -27,11 +27,12 @@ from g1_recovery_protocol import (
     sha256,
     write_json,
 )
-from g1_reduced_budget import ROOT as REDUCED, SOURCE, TARGET_COUNTS, immutable
+from g1_reduced_budget import ROOT as REDUCED, TARGET_COUNTS, immutable
 from g1_robustness_protocol import load_prepared as load_robustness
 
 
 ROOT = LAB / 'experiments/g1_new_variants_reduced_eval_v3'
+FROZEN_REDUCED = REDUCED / 'execution/context_only'
 ESTIMATOR = 'logs/g1_com_velocity_estimator/v2_iteration_long_5000_random_init_fixed/com_velocity_estimator_v2_long_best.pt'
 RESOURCE_PATHS = {
     'native_nominal': 'tools/recovery/generated/g1_plane_nominal_params_g1_slope_sys_d_candidate.yaml',
@@ -112,8 +113,26 @@ def inspect_models() -> dict:
         if identity['method'] != spec['native_model'] or identity['training_iteration'] != spec['iteration']:
             raise ValueError(f'{alias}: checkpoint task/method/iteration differs')
         identities[alias] = dict(identity)
-        immutable(ROOT / alias / 'checkpoint_identity.json', dict(identity))
-    immutable(ROOT / 'checkpoint_identities.json', identities)
+        path = ROOT / alias / 'checkpoint_identity.json'
+        if path.exists():
+            previous = read_json(path)
+            stable = ('task_name', 'method', 'checkpoint_sha256', 'agent_config_sha256',
+                      'env_config_sha256', 'native_configuration_sha256', 'resources',
+                      'actor_input_dimension', 'critic_input_dimension', 'action_dimension',
+                      'actor_history_length', 'critic_history_length', 'training_iteration',
+                      'training_transitions')
+            if any(previous.get(key) != identity.get(key) for key in stable):
+                raise ValueError(f'{alias}: checkpoint identity changed across wrapper-only resume')
+        else:
+            immutable(path, dict(identity))
+    path = ROOT / 'checkpoint_identities.json'
+    if path.exists():
+        previous = read_json(path)
+        if any(previous[alias]['checkpoint_sha256'] != value['checkpoint_sha256']
+               for alias, value in identities.items()):
+            raise ValueError('Checkpoint set changed across wrapper-only resume')
+    else:
+        immutable(path, identities)
     return identities
 
 
@@ -156,7 +175,7 @@ def prepare_robustness(alias: str, spec: dict, standard: Path) -> Path:
     target = master / 'robustness' / 'execution' / spec['native_model']
     selection = read_json(REDUCED / 'reduced_budget_manifest_v1.json')
     immutable(master / 'reduced_budget_manifest_v1.json', selection)
-    rows = read_jsonl(SOURCE / 'execution/context_only/manifest.jsonl')
+    rows = read_jsonl(FROZEN_REDUCED / 'manifest.jsonl')
     selected_ids = {item['trial_id'] for item in selection['trials']}
     if len(rows) != 1960 or {row['trial_id'] for row in rows} != selected_ids:
         raise ValueError('Frozen reduced1960 source differs')
@@ -175,7 +194,7 @@ def prepare_robustness(alias: str, spec: dict, standard: Path) -> Path:
         'completion_sha256': sha256(standard / 'completion.json'),
     }]}
     immutable(master / 'standard_benchmark_five_model_index.json', index)
-    protocol, _, source_info = load_robustness(SOURCE)
+    protocol, _, source_info = load_robustness(FROZEN_REDUCED)
     info = {
         **source_info,
         'budget_mode': 'reduced_budget_v1',
@@ -195,7 +214,7 @@ def prepare_robustness(alias: str, spec: dict, standard: Path) -> Path:
         'protocol.yaml': yaml.safe_dump(protocol, sort_keys=False).encode(),
         'manifest.jsonl': jsonl(rows).encode(),
         'standard_benchmark_five_model_index.json': (master / 'standard_benchmark_five_model_index.json').read_bytes(),
-        'common_detector_config.yaml': (SOURCE / 'common_detector_config.yaml').read_bytes(),
+        'common_detector_config.yaml': (FROZEN_REDUCED / 'common_detector_config.yaml').read_bytes(),
     }
     for name, data in files.items():
         path = target / name
@@ -206,7 +225,7 @@ def prepare_robustness(alias: str, spec: dict, standard: Path) -> Path:
     immutable(target / 'prepared.json', info)
     for trial_id in ids:
         immutable(target / 'paired_initial_states' / f'{trial_id}.json',
-                  read_json(SOURCE / 'paired_initial_states' / f'{trial_id}.json'))
+                  read_json(FROZEN_REDUCED / 'paired_initial_states' / f'{trial_id}.json'))
     load_robustness(target)
     return target
 
@@ -388,7 +407,15 @@ def run() -> None:
     code = code_identity()
     if code['evaluation_runtime_dirty']:
         raise ValueError('Commit evaluation runtime before physical execution')
-    immutable(ROOT / 'runtime_identity.json', code)
+    runtime_path = ROOT / 'runtime_identity.json'
+    if runtime_path.exists():
+        previous = read_json(runtime_path)
+        if (previous['evaluation_runtime_sha256'] != code['evaluation_runtime_sha256'] or
+                previous['evaluation_runtime_sources'] != code['evaluation_runtime_sources']):
+            raise ValueError('Physical evaluation runtime changed across resume')
+        immutable(ROOT / f"runtime_resume_{code['evaluation_code_commit']}.json", code)
+    else:
+        immutable(runtime_path, code)
     identities = inspect_models()
     state = {'status': 'PREPARED', 'driver_pid': os.getpid(),
              'commit': code['evaluation_code_commit'], 'completed': [],
@@ -421,8 +448,9 @@ def run() -> None:
                 '--output_root', str(robustness_root), '--model', spec['native_model'], '--device', 'cuda:0',
             ]
             robustness_run = run_owned(command, robustness_root, alias + '_robustness', state)
-            reference = read_json(SOURCE / 'completed_models' / f"{spec['native_model']}.json")
-            check_physics(robustness_run, SOURCE / 'runs' / reference['evaluation_id'])
+            reference_root = REDUCED / 'execution' / spec['native_model']
+            reference = read_json(reference_root / 'completed_models' / f"{spec['native_model']}.json")
+            check_physics(robustness_run, reference_root / 'runs' / reference['evaluation_id'])
             state['completed'].append(alias + '_robustness')
             runs[alias] = (standard_run, robustness_run)
             write_json(ROOT / 'status.json', state)
