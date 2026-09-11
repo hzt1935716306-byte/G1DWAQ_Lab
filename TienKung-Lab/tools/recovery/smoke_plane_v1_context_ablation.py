@@ -14,16 +14,16 @@ from isaaclab.app import AppLauncher
 
 
 TASK_FIELDS = {
-    "g1_plane_v1_estimator_context_no_reward_matched_n_valid": (
+    "g1_plane_v1_estimator_context_no_reward_matched_v2_n_valid": (
         "n_norm",
         "valid",
     ),
-    "g1_plane_v1_estimator_context_no_reward_matched_margin_valid": (
+    "g1_plane_v1_estimator_context_no_reward_matched_v2_margin_valid": (
         "margin_norm",
         "valid",
     ),
 }
-REFERENCE_TASK = "g1_plane_v1_estimator_context_no_reward_matched"
+REFERENCE_TASK = "g1_plane_v1_estimator_context_no_reward_matched_v2"
 EXPECTED_ESTIMATOR_SHA256 = (
     "8574d845f28cbc7908e437250de46ba865898056483741e8fb72a81281f9e319"
 )
@@ -92,12 +92,21 @@ def _assert_exact_config_diff(reference_cfg, candidate_cfg, reference_agent, can
 def _assert_reward_contract(env, cfg) -> None:
     if bool(cfg.plane_v1_reward.enabled):
         raise RuntimeError("recoverability reward must be disabled")
-    forbidden = {"idle_penalty", "feet_swing_height", "alive"}
+    forbidden = {"alive"}
     present = forbidden.intersection(env.reward_manager.active_terms)
     if present:
         raise RuntimeError(f"forbidden reward terms are active: {sorted(present)}")
     if env._plane_v1_reward_enabled:
         raise RuntimeError("Plane V1 runtime recovery reward is enabled")
+    idle = env.reward_manager.get_term_cfg("idle_penalty")
+    swing = env.reward_manager.get_term_cfg("feet_swing_height")
+    if float(idle.weight) != -0.1 or idle.params != {
+        "cmd_threshold": 0.2,
+        "vel_threshold": 0.1,
+    }:
+        raise RuntimeError("V2 idle reward contract changed")
+    if float(swing.weight) != -0.2 or float(swing.params["target_height"]) != 0.08:
+        raise RuntimeError("V2 swing-height reward contract changed")
 
 
 def main() -> None:
@@ -285,6 +294,9 @@ def main() -> None:
             "estimator_eval": not env._estimator.training,
             "estimator_frozen": True,
             "recovery_reward_enabled": False,
+            "idle_penalty_weight": -0.1,
+            "feet_swing_height_weight": -0.2,
+            "feet_swing_target_height": 0.08,
             "symmetry_data_augmentation": True,
             "mirror_loss": True,
             "mirror_loss_coeff": 0.1,

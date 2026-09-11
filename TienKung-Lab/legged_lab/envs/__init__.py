@@ -85,10 +85,10 @@ from legged_lab.envs.g1.g1_plane_v1_rl_only_config import (
     G1PlaneV1RLOnlyMatchedEnvCfg,
 )
 from legged_lab.envs.g1.g1_plane_v1_context_ablation_config import (
-    G1PlaneV1EstimatorContextNoRewardMatchedMarginValidAgentCfg,
-    G1PlaneV1EstimatorContextNoRewardMatchedMarginValidEnvCfg,
-    G1PlaneV1EstimatorContextNoRewardMatchedNValidAgentCfg,
-    G1PlaneV1EstimatorContextNoRewardMatchedNValidEnvCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2MarginValidAgentCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2MarginValidEnvCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2NValidAgentCfg,
+    G1PlaneV1EstimatorContextNoRewardMatchedV2NValidEnvCfg,
 )
 
 from legged_lab.envs.g1.g1_dwaq_env import G1DwaqEnv
@@ -257,16 +257,16 @@ task_registry.register(
     G1PlaneV1RLOnlyMatchedAgentCfg(),
 )
 task_registry.register(
-    "g1_plane_v1_estimator_context_no_reward_matched_n_valid",
+    "g1_plane_v1_estimator_context_no_reward_matched_v2_n_valid",
     G1PlaneV1BaselineMatchedEnv,
-    G1PlaneV1EstimatorContextNoRewardMatchedNValidEnvCfg(),
-    G1PlaneV1EstimatorContextNoRewardMatchedNValidAgentCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedV2NValidEnvCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedV2NValidAgentCfg(),
 )
 task_registry.register(
-    "g1_plane_v1_estimator_context_no_reward_matched_margin_valid",
+    "g1_plane_v1_estimator_context_no_reward_matched_v2_margin_valid",
     G1PlaneV1BaselineMatchedEnv,
-    G1PlaneV1EstimatorContextNoRewardMatchedMarginValidEnvCfg(),
-    G1PlaneV1EstimatorContextNoRewardMatchedMarginValidAgentCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedV2MarginValidEnvCfg(),
+    G1PlaneV1EstimatorContextNoRewardMatchedV2MarginValidAgentCfg(),
 )
 task_registry.register("g1_rough", G1Env, G1RoughEnvCfg(), G1RoughAgentCfg())
 task_registry.register("g1_dwaq", G1DwaqEnv, G1DwaqEnvCfg(), G1DwaqAgentCfg())
