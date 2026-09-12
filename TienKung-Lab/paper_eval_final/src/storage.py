@@ -17,12 +17,16 @@ IDENTITY_GATE_FIELDS = (
 )
 
 TRIAL_COLUMNS = [
-    "trial_id", "experiment_id", "stage", "method", "model_id", "train_seed", "eval_seed",
+    "trial_id", "experiment_id", "stage", "sequence", "repeat_id", "condition_id",
+    "candidate_phase", "sampling_target_hint", "method", "model_id", "train_seed", "eval_seed",
     "checkpoint_sha256", "evaluation_code_commit", "protocol_hash", "manifest_hash",
     "slope_deg", "terrain_id", "friction", "command_vx", "command_vy", "command_yaw", "speed_group",
     "disturbance", "disturbance_start", "disturbance_end", "target_link", "force_vector", "torque_vector",
     "root_velocity_before", "root_velocity_after", "com_velocity_before", "com_velocity_after", "push_applied",
-    "TD0_time", "certificate_valid", "Nmin", "margin", "margin_group", "CERT_AFTER_RECOVERY",
+    "TD0_time", "certificate_valid", "Nmin", "margin", "margin_raw", "margin_storage_dtype",
+    "margin_was_rounded", "margin_group", "margin_boundary_id", "sampling_eligible",
+    "sampling_accepted", "sampling_rejection_reason", "certificate_diagnostic",
+    "certificate_calculation", "CERT_AFTER_RECOVERY",
     "termination_kind", "task_outcome", "failure_reason", "reset_time", "out_of_area", "pre_reset_snapshot_path",
     "first_entry", "final_entry", "confirmations", "relapse_events", "recovery_time", "Krec", "Krec_physical",
     "nTD0", "recovered_sustained", "survived_post_observation", "observation_end",
@@ -54,6 +58,11 @@ def validate_record(record: dict[str, Any]) -> None:
         raise ValueError("EVAL_INVALID must have INVALID task outcome")
     if record.get("recovery_time") is not None and not record.get("recovered_sustained"):
         raise ValueError("Trec is defined only for sustained recovery")
+    if record["experiment_id"] == 1 and record.get("margin_raw") is not None:
+        if record.get("margin_storage_dtype") != "float64" or record.get("margin_was_rounded") is not False:
+            raise ValueError("Experiment 1 raw margin must be unrounded float64")
+        if not np.isfinite(float(record["margin_raw"])):
+            raise ValueError("Experiment 1 raw margin must be finite when recorded")
 
 
 class RunStore:

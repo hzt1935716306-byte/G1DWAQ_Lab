@@ -2,6 +2,7 @@ evaluation_system: paper_eval_final
 protocol_title: 人形机器人多步可恢复性算法实验评测协议
 protocol_version: "1.2"
 status: pre_experiment_frozen
+protocol_revision: exp1_nmin_conditional_margin_tertiles_2026_09_12
 
 stages:
   screening: {seed_namespace: 1201000, confirmatory: false}
@@ -75,10 +76,23 @@ metrics:
     pelvis_clearance_min_m: 0.50
     entry_deadline_after_disturbance_end_s: 8.0
     observation_after_disturbance_end_s: 10.0
-  margin_groups:
-    LOW: [0.0, 0.3167]
-    MEDIUM: [0.3167, 0.6333]
-    HIGH: [0.6333, 0.95]
+
+experiment1_margin_stratification:
+  source_stage: pilot
+  accepted_Nmin: [3, 4, 5]
+  pilot_certificate_valid_per_Nmin: 120
+  pilot_initial_candidates: 500
+  quantile_boundaries:
+    q1: "(m_(40) + m_(41)) / 2"
+    q2: "(m_(80) + m_(81)) / 2"
+  groups:
+    LOW: "margin < q1[Nmin]"
+    MEDIUM: "q1[Nmin] <= margin < q2[Nmin]"
+    HIGH: "margin >= q2[Nmin]"
+  formal_certificate_valid_per_cell: 160
+  formal_total: 1440
+  outcome_blind_accept_reject: true
+  boundary_freeze_required: true
 
 timing:
   warmup_s: 2.0
@@ -115,7 +129,7 @@ budgets:
     experiment2_per_slope_speed: 50
     experiment3_velocity_jump: 500
     experiment3_each_wrench: 250
-    experiment1_stratified_per_cell: 40
+    experiment1_certificate_valid_per_Nmin: 120
   formal:
     experiment1_candidates: 2000
     experiment2_per_slope_speed: 200

@@ -8,7 +8,8 @@ from pathlib import Path
 import random
 from typing import Any, Iterable
 
-from .common import ROOT, canonical_bytes, digest, git_last_commit, load_yaml, protocol_bundle, read_json, write_json
+from .common import (ROOT, canonical_bytes, digest, git_last_commit, load_yaml,
+                     protocol_bundle, read_json, result_namespace, write_json)
 
 
 STAGES = ("screening", "pilot", "formal")
@@ -177,10 +178,111 @@ def generate_trials(stage: str, experiment: int, protocol: dict[str, Any] | None
                     rows.append(row)
         if experiment == 1:
             expected = 80 if stage == "screening" else 500 if stage == "pilot" else 2000
+            for row in rows:
+                row["candidate_phase"] = "INITIAL"
         else:
             expected = 160 if stage == "screening" else 1000 if stage == "pilot" else 4000
     if len(rows) != expected or len({row["trial_id"] for row in rows}) != expected:
         raise AssertionError(f"Experiment {experiment}/{stage}: expected {expected}, generated {len(rows)}")
+    return rows
+
+
+def generate_experiment1_continuation(stage: str, start_sequence: int, count: int,
+                                      records: list[dict[str, Any]],
+                                      protocol: dict[str, Any] | None = None,
+                                      max_candidates_per_condition_layer: int | None = None) -> list[dict[str, Any]]:
+    """Generate a deterministic certificate-targeted continuation batch.
+
+    Targeting uses only previous certificate N/margin yield and condition IDs.
+    Recovery outcomes are neither read nor passed to the ranking functions.
+    """
+    if stage not in ("pilot", "formal") or start_sequence < 0 or count < 1:
+        raise ValueError("invalid Experiment 1 continuation request")
+    protocol = protocol or protocol_bundle()[0]
+    initial = generate_trials(stage, 1, protocol)
+    templates = {row["condition_id"]: row for row in initial}
+    attempts = Counter(str(row["condition_id"]) for row in records)
+    assigned: Counter[Any] = Counter()
+    target_hints: list[Any] = []
+    if stage == "pilot":
+        from .experiment1_sampling import (
+            TARGET_NMIN, experiment1_config, pilot_continuation_condition_weights,
+            select_pilot_samples,
+        )
+        sampling_cfg = experiment1_config()["pilot_sampling"]
+        target = int(sampling_cfg["certificate_valid_per_Nmin"])
+        top_layers = int(sampling_cfg["targeting_top_condition_layers"])
+        selection = select_pilot_samples(records, per_nmin=target)
+        deficits = {n: int(selection["deficits"][str(n)]) for n in TARGET_NMIN}
+        rankings = pilot_continuation_condition_weights(records)
+        for _ in range(count):
+            deficient = [n for n in TARGET_NMIN if deficits[n] > 0]
+            if not deficient:
+                break
+            hint = max(deficient, key=lambda n: (deficits[n] / (assigned[n] + 1.0), n))
+            target_hints.append(hint)
+            assigned[hint] += 1
+    else:
+        from .experiment1_sampling import (
+            MARGIN_GROUPS, TARGET_NMIN, experiment1_config,
+            formal_continuation_condition_weights, load_boundaries, select_formal_samples,
+        )
+        boundaries = load_boundaries(require_frozen=True)
+        sampling_cfg = experiment1_config()["formal_sampling"]
+        target = int(sampling_cfg["certificate_valid_per_cell"])
+        top_layers = int(sampling_cfg["targeting_top_condition_layers"])
+        selection = select_formal_samples(records, boundaries, per_cell=target)
+        deficits = {
+            (n, group): int(selection["cells"][f"N{n}_{group}"]["missing"])
+            for n in TARGET_NMIN for group in MARGIN_GROUPS
+        }
+        rankings = formal_continuation_condition_weights(records, boundaries)
+        for _ in range(count):
+            deficient = [cell for cell, deficit in deficits.items() if deficit > 0]
+            if not deficient:
+                break
+            hint = max(deficient, key=lambda cell: (deficits[cell] / (assigned[cell] + 1.0), cell))
+            target_hints.append(hint)
+            assigned[hint] += 1
+
+    layer_cursor: Counter[Any] = Counter()
+    rows = []
+    for offset, hint in enumerate(target_hints):
+        ranked_layers = [
+            layer for layer in rankings[hint]
+            if max_candidates_per_condition_layer is None
+            or attempts[layer] + sum(row["condition_id"] == layer for row in rows)
+            < max_candidates_per_condition_layer
+        ][:top_layers]
+        if not ranked_layers:
+            break
+        condition_id = ranked_layers[layer_cursor[hint] % len(ranked_layers)]
+        layer_cursor[hint] += 1
+        template = templates[condition_id]
+        sequence = start_sequence + offset
+        repeat = attempts[condition_id] + sum(row["condition_id"] == condition_id for row in rows)
+        row = _base_trial(
+            protocol, stage, 1, sequence, float(template["slope_deg"]),
+            str(template["speed_group"]), condition_id, repeat,
+        )
+        rng = random.Random(row["eval_seed"] ^ 0xA17E5)
+        disturbance_template = template["disturbance"]
+        onset_offset, planned = _onset(rng, protocol)
+        disturbance = _velocity_jump(
+            rng, protocol, str(disturbance_template["intensity_group"]),
+            int(disturbance_template["direction_Hpush_deg"]),
+        )
+        hint_payload = ({"Nmin": int(hint)} if stage == "pilot" else
+                        {"Nmin": int(hint[0]), "margin_group": str(hint[1])})
+        row.update(
+            onset_offset_s=onset_offset,
+            planned_disturbance_start_s=planned,
+            disturbance=disturbance,
+            observation_end_s=planned + 10.0,
+            candidate_phase="TARGETED_CONTINUATION",
+            sampling_target_hint=hint_payload,
+        )
+        rows.append(row)
     return rows
 
 
@@ -220,7 +322,7 @@ def validate_manifest(payload: dict[str, Any]) -> None:
 
 
 def manifest_path(stage: str, experiment: int) -> Path:
-    return ROOT / "manifests" / stage / f"experiment{experiment}.json"
+    return ROOT / "manifests" / stage / result_namespace() / f"experiment{experiment}.json"
 
 
 def prepare_manifest(stage: str, experiment: int) -> dict[str, Any]:
@@ -279,47 +381,51 @@ def equal_effective_deficits(records: list[dict[str, Any]], trials: list[dict[st
 
 def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
                                    manifest_seed: int) -> dict[str, Any]:
-    """Outcome-blind accept/reject selection for the nine N-margin cells."""
-    if stage not in ("pilot", "formal"):
-        raise ValueError("stratified relation set exists only for pilot/formal")
-    per_cell = 40 if stage == "pilot" else 160
-    layer_cap = 1 if stage == "pilot" else 2
-    all_layers = sorted({row["condition_id"] for row in records})
-    if len(all_layers) != 80:
-        raise ValueError("Experiment 1 relation selection requires all 80 condition layers")
-    selected_layers: dict[tuple[int, str], set[str]] = {}
-    for n_min in (3, 4, 5):
-        for group in ("LOW", "MEDIUM", "HIGH"):
-            layers = list(all_layers)
-            random.Random(manifest_seed + n_min * 10 + ("LOW", "MEDIUM", "HIGH").index(group)).shuffle(layers)
-            selected_layers[(n_min, group)] = set(layers[:40]) if stage == "pilot" else set(layers)
-    accepted: list[dict[str, Any]] = []
-    occupancy: Counter = Counter()
-    attempts: Counter = Counter()
-    for row in sorted(records, key=lambda value: (value.get("sequence", 0), value["trial_id"])):
-        n_min, group = row.get("Nmin"), row.get("margin_group")
-        if not row.get("certificate_valid") or n_min not in (3, 4, 5) or group not in ("LOW", "MEDIUM", "HIGH"):
-            continue
-        cell = (int(n_min), str(group))
-        attempts[cell] += 1
-        if row["condition_id"] not in selected_layers[cell]:
-            continue
-        layer_key = (cell, row["condition_id"])
-        if occupancy[layer_key] >= layer_cap or sum(1 for value in accepted if (value["Nmin"], value["margin_group"]) == cell) >= per_cell:
-            continue
-        accepted.append(row)
-        occupancy[layer_key] += 1
+    """Compatibility entry point for the revised outcome-blind relation set.
+
+    ``manifest_seed`` remains in the signature for callers from v1.2, but is
+    intentionally unused: selection is now fixed by candidate sequence and the
+    independent pilot boundary artifact.
+    """
+    del manifest_seed
+    from .experiment1_sampling import (
+        MARGIN_GROUPS, TARGET_NMIN, classify_margin, experiment1_config,
+        load_boundaries, select_formal_samples, select_pilot_samples,
+    )
+
+    boundaries = load_boundaries()
+    cfg = experiment1_config()
+    if stage == "formal":
+        return select_formal_samples(
+            records, boundaries,
+            per_cell=int(cfg["formal_sampling"]["certificate_valid_per_cell"]),
+        )
+    if stage != "pilot":
+        raise ValueError("relation set exists only for pilot/formal")
+    selection = select_pilot_samples(
+        records, per_nmin=int(cfg["pilot_sampling"]["certificate_valid_per_Nmin"])
+    )
+    accepted = [row for n in TARGET_NMIN for row in selection["selected"][n]]
     cells = {}
-    for n_min in (3, 4, 5):
-        for group in ("LOW", "MEDIUM", "HIGH"):
-            cell = (n_min, group)
-            rows = [row for row in accepted if (row["Nmin"], row["margin_group"]) == cell]
-            cells[f"N{n_min}_{group}"] = {
-                "accepted": len(rows), "target": per_cell, "missing": per_cell - len(rows),
-                "attempt_count": attempts[cell], "condition_coverage": len({row["condition_id"] for row in rows}),
+    for n in TARGET_NMIN:
+        for group in MARGIN_GROUPS:
+            rows = [
+                row for row in accepted
+                if classify_margin(n, row.get("margin_raw"), boundaries) == group and row.get("Nmin") == n
+            ] if boundaries.get("status") == "FROZEN" else []
+            cells[f"N{n}_{group}"] = {
+                "accepted": len(rows), "target": 40,
+                "missing": max(0, 40 - len(rows)),
+                "condition_coverage": len({row["condition_id"] for row in rows}),
             }
     return {
-        "dataset_role": "STRATIFIED_RELATION_SET", "stage": stage,
-        "accepted_trial_ids": [row["trial_id"] for row in accepted], "cells": cells,
-        "complete": all(value["missing"] == 0 for value in cells.values()),
+        "dataset_role": "PILOT_BOUNDARY_SET",
+        "stage": "pilot",
+        "boundary_status": boundaries.get("status"),
+        "boundary_id": boundaries.get("boundary_id"),
+        "accepted_trial_ids": [row["trial_id"] for row in accepted],
+        "Nmin_counts": selection["counts"],
+        "Nmin_deficits": selection["deficits"],
+        "cells": cells,
+        "complete": selection["complete"] and boundaries.get("status") == "FROZEN",
     }

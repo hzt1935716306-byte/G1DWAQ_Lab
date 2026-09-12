@@ -4,14 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
-from .common import ROOT, read_json, write_json
+from .common import ROOT, read_json, result_namespace, write_json
 from .statistics import summarize, summarize_cells
 from .storage import compatibility_gate, validate_record
 from .trial_generator import select_stratified_relation_set
 
 
 def discover_shards(stage: str, experiment: int) -> list[Path]:
-    root = (ROOT / "results" / stage / f"experiment_{experiment}").resolve()
+    root = (ROOT / "results" / stage / result_namespace() / f"experiment_{experiment}").resolve()
     if not root.exists():
         return []
     return sorted(path.parent for path in root.rglob("completion.json"))

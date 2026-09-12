@@ -2,7 +2,11 @@ protocol_version: "1.2"
 config_frozen: false
 formal_enabled: false
 pilot_required: true
-formal_experiment1_baseline: null
+formal_experiment1_baseline: slope_nosys_d_matched
+experiment1_margin_boundaries:
+  file: configs/experiment1_margin_boundaries.yaml
+  status: UNFROZEN
+  boundary_id: null
 formal_stratified_caps:
   max_candidates_total: null
   max_candidates_per_condition_layer: null

@@ -149,3 +149,10 @@ def protocol_bundle() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         "metrics_config_hash": digest(metrics),
         "physics_profile_hash": digest(protocol["physics"]),
     }
+
+
+def result_namespace() -> str:
+    """Keep revised protocol results isolated from immutable earlier runs."""
+    _, _, identity = protocol_bundle()
+    version = identity["protocol_version"].replace(".", "_")
+    return f"protocol_{version}_{identity['protocol_hash'][:12]}"

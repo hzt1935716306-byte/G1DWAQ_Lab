@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple serial CLI for protocol-v1.2 paper evaluation."""
+"""CLI for the protocol-v1.2 paper evaluation and adaptive Experiment 1 sampling."""
 from __future__ import annotations
 
 import argparse
@@ -72,9 +72,28 @@ def formal_guard(args: argparse.Namespace, chosen: list[int]) -> None:
     if 1 in chosen and args.baseline != freeze["formal_experiment1_baseline"]:
         raise ValueError("formal Experiment 1 baseline is not frozen or does not match")
     if 1 in chosen:
+        from paper_eval_final.src.experiment1_sampling import load_boundaries
+
+        boundaries = load_boundaries(require_frozen=True)
+        frozen_boundary = freeze.get("experiment1_margin_boundaries", {})
+        if (frozen_boundary.get("status") != "FROZEN"
+                or frozen_boundary.get("boundary_id") != boundaries["boundary_id"]):
+            raise ValueError("formal Experiment 1 refused: pilot margin boundary freeze does not match")
         caps = freeze["formal_stratified_caps"]
         if caps["max_candidates_total"] is None or caps["max_candidates_per_condition_layer"] is None:
             raise ValueError("formal Experiment 1 refused: finite stratified candidate caps are not frozen")
+
+
+def experiment1_baseline_guard(args: argparse.Namespace, chosen: list[int]) -> None:
+    if 1 not in chosen or args.smoke or args.stage not in ("pilot", "formal"):
+        return
+    config = load_yaml(ROOT / "configs/experiment1.yaml")
+    required = str(config["baseline_id"])
+    if args.baseline != required:
+        raise ValueError(
+            f"Experiment 1 {args.stage} is bound to --baseline {required}; "
+            "screening-only checkpoints cannot enter the pilot/formal boundary dataset"
+        )
 
 
 def registered_seeds(args: argparse.Namespace, experiment: int) -> list[int]:
@@ -187,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                 write_screening_report(result)
         print(json.dumps(payload, indent=2))
         return 0
+    experiment1_baseline_guard(args, chosen)
     formal_guard(args, chosen)
     prepare_all((args.stage,), chosen)
     if args._execute_one:

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "paper_eval_final/protocol/schema.json",
-  "title": "Paper evaluation v1.2 trial record",
+  "title": "Paper evaluation v1.2 (Experiment 1 conditional-tertile revision) trial record",
   "type": "object",
   "required": [
     "evaluation_system", "trial_id", "experiment_id", "stage", "method",
@@ -34,6 +34,11 @@
     "recovery_time": {"type": ["number", "null"]},
     "Nmin": {"type": ["integer", "null"]},
     "margin": {"type": ["number", "null"]},
+    "margin_raw": {"type": ["number", "null"]},
+    "margin_storage_dtype": {"enum": ["float64", null]},
+    "margin_was_rounded": {"type": ["boolean", "null"]},
+    "margin_group": {"enum": ["LOW", "MEDIUM", "HIGH", null]},
+    "margin_boundary_id": {"type": ["string", "null"]},
     "scheduled": {"const": 1},
     "executed": {"enum": [0, 1]},
     "valid": {"enum": [0, 1]},

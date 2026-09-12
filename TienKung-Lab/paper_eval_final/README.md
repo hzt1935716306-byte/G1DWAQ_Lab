@@ -20,12 +20,26 @@ field; the loader recomputes it on every use.
 
 ## Simple execution CLI
 
-Experiment 1 uses a non-certificate baseline:
+Experiment 1 is bound to the registered `g1_slope_nosys_d_matched` seed-42
+checkpoint. The pilot starts with 500 candidates and then schedules deterministic
+targeted continuation batches until it has 120 certificate-valid, unrounded
+binary64 margin observations for each of `Nmin=3,4,5`:
 
 ```bash
-conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 --baseline baseline
-conda run -n g1 python paper_eval_final/run.py --stage formal --experiment 1 --baseline baseline
+conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 --baseline slope_nosys_d_matched
+conda run -n g1 python paper_eval_final/run.py --stage formal --experiment 1 --baseline slope_nosys_d_matched
 ```
+
+For every Nmin separately, the pilot sorts the 120 raw margins and freezes
+`q1=(m40+m41)/2` and `q2=(m80+m81)/2` in
+`configs/experiment1_margin_boundaries.yaml`. Formal Experiment 1 refuses to
+start without that independently generated frozen artifact and uses it for an
+outcome-blind accept/reject stream until all nine Nmin-margin cells contain 160
+certificate-valid trials. Recovery status, recovery time, touchdown counts,
+and success rate are prohibited from both pilot and formal admission decisions.
+Boundary ties or evidence of clamp/precision-driven duplicate values produce
+`MARGIN_DEGENERATE`, retain raw inputs/intermediates in the diagnostic artifact,
+and leave formal execution disabled.
 
 Experiments 2 and 3 run serially in separate Isaac processes:
 
@@ -68,7 +82,9 @@ wall second after warmup. The winning count is then reviewed and frozen as
 
 ## Storage and resume
 
-Each model/training-seed/experiment is an independent shard. Each trial has an
+Each protocol-hash/model/training-seed/experiment is an independent shard, so
+the earlier fixed-margin pilot remains read-only and cannot collide with or be
+aggregated into this revision. Each trial has an
 atomic JSON terminal record, compressed trajectory, event log, and (on physical
 failure) a pre-reset snapshot. Existing valid terminal records are never run
 again. Aggregation checks protocol version, stage, experiment, manifest,

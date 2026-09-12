@@ -11,12 +11,14 @@ from typing import Any
 
 import numpy as np
 
-from .common import EVALUATION_SYSTEM, ROOT, code_hash, digest, git_head, protocol_bundle, read_json, write_json
+from .common import (EVALUATION_SYSTEM, ROOT, code_hash, digest, git_head, load_yaml,
+                     protocol_bundle, read_json, result_namespace, write_json)
 from .environment_adapter import DisturbanceRuntime, close_environment, make_environment
 from .model_loader import ModelIdentity, resolve_baseline, resolve_model
 from .statistics import summarize
 from .storage import RunStore
-from .trial_generator import manifest_path, prepare_manifest, smoke_subset, validate_manifest
+from .trial_generator import (generate_experiment1_continuation, prepare_manifest,
+                              smoke_subset, validate_manifest)
 
 
 # Keep SimulationApp alive until the worker's explicit process boundary.  In
@@ -56,7 +58,33 @@ def _identity(model: ModelIdentity, manifest: dict[str, Any], experiment: int, e
 
 def _run_path(stage: str, experiment: int, model: ModelIdentity, *, smoke: bool) -> Path:
     category = "technical_smoke" if smoke else stage
-    return ROOT / "results" / category / f"experiment_{experiment}" / model.model_id / f"train_seed_{model.train_seed}"
+    return (ROOT / "results" / category / result_namespace() / f"experiment_{experiment}"
+            / model.model_id / f"train_seed_{model.train_seed}")
+
+
+def _campaign_schedule(path: Path, manifest: dict[str, Any], initial: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    schedule_path = path / "candidate_schedule.json"
+    if not schedule_path.exists():
+        payload = {"initial_manifest_sha256": manifest["manifest_sha256"], "trials": initial}
+        payload["schedule_sha256"] = digest(payload)
+        write_json(schedule_path, payload)
+        return list(initial)
+    payload = read_json(schedule_path)
+    claimed = payload.pop("schedule_sha256", None)
+    if claimed != digest(payload):
+        raise ValueError("candidate schedule integrity mismatch")
+    if payload.get("initial_manifest_sha256") != manifest["manifest_sha256"]:
+        raise ValueError("candidate schedule belongs to a different initial manifest")
+    trials = list(payload.get("trials", []))
+    if trials[:len(initial)] != initial or len({row["trial_id"] for row in trials}) != len(trials):
+        raise ValueError("candidate schedule initial prefix or trial IDs are invalid")
+    return trials
+
+
+def _write_campaign_schedule(path: Path, manifest: dict[str, Any], trials: list[dict[str, Any]]) -> None:
+    payload = {"initial_manifest_sha256": manifest["manifest_sha256"], "trials": trials}
+    payload["schedule_sha256"] = digest(payload)
+    write_json(path / "candidate_schedule.json", payload)
 
 
 def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_id: str | None,
@@ -67,9 +95,9 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
     protocol, _, _ = protocol_bundle()
     manifest = prepare_manifest(stage, experiment)
     validate_manifest(manifest)
-    trials = list(manifest["trials"])
+    initial_trials = list(manifest["trials"])
     if smoke:
-        trials = smoke_subset(trials, experiment)
+        initial_trials = smoke_subset(initial_trials, experiment)
     if experiment == 1 and not smoke:
         if not baseline_id:
             raise ValueError("Experiment 1 requires --baseline; certificate-context policies are forbidden")
@@ -82,6 +110,11 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
         model = resolve_model(model_id, train_seed)
     if experiment == 1 and model.actor_certificate_context and not smoke:
         raise ValueError("Experiment 1 confirmatory baseline cannot receive Nmin/margin")
+    adaptive_exp1 = experiment == 1 and stage in ("pilot", "formal") and not smoke
+    if adaptive_exp1:
+        experiment1_cfg = load_yaml(ROOT / "configs/experiment1.yaml")
+        if model.model_id != experiment1_cfg["model_id"] or model.checkpoint_sha256 != experiment1_cfg["checkpoint_sha256"]:
+            raise ValueError("Experiment 1 pilot/formal checkpoint differs from the frozen g1_slope_nosys_d_matched checkpoint")
 
     application = AppLauncher(headless=True, device=device).app
     _APPLICATIONS.append(application)
@@ -90,19 +123,82 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
         env, runner, policy, effective = make_environment(
             model, protocol, stage=stage, num_envs=num_envs, device=device, headless=True,
         )
-        dataset_role = "TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else "FIXED_BUDGET"
+        dataset_role = ("TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else
+                        "ADAPTIVE_OUTCOME_BLIND_CANDIDATE_STREAM" if adaptive_exp1 else "FIXED_BUDGET")
         identity = _identity(model, manifest, experiment, effective, dataset_role=dataset_role)
         path = _run_path(stage, experiment, model, smoke=smoke)
         store = RunStore(path, identity)
         if (path / "completion.json").exists():
             return {"status": "ALREADY_COMPLETE", "path": str(path), "completion": read_json(path / "completion.json")}
-        completed = store.completed_ids()
-        remaining = [trial for trial in trials if trial["trial_id"] not in completed]
+        trials = _campaign_schedule(path, manifest, initial_trials) if adaptive_exp1 else initial_trials
         write_json(path / "effective_environment.json", effective)
         started = time.monotonic()
         with torch.inference_mode():
-            for offset in range(0, len(remaining), num_envs):
-                selected = remaining[offset:offset + num_envs]
+            while True:
+                completed = store.completed_ids()
+                remaining = [trial for trial in trials if trial["trial_id"] not in completed]
+                if not remaining:
+                    records = store.load_records()
+                    if not adaptive_exp1:
+                        summary = summarize(records, len(trials))
+                        summary.update({"status": "COMPLETE", "dataset_role": dataset_role,
+                                        "technical_only_nonbaseline": bool(
+                                            smoke and experiment == 1 and model.actor_certificate_context
+                                        )})
+                        completion = store.seal([trial["trial_id"] for trial in trials], summary)
+                        return {"status": "COMPLETE", "path": str(path), "summary": summary,
+                                "completion": completion}
+
+                    from .experiment1_sampling import (
+                        experiment1_config, fit_pilot_boundaries, load_boundaries,
+                        sampling_complete,
+                    )
+                    boundaries = load_boundaries(require_frozen=True) if stage == "formal" else None
+                    if sampling_complete(records, stage=stage, boundaries=boundaries):
+                        if stage == "pilot":
+                            boundary_result = fit_pilot_boundaries(records, source_identity=identity)
+                            write_json(path / "pilot_margin_status.json", boundary_result)
+                            if boundary_result["status"] != "FROZEN":
+                                return {"status": boundary_result["status"], "path": str(path),
+                                        "margin_boundaries": boundary_result}
+                        summary = summarize(records, len(trials))
+                        summary.update({
+                            "status": "COMPLETE", "dataset_role": dataset_role,
+                            "candidate_count": len(trials),
+                            "accepted_count": sum(bool(row.get("sampling_accepted")) for row in records),
+                        })
+                        completion = store.seal([trial["trial_id"] for trial in trials], summary)
+                        return {"status": "COMPLETE", "path": str(path), "summary": summary,
+                                "completion": completion}
+
+                    cfg = experiment1_config()[f"{stage}_sampling"]
+                    if stage == "formal":
+                        freeze = load_yaml(ROOT / "protocol/implementation_freeze.yaml")
+                        cap = freeze["formal_stratified_caps"]["max_candidates_total"]
+                        layer_cap = freeze["formal_stratified_caps"]["max_candidates_per_condition_layer"]
+                    else:
+                        cap = cfg["max_candidates_total"]
+                        layer_cap = None
+                    if cap is None:
+                        raise ValueError(f"{stage} Experiment 1 candidate cap is not frozen")
+                    if len(trials) >= int(cap):
+                        status = {"status": "TARGET_NOT_REACHED", "candidate_count": len(trials),
+                                  "max_candidates_total": int(cap)}
+                        write_json(path / "sampling_status.json", status)
+                        return {**status, "path": str(path)}
+                    batch_count = min(int(cfg["continuation_batch_candidates"]), int(cap) - len(trials))
+                    continuation = generate_experiment1_continuation(
+                        stage, max(row["sequence"] for row in trials) + 1,
+                        batch_count, records, protocol,
+                        max_candidates_per_condition_layer=(int(layer_cap) if layer_cap is not None else None),
+                    )
+                    if not continuation:
+                        raise ValueError("adaptive continuation produced no trials before quotas were complete")
+                    trials.extend(continuation)
+                    _write_campaign_schedule(path, manifest, trials)
+                    remaining = continuation
+
+                selected = remaining[:num_envs]
                 padded = selected + [copy.deepcopy(selected[-1]) for _ in range(num_envs - len(selected))]
                 observation, extras = env.begin_batch(padded)
                 machines: list[Any | None] = [__import__(
@@ -119,6 +215,7 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                 max_time = 12.0 if experiment == 2 else max(row["observation_end_s"] for row in selected) + 0.05
                 step = 0
                 saved: set[str] = set()
+                terminal_payloads: list[tuple[Any, dict[str, Any]]] = []
                 while any(machine is not None and not machine.status for machine in machines):
                     step += 1
                     actions = policy(observation, extras)
@@ -151,22 +248,25 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                                 "reset_time": timestamp if machine.termination_kind == "PHYSICAL_RESET" else None,
                                 "out_of_area": bool(frame.get("out_of_area", False)),
                             })
-                            store.save_trial(record, machine.frames, machine.events, machine.pre_reset_snapshot)
+                            terminal_payloads.append((machine, record))
                             saved.add(machine.plan["trial_id"])
                     if timestamp > max_time + 0.1:
                         raise ValueError("trial state machine exceeded its bounded physical-time horizon")
+                if adaptive_exp1:
+                    from .experiment1_sampling import annotate_sampling_batch, load_boundaries
+                    batch_records = [record for _, record in terminal_payloads]
+                    prior_records = store.load_records()
+                    boundaries = load_boundaries(require_frozen=True) if stage == "formal" else None
+                    annotate_sampling_batch(batch_records, prior_records, stage=stage, boundaries=boundaries)
+                for machine, record in terminal_payloads:
+                    store.save_trial(record, machine.frames, machine.events, machine.pre_reset_snapshot)
                 runtime.close()
                 runtime = None
                 write_json(path / "progress.json", {
                     "completed": len(store.completed_ids()), "scheduled": len(trials),
-                    "elapsed_wall_s": time.monotonic() - started, "last_batch_offset": offset,
+                    "elapsed_wall_s": time.monotonic() - started,
+                    "last_batch_size": len(selected),
                 })
-        records = store.load_records()
-        summary = summarize(records, len(trials))
-        summary.update({"status": "COMPLETE", "dataset_role": dataset_role,
-                        "technical_only_nonbaseline": bool(smoke and experiment == 1 and model.actor_certificate_context)})
-        completion = store.seal([trial["trial_id"] for trial in trials], summary)
-        return {"status": "COMPLETE", "path": str(path), "summary": summary, "completion": completion}
     except BaseException as exc:
         if env is not None:
             failure_path = _run_path(stage, experiment, model, smoke=smoke) if "model" in locals() else ROOT / "results/failure.json"

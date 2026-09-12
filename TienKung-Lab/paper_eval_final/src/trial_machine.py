@@ -32,7 +32,8 @@ class TrialMachine:
         self.certificate_valid = False
         self.n_min: int | None = None
         self.margin: float | None = None
-        self.margin_group: str | None = None
+        self.certificate_diagnostic: dict[str, Any] | None = None
+        self.certificate_calculation: dict[str, Any] | None = None
         self.cert_after_recovery = False
         self.pre_reset_snapshot: dict[str, Any] | None = None
         self.last_physics_time: float | None = None
@@ -87,16 +88,19 @@ class TrialMachine:
         self.recovery = RecoveryDetector(self.disturbance_end, self.protocol["metrics"]["recovery"])
         self.events.append({"event": "disturbance_end", "timestamp": timestamp})
 
-    def set_certificate(self, *, valid: bool, n_min: int | None, margin: float | None, diagnostic: dict[str, Any]) -> None:
+    def set_certificate(self, *, valid: bool, n_min: int | None, margin: float | None,
+                        diagnostic: dict[str, Any], calculation: dict[str, Any] | None = None) -> None:
         if self.td0_time is None or self.n_min is not None or self.certificate_valid:
             raise ValueError("certificate must be recorded once, at TD0")
         self.certificate_valid = bool(valid)
         self.n_min = int(n_min) if n_min is not None else None
         self.margin = float(margin) if margin is not None else None
-        self.margin_group = margin_group(self.margin) if self.certificate_valid else None
+        self.certificate_diagnostic = diagnostic
+        self.certificate_calculation = calculation
         self.events.append({"event": "offline_certificate", "timestamp": self.td0_time,
                             "valid": self.certificate_valid, "Nmin": self.n_min,
-                            "margin": self.margin, "diagnostic": diagnostic})
+                            "margin_raw": self.margin, "diagnostic": diagnostic,
+                            "calculation": calculation})
 
     def feed_policy(self, frame: dict[str, Any]) -> None:
         if self.status:
@@ -185,8 +189,19 @@ class TrialMachine:
             "TD0_time": self.td0_time,
             "certificate_valid": self.certificate_valid,
             "Nmin": self.n_min,
+            # Python float serializes the binary64 solver result directly.
+            # Display rounding belongs only in reports.
             "margin": self.margin,
-            "margin_group": self.margin_group,
+            "margin_raw": self.margin,
+            "margin_storage_dtype": "float64" if self.margin is not None else None,
+            "margin_was_rounded": False if self.margin is not None else None,
+            "margin_group": None,
+            "margin_boundary_id": None,
+            "sampling_eligible": None,
+            "sampling_accepted": None,
+            "sampling_rejection_reason": None,
+            "certificate_diagnostic": self.certificate_diagnostic,
+            "certificate_calculation": self.certificate_calculation,
             "CERT_AFTER_RECOVERY": self.cert_after_recovery,
             **recovery,
             "Krec": krec,
@@ -199,18 +214,6 @@ class TrialMachine:
             "cert_invalid": int(cert_invalid),
             **quality,
         }
-
-
-def margin_group(margin: float | None) -> str | None:
-    if margin is None or not 0.0 <= margin <= 0.95:
-        return None
-    if margin < 0.3167:
-        return "LOW"
-    if margin < 0.6333:
-        return "MEDIUM"
-    return "HIGH"
-
-
 def trajectory_metrics(frames: list[dict[str, Any]], *, completed: bool) -> dict[str, Any]:
     if not completed or not frames:
         return {"RMSE_v": None, "RMSE_vx": None, "RMSE_vy": None,
