@@ -59,13 +59,13 @@ coverage_probe:
     - {name: downhill_lateral_left, slope_deg: -15.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 270,
        linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
-    - {name: downhill10_lateral_left, slope_deg: -10.0, speed_group: LOW,
+    - {name: downhill5_lateral_left, slope_deg: -5.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 270,
        linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
     - {name: downhill_lateral_right, slope_deg: -15.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 90,
        linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
-    - {name: downhill10_lateral_right, slope_deg: -10.0, speed_group: LOW,
+    - {name: downhill5_lateral_right, slope_deg: -5.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 90,
        linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
     - {name: plane_backward_high, slope_deg: 0.0, speed_group: HIGH,
@@ -77,7 +77,7 @@ coverage_probe:
     - {name: downhill_backward_mid, slope_deg: -15.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 180,
        linear_speed_mps: [0.45, 1.0], angular_speed_radps: [0.0, 0.4]}
-    - {name: downhill10_backward_mid, slope_deg: -10.0, speed_group: LOW,
+    - {name: downhill5_backward_mid, slope_deg: -5.0, speed_group: LOW,
        command_vx: [0.2, 0.4], direction_deg: 180,
        linear_speed_mps: [0.45, 1.0], angular_speed_radps: [0.0, 0.4]}
 pilot_analysis_sampling:

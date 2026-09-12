@@ -57,9 +57,14 @@ def _identity(model: ModelIdentity, manifest: dict[str, Any], experiment: int, e
 
 
 def _run_path(stage: str, experiment: int, model: ModelIdentity, *, smoke: bool,
-              coverage_probe: bool = False) -> Path:
+              coverage_probe: bool = False, probe_manifest_hash: str | None = None) -> Path:
     category = "coverage_probe" if coverage_probe else "technical_smoke" if smoke else stage
-    return (ROOT / "results" / category / result_namespace() / f"experiment_{experiment}"
+    probe_namespace = (f"probe_{probe_manifest_hash[:12]}" if coverage_probe and probe_manifest_hash
+                       else None)
+    root = ROOT / "results" / category / result_namespace()
+    if probe_namespace:
+        root = root / probe_namespace
+    return (root / f"experiment_{experiment}"
             / model.model_id / f"train_seed_{model.train_seed}")
 
 
@@ -132,7 +137,10 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                         "TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else
                         "ADAPTIVE_OUTCOME_BLIND_CANDIDATE_STREAM" if adaptive_exp1 else "FIXED_BUDGET")
         identity = _identity(model, manifest, experiment, effective, dataset_role=dataset_role)
-        path = _run_path(stage, experiment, model, smoke=smoke, coverage_probe=coverage_probe)
+        path = _run_path(
+            stage, experiment, model, smoke=smoke, coverage_probe=coverage_probe,
+            probe_manifest_hash=manifest["manifest_sha256"],
+        )
         store = RunStore(path, identity)
         if (path / "completion.json").exists():
             return {"status": "ALREADY_COMPLETE", "path": str(path), "completion": read_json(path / "completion.json")}
@@ -312,7 +320,8 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
     except BaseException as exc:
         if env is not None:
             failure_path = _run_path(stage, experiment, model, smoke=smoke,
-                                     coverage_probe=coverage_probe) if "model" in locals() else ROOT / "results/failure.json"
+                                     coverage_probe=coverage_probe,
+                                     probe_manifest_hash=manifest.get("manifest_sha256")) if "model" in locals() else ROOT / "results/failure.json"
             failure_path.mkdir(parents=True, exist_ok=True)
             write_json(failure_path / "failure.json", {"error": str(exc), "traceback": traceback.format_exc()})
         raise
