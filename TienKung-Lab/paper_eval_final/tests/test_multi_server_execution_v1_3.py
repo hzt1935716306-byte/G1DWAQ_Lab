@@ -27,15 +27,28 @@ def test_multiserver_seed_contract_matches_trial_generator():
         assert addendum["seed_contract"]["formal_first_eval_seed"][f"experiment_{experiment}"] == expected
 
 
-def test_each_available_model_has_exactly_one_server_owner():
-    assignments = _addendum()["ownership"]["assignments"]
-    owners = {
-        model: server
-        for server, assignment in assignments.items()
-        for model in assignment["models"]
-    }
-    assert owners == {"M1": "server_a", "M2": "server_b", "M5": "server_c"}
-    assert len(owners) == sum(len(value["models"]) for value in assignments.values())
+def test_protocol_leaves_model_to_server_assignment_to_user():
+    ownership = _addendum()["ownership"]
+    assert ownership["assignment_policy"] == "user_selected_before_execution"
+    assert ownership["protocol_assigns_models_to_servers"] is False
+    assert ownership["server_count"] == 3
+    assert ownership["servers_interchangeable"] is True
+    assert ownership["assignments"] == {}
+    assert ownership["single_writer_required"] is True
+    assert _addendum()["current_resume_point"]["owner_selected_by_user"] is True
+
+
+def test_user_may_dispatch_any_protocol_task_in_natural_language():
+    dispatch = _addendum()["task_dispatch"]
+    assert dispatch["mode"] == "user_defined_natural_language"
+    assert dispatch["protocol_prescribes_task_menu"] is False
+    assert dispatch["server_identity_required"] is False
+    assert dispatch["user_may_select"] == [
+        "any_registered_frozen_model",
+        "any_protocol_stage",
+        "any_protocol_experiment_or_combination",
+    ]
+    assert dispatch["fail_closed_rule"].startswith("reject_requests_that_conflict")
 
 
 def test_machine_identity_never_changes_eval_seed():

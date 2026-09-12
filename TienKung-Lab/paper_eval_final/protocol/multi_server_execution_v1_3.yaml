@@ -22,8 +22,29 @@ seed_contract:
     experiment_2: 3303000
     experiment_3: 4303000
 
+task_dispatch:
+  mode: user_defined_natural_language
+  protocol_prescribes_task_menu: false
+  server_identity_required: false
+  user_may_select:
+    - any_registered_frozen_model
+    - any_protocol_stage
+    - any_protocol_experiment_or_combination
+  server_responsibilities:
+    - map_the_user_request_to_the_existing_protocol_cli_without_changing_the_protocol
+    - read_the_frozen_protocol_and_implementation_freeze
+    - verify_code_tag_manifest_and_checkpoint_hashes
+    - resume_existing_matching_shards_instead_of_restarting_trials
+    - keep_pilot_and_formal_data_separate
+    - produce_complete_sealed_shards_for_central_aggregation
+  fail_closed_rule: reject_requests_that_conflict_with_the_frozen_protocol_and_explain_the_conflict
+
 ownership:
   minimum_unit: complete_model_experiment_shard
+  assignment_policy: user_selected_before_execution
+  protocol_assigns_models_to_servers: false
+  server_count: 3
+  servers_interchangeable: true
   shard_key:
     - protocol_hash
     - stage
@@ -32,32 +53,19 @@ ownership:
     - train_seed
     - manifest_hash
   single_writer_required: true
-  assignments:
-    server_a:
-      models: [M1]
-      method: Baseline
-      responsibilities:
-        - resume_formal_experiment_1_M1
-        - experiment_2_M1
-        - experiment_3_M1
-    server_b:
-      models: [M2]
-      method: DWAQ
-      responsibilities:
-        - experiment_2_M2
-        - experiment_3_M2
-    server_c:
-      models: [M5]
-      method: Ours
-      responsibilities:
-        - experiment_2_M5
-        - experiment_3_M5
+  assignments: {}
+  user_assignment_constraints:
+    - Any server may evaluate any registered frozen model selected by the user.
+    - The same model may run on different servers when they own different stage or experiment shards.
+    - Different servers may evaluate the same or different models with the same paired manifest and eval seeds.
+    - The same model-experiment shard must not be written by more than one server.
   pending_models:
     M3: checkpoint_missing
     M4: checkpoint_missing
 
 current_resume_point:
-  server: server_a
+  eligible_server: any_one_of_the_three_after_complete_verified_transfer
+  owner_selected_by_user: true
   stage: formal
   experiment_id: 1
   model_id: M1
@@ -89,6 +97,6 @@ merge_contract:
   outcome_based_conflict_resolution_prohibited: true
 
 notes:
-  - The three servers evaluate different models; they are not three training-seed repetitions.
+  - The three interchangeable servers are compute workers; they are not training-seed repetitions.
   - Equal eval seeds across models are intentional common-random-number pairing.
   - Splitting one model-experiment shard across servers is prohibited until a tested global shard manifest exists.
