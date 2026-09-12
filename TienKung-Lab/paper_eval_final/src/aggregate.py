@@ -38,6 +38,7 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
     by_model: dict[str, Any] = {}
     for model_id in sorted({row["model_id"] for row in records}):
         selected = [row for row in records if row["model_id"] == model_id]
+        analysis_records = selected
         payload = {
             "summary": summarize(selected, len(selected)),
             "cells": summarize_cells(selected),
@@ -46,10 +47,27 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
             "formal_status": "READY" if len({row["train_seed"] for row in selected}) == 3 else "TRAIN_SEED_INCOMPLETE",
         }
         if experiment == 1:
+            if stage in ("pilot", "formal"):
+                relation_set = select_stratified_relation_set(
+                    selected,
+                    stage=stage,
+                    manifest_seed=int(selected[0]["eval_seed"]) - int(selected[0]["sequence"]) - 1_000_000,
+                )
+                accepted = set(relation_set["accepted_trial_ids"])
+                assignments = relation_set.get("assignments", {})
+                analysis_records = [
+                    {**row, **assignments.get(row["trial_id"], {})}
+                    for row in selected if row["trial_id"] in accepted
+                ]
+                relation_set["summary"] = summarize(analysis_records, len(analysis_records))
+                payload["candidate_stream_summary"] = payload["summary"]
+                payload["summary"] = relation_set["summary"]
+                payload["cells"] = summarize_cells(analysis_records)
+                payload["stratified_relation_set"] = relation_set
             n_margin = {}
             for n_min in (3, 4, 5):
                 for margin in ("LOW", "MEDIUM", "HIGH"):
-                    rows = [row for row in selected if row.get("certificate_valid")
+                    rows = [row for row in analysis_records if row.get("certificate_valid")
                             and row.get("Nmin") == n_min and row.get("margin_group") == margin]
                     recovered = sum(bool(row.get("recovered_sustained")) for row in rows)
                     n_margin[f"N{n_min}_{margin}"] = {
@@ -64,16 +82,6 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
                 "N_margin_occupancy": n_margin,
                 "condition_layer_coverage": len({row["condition_id"] for row in selected}),
             }
-            if stage in ("pilot", "formal"):
-                relation_set = select_stratified_relation_set(
-                    selected,
-                    stage=stage,
-                    manifest_seed=int(selected[0]["eval_seed"]) - int(selected[0]["sequence"]) - 1_000_000,
-                )
-                accepted = set(relation_set["accepted_trial_ids"])
-                accepted_records = [row for row in selected if row["trial_id"] in accepted]
-                relation_set["summary"] = summarize(accepted_records, len(accepted_records))
-                payload["stratified_relation_set"] = relation_set
         by_model[model_id] = payload
     payload = {"compatibility_gate": gate, "shards": [str(path.relative_to(ROOT)) for path in shards],
                "models": by_model, "record_count": len(records)}

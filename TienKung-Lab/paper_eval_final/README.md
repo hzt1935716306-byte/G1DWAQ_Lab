@@ -30,16 +30,23 @@ conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 --ba
 conda run -n g1 python paper_eval_final/run.py --stage formal --experiment 1 --baseline slope_nosys_d_matched
 ```
 
-For every Nmin separately, the pilot sorts the 120 raw margins and freezes
-`q1=(m40+m41)/2` and `q2=(m80+m81)/2` in
-`configs/experiment1_margin_boundaries.yaml`. Formal Experiment 1 refuses to
-start without that independently generated frozen artifact and uses it for an
-outcome-blind accept/reject stream until all nine Nmin-margin cells contain 160
-certificate-valid trials. Recovery status, recovery time, touchdown counts,
-and success rate are prohibited from both pilot and formal admission decisions.
+The pilot pools the balanced 3x120 calibration margins, sorts all 360 values,
+and freezes one shared pair, `q1=(m120+m121)/2` and
+`q2=(m240+m241)/2`, in `configs/experiment1_margin_boundaries.yaml`. All three
+Nmin levels use that same pair. The pilot then uses existing calibration rows
+and outcome-blind targeted continuation to fill all nine Nmin-margin cells to
+40 trials each. Formal Experiment 1 refuses to start without the independently
+generated frozen artifact and fills those same nine cells to 160 trials each.
+Recovery status, recovery time, touchdown counts, falls, survival, and success
+rate are prohibited from pilot/formal admission decisions.
 Boundary ties or evidence of clamp/precision-driven duplicate values produce
 `MARGIN_DEGENERATE`, retain raw inputs/intermediates in the diagnostic artifact,
 and leave formal execution disabled.
+
+Raw terminal records remain immutable. Final dual-role membership (a calibration
+row may also be a pilot-analysis row), `calibration_only`, shared q values, and
+both calibration/evaluation manifest hashes are materialized in each completed
+shard's `sampling_assignments.json` and `sampling_assignments.csv` sidecars.
 
 Experiments 2 and 3 run serially in separate Isaac processes:
 

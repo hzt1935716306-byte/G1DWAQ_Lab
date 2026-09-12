@@ -23,6 +23,9 @@ def write_experiment_report(stage: str, experiment: int, aggregate: dict[str, An
         relation = payload.get("stratified_relation_set")
         if relation is not None:
             lines.extend([
+                f"- 共享 margin 边界：q1=`{relation.get('shared_q1')}`，q2=`{relation.get('shared_q2')}`",
+                f"- 校准 manifest hash：`{relation.get('calibration_manifest_hash')}`",
+                f"- 分析集 manifest hash：`{relation.get('evaluation_manifest_hash')}`",
                 f"- 分层关系集是否完整：`{relation['complete']}`",
                 f"- 分层关系集接纳 trial 数：{len(relation['accepted_trial_ids'])}",
                 f"- 分层单元统计：`{relation['cells']}`",

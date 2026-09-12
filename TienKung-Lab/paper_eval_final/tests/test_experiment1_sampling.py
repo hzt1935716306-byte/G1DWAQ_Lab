@@ -2,6 +2,10 @@ import copy
 
 import pytest
 
+from paper_eval_final.src.common import digest, load_yaml
+from paper_eval_final.src.common import protocol_bundle
+from paper_eval_final.src.trial_generator import generate_experiment1_continuation, generate_trials
+import paper_eval_final.src.experiment1_sampling as sampling_module
 from paper_eval_final.src.experiment1_sampling import (
     MARGIN_GROUPS,
     TARGET_NMIN,
@@ -9,6 +13,7 @@ from paper_eval_final.src.experiment1_sampling import (
     fit_pilot_boundaries,
     pilot_continuation_condition_weights,
     select_formal_samples,
+    select_pilot_analysis_samples,
     select_pilot_samples,
 )
 
@@ -16,6 +21,7 @@ from paper_eval_final.src.experiment1_sampling import (
 def _row(sequence, n_min, margin, *, stage="pilot", outcome="SUCCESS"):
     return {
         "trial_id": f"trial-{sequence:06d}",
+        "eval_seed": 9_000_000 + sequence,
         "sequence": sequence,
         "stage": stage,
         "condition_id": f"layer-{sequence % 5}",
@@ -41,7 +47,7 @@ def _complete_pilot():
     rows = []
     for n_min in TARGET_NMIN:
         for index in range(120):
-            rows.append(_row(len(rows), n_min, n_min + index / 1000.0,
+            rows.append(_row(len(rows), n_min, index / 1000.0,
                              outcome="SUCCESS" if index % 3 else "FAILURE"))
     return rows
 
@@ -56,32 +62,38 @@ def test_pilot_selects_exactly_120_per_nmin_without_outcome_filtering():
     assert {row["task_outcome"] for row in selected} == {"SUCCESS", "FAILURE"}
 
 
-def test_exact_order_statistics_and_40_40_40_cells(tmp_path):
+def test_exact_pooled_order_statistics_create_one_shared_pair_and_40_each_cell(tmp_path):
     boundaries = fit_pilot_boundaries(
         _complete_pilot(), source_identity={"checkpoint_sha256": "a" * 64},
         output_path=tmp_path / "boundaries.yaml",
     )
     assert boundaries["status"] == "FROZEN"
+    assert boundaries["shared_q1"] == pytest.approx(0.0395)
+    assert boundaries["shared_q2"] == pytest.approx(0.0795)
+    assert "boundaries" not in boundaries
+    reloaded = load_yaml(tmp_path / "boundaries.yaml")
+    assert reloaded["boundary_id"] == digest({key: value for key, value in reloaded.items() if key != "boundary_id"})
     for n_min in TARGET_NMIN:
-        assert boundaries["boundaries"][str(n_min)]["q1"] == pytest.approx(n_min + 0.0395)
-        assert boundaries["boundaries"][str(n_min)]["q2"] == pytest.approx(n_min + 0.0795)
         counts = {group: 0 for group in MARGIN_GROUPS}
         for index in range(120):
-            counts[classify_margin(n_min, n_min + index / 1000.0, boundaries)] += 1
+            counts[classify_margin(index / 1000.0, boundaries)] += 1
         assert counts == {"LOW": 40, "MEDIUM": 40, "HIGH": 40}
+    analysis = select_pilot_analysis_samples(_complete_pilot(), boundaries)
+    assert analysis["complete"]
+    assert len(analysis["accepted_trial_ids"]) == 360
 
 
 def test_boundary_tie_is_margin_degenerate_and_raw_trace_is_emitted(tmp_path):
     rows = _complete_pilot()
     n3 = [row for row in rows if row["Nmin"] == 3]
-    n3[39]["margin_raw"] = n3[40]["margin_raw"]
+    n3[40]["margin_raw"] = n3[39]["margin_raw"]
     boundaries = fit_pilot_boundaries(
         rows, source_identity={}, output_path=tmp_path / "boundaries.yaml",
     )
     assert boundaries["status"] == "MARGIN_DEGENERATE"
-    diagnostic = boundaries["diagnostics"]["3"]
-    assert "M40_EQUALS_M41" in diagnostic["degeneracy_reasons"]
-    assert len(diagnostic["raw_margin_and_intermediates"]) == 120
+    diagnostic = boundaries["diagnostic"]
+    assert "M120_EQUALS_M121" in diagnostic["degeneracy_reasons"]
+    assert len(diagnostic["raw_margin_and_intermediates"]) == 360
 
 
 def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
@@ -94,13 +106,28 @@ def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
         for group in MARGIN_GROUPS:
             for index in range(170):
                 rows.append(_row(
-                    len(rows), n_min, n_min + centers[group], stage="formal",
+                    len(rows), n_min, centers[group], stage="formal",
                     outcome="FAILURE" if index < 160 else "SUCCESS",
                 ))
     selected = select_formal_samples(rows, boundaries)
     assert selected["complete"]
     assert len(selected["accepted_trial_ids"]) == 1440
     assert all(cell["accepted"] == 160 for cell in selected["cells"].values())
+    assert {item["sample_role"] for item in selected["assignments"].values()} == {
+        "formal_analysis", None,
+    }
+
+
+def test_excess_calibration_rows_are_marked_calibration_only(tmp_path):
+    rows = []
+    for n_min in TARGET_NMIN:
+        for index in range(120):
+            rows.append(_row(len(rows), n_min, (n_min - 3) + index / 1000.0))
+    boundaries = fit_pilot_boundaries(rows, source_identity={}, output_path=tmp_path / "boundaries.yaml")
+    analysis = select_pilot_analysis_samples(rows, boundaries)
+    calibration_only = [item for item in analysis["assignments"].values() if item["calibration_only"]]
+    assert len(calibration_only) == 240
+    assert all(item["sample_role"] == "calibration" for item in calibration_only)
 
 
 def test_continuation_ranking_does_not_change_when_outcomes_change():
@@ -113,3 +140,34 @@ def test_continuation_ranking_does_not_change_when_outcomes_change():
         row["recovery_time"] = 99.0
         row["nTD0"] = 999
     assert pilot_continuation_condition_weights(changed) == first
+
+
+def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting(tmp_path, monkeypatch):
+    plans = generate_trials("pilot", 1)
+    records = []
+    for index, plan in enumerate(plans):
+        row = dict(plan)
+        if index < 360:
+            n_min = 3 + index % 3
+            row.update(
+                certificate_valid=True, invalid_kind=None, Nmin=n_min,
+                margin_raw=(n_min - 3) + index / 100000.0,
+                margin_storage_dtype="float64", margin_was_rounded=False,
+                certificate_calculation={"margin_saturated": False, "margin_clamped": False,
+                                         "margin_truncated": False},
+            )
+        else:
+            row.update(certificate_valid=False, invalid_kind=None, Nmin=None, margin_raw=None,
+                       margin_storage_dtype=None, margin_was_rounded=None)
+        records.append(row)
+    cfg = sampling_module.experiment1_config()
+    boundary_path = tmp_path / "boundaries.yaml"
+    fit_pilot_boundaries(records, source_identity={
+        "stage": "pilot", "protocol_hash": protocol_bundle()[2]["protocol_hash"],
+        "manifest_hash": "m", "checkpoint_sha256": cfg["checkpoint_sha256"],
+        "model_id": "M1", "train_seed": 42,
+    }, output_path=boundary_path)
+    monkeypatch.setattr(sampling_module, "BOUNDARY_PATH", boundary_path)
+    continuation = generate_experiment1_continuation("pilot", 500, 24, records)
+    assert {row["candidate_phase"] for row in continuation} == {"PILOT_CELL_TARGETED_CONTINUATION"}
+    assert all("margin_group" in row["sampling_target_hint"] for row in continuation)

@@ -76,8 +76,10 @@ def formal_guard(args: argparse.Namespace, chosen: list[int]) -> None:
 
         boundaries = load_boundaries(require_frozen=True)
         frozen_boundary = freeze.get("experiment1_margin_boundaries", {})
-        if (frozen_boundary.get("status") != "FROZEN"
-                or frozen_boundary.get("boundary_id") != boundaries["boundary_id"]):
+        if (frozen_boundary.get("kind") != "SHARED_MARGIN_TERTILES"
+                or frozen_boundary.get("status") != "FROZEN"
+                or frozen_boundary.get("boundary_id") != boundaries["boundary_id"]
+                or frozen_boundary.get("calibration_manifest_hash") != boundaries["calibration_manifest_hash"]):
             raise ValueError("formal Experiment 1 refused: pilot margin boundary freeze does not match")
         caps = freeze["formal_stratified_caps"]
         if caps["max_candidates_total"] is None or caps["max_candidates_per_condition_layer"] is None:
@@ -204,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
             write_experiment_report(args.stage, int(experiment), result)
             if args.stage == "screening" and int(experiment) == 1:
                 write_screening_report(result)
+            if args.stage in ("pilot", "formal") and int(experiment) == 1:
+                from paper_eval_final.src.plotting import write_experiment1_plots
+                write_experiment1_plots(args.stage, result)
         print(json.dumps(payload, indent=2))
         return 0
     experiment1_baseline_guard(args, chosen)

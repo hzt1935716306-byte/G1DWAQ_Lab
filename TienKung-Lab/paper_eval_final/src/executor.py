@@ -151,27 +151,59 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
 
                     from .experiment1_sampling import (
                         experiment1_config, fit_pilot_boundaries, load_boundaries,
-                        sampling_complete,
+                        select_calibration_samples, select_formal_samples,
+                        select_pilot_analysis_samples, write_sampling_assignments,
                     )
-                    boundaries = load_boundaries(require_frozen=True) if stage == "formal" else None
-                    if sampling_complete(records, stage=stage, boundaries=boundaries):
-                        if stage == "pilot":
+                    config = experiment1_config()
+                    if stage == "pilot":
+                        boundaries = load_boundaries()
+                        calibration = select_calibration_samples(
+                            records,
+                            per_nmin=int(config["calibration_sampling"]["certificate_valid_per_Nmin"]),
+                        )
+                        if calibration["complete"] and boundaries.get("status") != "FROZEN":
                             boundary_result = fit_pilot_boundaries(records, source_identity=identity)
                             write_json(path / "pilot_margin_status.json", boundary_result)
                             if boundary_result["status"] != "FROZEN":
                                 return {"status": boundary_result["status"], "path": str(path),
                                         "margin_boundaries": boundary_result}
+                            boundaries = load_boundaries(require_frozen=True)
+                        if boundaries.get("status") == "FROZEN" and (
+                            boundaries.get("source_identity", {}).get("manifest_hash") != identity["manifest_hash"]
+                        ):
+                            raise ValueError("frozen shared boundaries belong to another pilot candidate campaign")
+                        selection = (select_pilot_analysis_samples(
+                            records, boundaries,
+                            per_cell=int(config["pilot_analysis_sampling"]["certificate_valid_per_cell"]),
+                        ) if boundaries.get("status") == "FROZEN" else None)
+                    else:
+                        boundaries = load_boundaries(require_frozen=True)
+                        selection = select_formal_samples(
+                            records, boundaries,
+                            per_cell=int(config["formal_sampling"]["certificate_valid_per_cell"]),
+                        )
+
+                    if selection is not None and selection["complete"]:
+                        write_sampling_assignments(path, selection)
+                        accepted = set(selection["accepted_trial_ids"])
+                        analysis_records = [row for row in records if row["trial_id"] in accepted]
                         summary = summarize(records, len(trials))
                         summary.update({
                             "status": "COMPLETE", "dataset_role": dataset_role,
                             "candidate_count": len(trials),
-                            "accepted_count": sum(bool(row.get("sampling_accepted")) for row in records),
+                            "accepted_count": len(analysis_records),
+                            "analysis_summary": summarize(analysis_records, len(analysis_records)),
+                            "analysis_cells": selection["cells"],
+                            "shared_q1": boundaries["shared_q1"],
+                            "shared_q2": boundaries["shared_q2"],
+                            "calibration_manifest_hash": boundaries["calibration_manifest_hash"],
+                            "evaluation_manifest_hash": selection["evaluation_manifest_hash"],
                         })
                         completion = store.seal([trial["trial_id"] for trial in trials], summary)
                         return {"status": "COMPLETE", "path": str(path), "summary": summary,
                                 "completion": completion}
 
-                    cfg = experiment1_config()[f"{stage}_sampling"]
+                    cfg = config[f"{stage}_sampling"]
                     if stage == "formal":
                         freeze = load_yaml(ROOT / "protocol/implementation_freeze.yaml")
                         cap = freeze["formal_stratified_caps"]["max_candidates_total"]
@@ -183,7 +215,9 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                         raise ValueError(f"{stage} Experiment 1 candidate cap is not frozen")
                     if len(trials) >= int(cap):
                         status = {"status": "TARGET_NOT_REACHED", "candidate_count": len(trials),
-                                  "max_candidates_total": int(cap)}
+                                  "max_candidates_total": int(cap),
+                                  "calibration_deficits": calibration["deficits"] if stage == "pilot" else None,
+                                  "analysis_cells": selection["cells"] if selection is not None else None}
                         write_json(path / "sampling_status.json", status)
                         return {**status, "path": str(path)}
                     batch_count = min(int(cfg["continuation_batch_candidates"]), int(cap) - len(trials))
@@ -256,7 +290,9 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                     from .experiment1_sampling import annotate_sampling_batch, load_boundaries
                     batch_records = [record for _, record in terminal_payloads]
                     prior_records = store.load_records()
-                    boundaries = load_boundaries(require_frozen=True) if stage == "formal" else None
+                    boundaries = load_boundaries(require_frozen=True) if stage == "formal" else load_boundaries()
+                    if boundaries.get("status") != "FROZEN":
+                        boundaries = None
                     annotate_sampling_batch(batch_records, prior_records, stage=stage, boundaries=boundaries)
                 for machine, record in terminal_payloads:
                     store.save_trial(record, machine.frames, machine.events, machine.pre_reset_snapshot)

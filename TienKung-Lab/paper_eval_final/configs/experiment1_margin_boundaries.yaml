@@ -1,8 +1,12 @@
-schema_version: 1
+schema_version: 2
 experiment_id: 1
 status: UNFROZEN
+boundary_kind: SHARED_MARGIN_TERTILES
 baseline_id: slope_nosys_d_matched
 checkpoint_sha256: 15167ca59f001a3f1888c894d43c14a2cb7321f48aab1b0a8eaabdd9e74ce848
 source_stage: pilot
 boundary_id: null
-boundaries: {}
+shared_q1: null
+shared_q2: null
+calibration_manifest_hash: null
+computed_at_utc: null

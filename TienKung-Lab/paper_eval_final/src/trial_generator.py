@@ -206,20 +206,38 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
     target_hints: list[Any] = []
     if stage == "pilot":
         from .experiment1_sampling import (
-            TARGET_NMIN, experiment1_config, pilot_continuation_condition_weights,
-            select_pilot_samples,
+            MARGIN_GROUPS, TARGET_NMIN, analysis_condition_rankings,
+            calibration_condition_rankings, experiment1_config, load_boundaries,
+            select_calibration_samples, select_pilot_analysis_samples,
         )
-        sampling_cfg = experiment1_config()["pilot_sampling"]
-        target = int(sampling_cfg["certificate_valid_per_Nmin"])
-        top_layers = int(sampling_cfg["targeting_top_condition_layers"])
-        selection = select_pilot_samples(records, per_nmin=target)
-        deficits = {n: int(selection["deficits"][str(n)]) for n in TARGET_NMIN}
-        rankings = pilot_continuation_condition_weights(records)
+        config = experiment1_config()
+        calibration_cfg = config["calibration_sampling"]
+        calibration = select_calibration_samples(
+            records, per_nmin=int(calibration_cfg["certificate_valid_per_Nmin"])
+        )
+        if not calibration["complete"]:
+            top_layers = int(calibration_cfg["targeting_top_condition_layers"])
+            deficits = {n: int(calibration["deficits"][str(n)]) for n in TARGET_NMIN}
+            rankings = calibration_condition_rankings(records)
+            candidate_phase = "CALIBRATION_TARGETED_CONTINUATION"
+        else:
+            boundaries = load_boundaries(require_frozen=True)
+            analysis_cfg = config["pilot_analysis_sampling"]
+            top_layers = int(analysis_cfg["targeting_top_condition_layers"])
+            selection = select_pilot_analysis_samples(
+                records, boundaries, per_cell=int(analysis_cfg["certificate_valid_per_cell"])
+            )
+            deficits = {
+                (n, group): int(selection["cells"][f"N{n}_{group}"]["missing"])
+                for n in TARGET_NMIN for group in MARGIN_GROUPS
+            }
+            rankings = analysis_condition_rankings(records, boundaries, stage="pilot")
+            candidate_phase = "PILOT_CELL_TARGETED_CONTINUATION"
         for _ in range(count):
-            deficient = [n for n in TARGET_NMIN if deficits[n] > 0]
+            deficient = [key for key, deficit in deficits.items() if deficit > 0]
             if not deficient:
                 break
-            hint = max(deficient, key=lambda n: (deficits[n] / (assigned[n] + 1.0), n))
+            hint = max(deficient, key=lambda key: (deficits[key] / (assigned[key] + 1.0), key))
             target_hints.append(hint)
             assigned[hint] += 1
     else:
@@ -237,6 +255,7 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
             for n in TARGET_NMIN for group in MARGIN_GROUPS
         }
         rankings = formal_continuation_condition_weights(records, boundaries)
+        candidate_phase = "FORMAL_CELL_TARGETED_CONTINUATION"
         for _ in range(count):
             deficient = [cell for cell, deficit in deficits.items() if deficit > 0]
             if not deficient:
@@ -272,14 +291,14 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
             rng, protocol, str(disturbance_template["intensity_group"]),
             int(disturbance_template["direction_Hpush_deg"]),
         )
-        hint_payload = ({"Nmin": int(hint)} if stage == "pilot" else
+        hint_payload = ({"Nmin": int(hint)} if isinstance(hint, int) else
                         {"Nmin": int(hint[0]), "margin_group": str(hint[1])})
         row.update(
             onset_offset_s=onset_offset,
             planned_disturbance_start_s=planned,
             disturbance=disturbance,
             observation_end_s=planned + 10.0,
-            candidate_phase="TARGETED_CONTINUATION",
+            candidate_phase=candidate_phase,
             sampling_target_hint=hint_payload,
         )
         rows.append(row)
@@ -389,8 +408,8 @@ def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
     """
     del manifest_seed
     from .experiment1_sampling import (
-        MARGIN_GROUPS, TARGET_NMIN, classify_margin, experiment1_config,
-        load_boundaries, select_formal_samples, select_pilot_samples,
+        experiment1_config, load_boundaries, select_calibration_samples,
+        select_formal_samples, select_pilot_analysis_samples,
     )
 
     boundaries = load_boundaries()
@@ -402,30 +421,20 @@ def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
         )
     if stage != "pilot":
         raise ValueError("relation set exists only for pilot/formal")
-    selection = select_pilot_samples(
-        records, per_nmin=int(cfg["pilot_sampling"]["certificate_valid_per_Nmin"])
+    if boundaries.get("status") == "FROZEN":
+        return select_pilot_analysis_samples(
+            records, boundaries,
+            per_cell=int(cfg["pilot_analysis_sampling"]["certificate_valid_per_cell"]),
+        )
+    calibration = select_calibration_samples(
+        records, per_nmin=int(cfg["calibration_sampling"]["certificate_valid_per_Nmin"])
     )
-    accepted = [row for n in TARGET_NMIN for row in selection["selected"][n]]
-    cells = {}
-    for n in TARGET_NMIN:
-        for group in MARGIN_GROUPS:
-            rows = [
-                row for row in accepted
-                if classify_margin(n, row.get("margin_raw"), boundaries) == group and row.get("Nmin") == n
-            ] if boundaries.get("status") == "FROZEN" else []
-            cells[f"N{n}_{group}"] = {
-                "accepted": len(rows), "target": 40,
-                "missing": max(0, 40 - len(rows)),
-                "condition_coverage": len({row["condition_id"] for row in rows}),
-            }
     return {
-        "dataset_role": "PILOT_BOUNDARY_SET",
-        "stage": "pilot",
-        "boundary_status": boundaries.get("status"),
-        "boundary_id": boundaries.get("boundary_id"),
-        "accepted_trial_ids": [row["trial_id"] for row in accepted],
-        "Nmin_counts": selection["counts"],
-        "Nmin_deficits": selection["deficits"],
-        "cells": cells,
-        "complete": selection["complete"] and boundaries.get("status") == "FROZEN",
+        "dataset_role": "BALANCED_MARGIN_CALIBRATION",
+        "stage": "pilot", "boundary_status": boundaries.get("status"),
+        "accepted_trial_ids": [
+            row["trial_id"] for n in (3, 4, 5) for row in calibration["selected"][n]
+        ],
+        "Nmin_counts": calibration["counts"], "Nmin_deficits": calibration["deficits"],
+        "cells": {}, "complete": False,
     }

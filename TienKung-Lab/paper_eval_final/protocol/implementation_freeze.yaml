@@ -5,8 +5,10 @@ pilot_required: true
 formal_experiment1_baseline: slope_nosys_d_matched
 experiment1_margin_boundaries:
   file: configs/experiment1_margin_boundaries.yaml
+  kind: SHARED_MARGIN_TERTILES
   status: UNFROZEN
   boundary_id: null
+  calibration_manifest_hash: null
 formal_stratified_caps:
   max_candidates_total: null
   max_candidates_per_condition_layer: null

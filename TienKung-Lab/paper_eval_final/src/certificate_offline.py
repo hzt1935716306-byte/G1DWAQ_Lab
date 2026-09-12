@@ -62,6 +62,7 @@ class OfflineCertificate:
                 # No rounding, formatting, normalization, or clamp is applied
                 # between the solver's value and margin_raw.
                 "margin_clamped": False,
+                "margin_truncated": False,
                 "margin_saturated": bool(value.margin_saturated),
             }
             results.append({
