@@ -51,7 +51,7 @@ def test_fixed_budget_and_stratified_relation_set_remain_distinct():
                         "margin_storage_dtype": "float64", "margin_was_rounded": False,
                         "task_outcome": "SUCCESS" if index % 2 else "FAILURE"})
     selection = select_stratified_relation_set(records, stage="pilot", manifest_seed=7)
-    assert selection["dataset_role"] == "BALANCED_MARGIN_CALIBRATION"
+    assert selection["dataset_role"] == "PILOT_ANALYSIS_SET"
     assert all("task_outcome" not in value for value in selection["cells"].values())
 
 

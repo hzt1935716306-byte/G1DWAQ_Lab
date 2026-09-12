@@ -291,6 +291,8 @@ def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: 
             "file": str(Path(output_path).resolve().relative_to(ROOT)),
             "kind": "SHARED_MARGIN_TERTILES",
             "status": payload["status"],
+            "target_Nmin": list(TARGET_NMIN),
+            "supersedes_target_Nmin": [3, 4, 5],
             "boundary_id": payload["boundary_id"] if payload["status"] == "FROZEN" else None,
             "calibration_manifest_hash": (
                 payload["calibration_manifest_hash"] if payload["status"] == "FROZEN" else None
