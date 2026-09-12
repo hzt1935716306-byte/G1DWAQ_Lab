@@ -57,8 +57,9 @@ def _base_trial(
     rng = random.Random(eval_seed)
     command_vx = _sample(rng, protocol["conditions"]["speed_groups"][speed_group], high_open=True)
     material = protocol["physics"]["material"]
+    protocol_tag = str(protocol["protocol_version"]).replace(".", "_")
     return {
-        "trial_id": f"v1_2-{stage}-e{experiment}-{sequence:06d}",
+        "trial_id": f"v{protocol_tag}-{stage}-e{experiment}-{sequence:06d}",
         "condition_id": condition_id,
         "experiment_id": experiment,
         "stage": stage,
@@ -203,10 +204,12 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
     templates = {row["condition_id"]: row for row in initial}
     attempts = Counter(str(row["condition_id"]) for row in records)
     assigned: Counter[Any] = Counter()
+    assigned_layers: Counter[str] = Counter()
     target_hints: list[Any] = []
+    direct_condition_layers = False
     if stage == "pilot":
         from .experiment1_sampling import (
-            MARGIN_GROUPS, TARGET_NMIN, analysis_condition_rankings,
+            MARGIN_GROUPS, TARGET_NMIN,
             calibration_condition_rankings, experiment1_config, load_boundaries,
             select_calibration_samples, select_pilot_analysis_samples,
         )
@@ -223,63 +226,82 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
         else:
             boundaries = load_boundaries(require_frozen=True)
             analysis_cfg = config["pilot_analysis_sampling"]
-            top_layers = int(analysis_cfg["targeting_top_condition_layers"])
             selection = select_pilot_analysis_samples(
                 records, boundaries, per_cell=int(analysis_cfg["certificate_valid_per_cell"])
             )
             deficits = {
-                (n, group): int(selection["cells"][f"N{n}_{group}"]["missing"])
+                (n, group, layer): int(missing)
                 for n in TARGET_NMIN for group in MARGIN_GROUPS
+                for layer, missing in selection["cells"][f"N{n}_{group}"]["missing_by_condition_layer"].items()
             }
-            rankings = analysis_condition_rankings(records, boundaries, stage="pilot")
-            candidate_phase = "PILOT_CELL_TARGETED_CONTINUATION"
+            direct_condition_layers = True
+            candidate_phase = "PILOT_LAYER_TARGETED_CONTINUATION"
         for _ in range(count):
-            deficient = [key for key, deficit in deficits.items() if deficit > 0]
+            deficient = [
+                key for key, deficit in deficits.items() if deficit > 0
+                and (not direct_condition_layers or max_candidates_per_condition_layer is None
+                     or attempts[key[2]] + assigned_layers[key[2]] < max_candidates_per_condition_layer)
+            ]
             if not deficient:
                 break
-            hint = max(deficient, key=lambda key: (deficits[key] / (assigned[key] + 1.0), key))
+            hint = max(deficient, key=lambda key: (
+                deficits[key] / (assigned[key] + 1.0), key,
+            ))
             target_hints.append(hint)
             assigned[hint] += 1
+            if direct_condition_layers:
+                assigned_layers[hint[2]] += 1
     else:
         from .experiment1_sampling import (
             MARGIN_GROUPS, TARGET_NMIN, experiment1_config,
-            formal_continuation_condition_weights, load_boundaries, select_formal_samples,
+            load_boundaries, select_formal_samples,
         )
         boundaries = load_boundaries(require_frozen=True)
         sampling_cfg = experiment1_config()["formal_sampling"]
         target = int(sampling_cfg["certificate_valid_per_cell"])
-        top_layers = int(sampling_cfg["targeting_top_condition_layers"])
         selection = select_formal_samples(records, boundaries, per_cell=target)
         deficits = {
-            (n, group): int(selection["cells"][f"N{n}_{group}"]["missing"])
+            (n, group, layer): int(missing)
             for n in TARGET_NMIN for group in MARGIN_GROUPS
+            for layer, missing in selection["cells"][f"N{n}_{group}"]["missing_by_condition_layer"].items()
         }
-        rankings = formal_continuation_condition_weights(records, boundaries)
-        candidate_phase = "FORMAL_CELL_TARGETED_CONTINUATION"
+        direct_condition_layers = True
+        candidate_phase = "FORMAL_LAYER_TARGETED_CONTINUATION"
         for _ in range(count):
-            deficient = [cell for cell, deficit in deficits.items() if deficit > 0]
+            deficient = [
+                key for key, deficit in deficits.items() if deficit > 0
+                and (max_candidates_per_condition_layer is None
+                     or attempts[key[2]] + assigned_layers[key[2]] < max_candidates_per_condition_layer)
+            ]
             if not deficient:
                 break
-            hint = max(deficient, key=lambda cell: (deficits[cell] / (assigned[cell] + 1.0), cell))
+            hint = max(deficient, key=lambda key: (
+                deficits[key] / (assigned[key] + 1.0), key,
+            ))
             target_hints.append(hint)
             assigned[hint] += 1
+            assigned_layers[hint[2]] += 1
 
     layer_cursor: Counter[Any] = Counter()
+    planned_by_layer: Counter[str] = Counter()
     rows = []
     for offset, hint in enumerate(target_hints):
-        ranked_layers = [
-            layer for layer in rankings[hint]
-            if max_candidates_per_condition_layer is None
-            or attempts[layer] + sum(row["condition_id"] == layer for row in rows)
-            < max_candidates_per_condition_layer
-        ][:top_layers]
-        if not ranked_layers:
-            break
-        condition_id = ranked_layers[layer_cursor[hint] % len(ranked_layers)]
-        layer_cursor[hint] += 1
+        if direct_condition_layers:
+            condition_id = str(hint[2])
+        else:
+            ranked_layers = [
+                layer for layer in rankings[hint]
+                if max_candidates_per_condition_layer is None
+                or attempts[layer] + planned_by_layer[layer] < max_candidates_per_condition_layer
+            ][:top_layers]
+            if not ranked_layers:
+                break
+            condition_id = ranked_layers[layer_cursor[hint] % len(ranked_layers)]
+            layer_cursor[hint] += 1
         template = templates[condition_id]
         sequence = start_sequence + offset
-        repeat = attempts[condition_id] + sum(row["condition_id"] == condition_id for row in rows)
+        repeat = attempts[condition_id] + planned_by_layer[condition_id]
+        planned_by_layer[condition_id] += 1
         row = _base_trial(
             protocol, stage, 1, sequence, float(template["slope_deg"]),
             str(template["speed_group"]), condition_id, repeat,
@@ -291,8 +313,10 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
             rng, protocol, str(disturbance_template["intensity_group"]),
             int(disturbance_template["direction_Hpush_deg"]),
         )
-        hint_payload = ({"Nmin": int(hint)} if isinstance(hint, int) else
-                        {"Nmin": int(hint[0]), "margin_group": str(hint[1])})
+        hint_payload = ({"Nmin": int(hint)} if isinstance(hint, int) else {
+            "Nmin": int(hint[0]), "margin_group": str(hint[1]),
+            "condition_id": condition_id,
+        })
         row.update(
             onset_offset_s=onset_offset,
             planned_disturbance_start_s=planned,
@@ -474,7 +498,7 @@ def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
                                    manifest_seed: int) -> dict[str, Any]:
     """Compatibility entry point for the revised outcome-blind relation set.
 
-    ``manifest_seed`` remains in the signature for callers from v1.2, but is
+    ``manifest_seed`` remains in the signature for compatibility, but is
     intentionally unused: selection is now fixed by candidate sequence and the
     independent pilot boundary artifact.
     """

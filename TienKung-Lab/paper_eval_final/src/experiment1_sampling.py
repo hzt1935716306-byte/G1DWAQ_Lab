@@ -1,4 +1,4 @@
-"""Shared-margin calibration and outcome-blind Experiment 1 sampling."""
+"""Conditional-margin calibration and outcome-blind Experiment 1 sampling."""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -42,7 +42,9 @@ def load_boundaries(*, require_frozen: bool = False) -> dict[str, Any]:
     current_protocol_hash = protocol_bundle()[2]["protocol_hash"]
     if value.get("source_stage") != "pilot" or source.get("stage") != "pilot":
         raise ValueError("Experiment 1 boundaries must come from the independent pilot stage")
-    if value.get("stratification_protocol_hash") != current_protocol_hash:
+    compatible_hashes = set(cfg.get("compatible_pilot_stratification_protocol_hashes", []))
+    if (value.get("stratification_protocol_hash") != current_protocol_hash
+            and value.get("stratification_protocol_hash") not in compatible_hashes):
         raise ValueError("Experiment 1 boundaries belong to a different stratification protocol revision")
     if value.get("baseline_id") != cfg["baseline_id"] or value.get("checkpoint_sha256") != cfg["checkpoint_sha256"]:
         raise ValueError("Experiment 1 boundaries belong to a different baseline/checkpoint")
@@ -320,50 +322,82 @@ def _analysis_eligibility(row: dict[str, Any], stage: str) -> tuple[bool, str]:
     return True, "ELIGIBLE"
 
 
-def _balanced_cell(rows: list[dict[str, Any]], per_cell: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Minimize marginal imbalance using condition fields only; trial order breaks ties."""
-    rows = _ordered(rows)
-    if len(rows) < per_cell:
-        return rows, {"exact": False, "reason": "COUNT_DEFICIT", "counts": {}}
-    axes = (("slope_deg", (-15.0, -5.0, 0.0, 5.0, 15.0)),
-            ("speed_group", ("LOW", "HIGH")),
-            ("intensity_group", ("LOW", "HIGH")),
-            ("direction_Hpush_deg", (0, 90, 180, 270)))
-    from scipy.optimize import Bounds, LinearConstraint, milp
-    matrix, targets = [[1.0] * len(rows)], [float(per_cell)]
-    for name, values in axes:
-        quotient, remainder = divmod(per_cell, len(values))
-        for index, value in enumerate(values):
-            matrix.append([1.0 if (row.get(name) if name in row else row["disturbance"].get(name)) == value else 0.0 for row in rows])
-            targets.append(float(quotient + (index < remainder)))
-    result = milp(c=np.arange(len(rows), dtype=float), integrality=np.ones(len(rows)),
-                  bounds=Bounds(np.zeros(len(rows)), np.ones(len(rows))),
-                  constraints=LinearConstraint(np.asarray(matrix), targets, targets))
-    exact = bool(result.success)
-    if not exact:
-        category_count, row_count = len(matrix) - 1, len(rows)
-        soft_matrix = []
-        for index, values in enumerate(matrix):
-            slack = [0.0] * (2 * category_count)
-            if index:
-                slack[2 * (index - 1)] = 1.0
-                slack[2 * (index - 1) + 1] = -1.0
-            soft_matrix.append(values + slack)
-        result = milp(c=np.r_[np.arange(row_count) / max(1.0, row_count * 1e6), np.ones(2 * category_count)],
-                      integrality=np.r_[np.ones(row_count), np.zeros(2 * category_count)],
-                      bounds=Bounds(np.zeros(row_count + 2 * category_count),
-                                    np.r_[np.ones(row_count), np.full(2 * category_count, np.inf)]),
-                      constraints=LinearConstraint(np.asarray(soft_matrix), targets, targets))
-        if not result.success:
-            raise RuntimeError("condition-balance optimization failed")
-    chosen = [row for row, flag in zip(rows, result.x[:len(rows)]) if flag > 0.5]
+def experiment1_condition_layers() -> tuple[str, ...]:
+    """Return the canonical 5 x 2 x 2 x 4 Experiment-1 condition layers."""
+    protocol = protocol_bundle()[0]
+    return tuple(
+        f"velocity_jump_s{float(slope):+g}_{speed}_{intensity}_d{int(direction)}"
+        for slope in protocol["conditions"]["slopes_deg"]
+        for speed in protocol["conditions"]["speed_groups"]
+        for intensity in ("LOW", "HIGH")
+        for direction in protocol["disturbances"]["directions_Hpush_deg"]
+    )
+
+
+def pilot_condition_layers(n_min: int, group: str) -> tuple[str, ...]:
+    """Freeze 40 seed-balanced layers per cell without reading trial outcomes."""
+    cfg = experiment1_config()["pilot_analysis_sampling"]
+    seed = int(cfg["condition_layer_selection_seed"])
+    rotation = int(digest({"seed": seed, "Nmin": n_min, "margin_group": group})[0], 16) % 2
+    protocol = protocol_bundle()[0]
+    chosen = []
+    for slope_index, slope in enumerate(protocol["conditions"]["slopes_deg"]):
+        for speed_index, speed in enumerate(protocol["conditions"]["speed_groups"]):
+            for intensity_index, intensity in enumerate(("LOW", "HIGH")):
+                for direction_index, direction in enumerate(protocol["disturbances"]["directions_Hpush_deg"]):
+                    if (slope_index + speed_index + intensity_index + direction_index) % 2 != rotation:
+                        continue
+                    chosen.append(
+                        f"velocity_jump_s{float(slope):+g}_{speed}_{intensity}_d{int(direction)}"
+                    )
+    expected = int(cfg["selected_condition_layers_per_cell"])
+    if len(chosen) != expected:
+        raise AssertionError(f"pilot layer rotation produced {len(chosen)} layers, expected {expected}")
+    return tuple(chosen)
+
+
+def condition_layer_quotas(stage: str, n_min: int, group: str) -> dict[str, int]:
+    cfg = experiment1_config()
+    if stage == "pilot":
+        quota = int(cfg["pilot_analysis_sampling"]["certificate_valid_per_selected_condition_layer"])
+        return {layer: quota for layer in pilot_condition_layers(n_min, group)}
+    if stage == "formal":
+        quota = int(cfg["formal_sampling"]["certificate_valid_per_condition_layer"])
+        return {layer: quota for layer in experiment1_condition_layers()}
+    raise ValueError(f"condition-layer quotas are undefined for stage {stage!r}")
+
+
+def _layer_balanced_cell(rows: list[dict[str, Any]], *, stage: str, n_min: int,
+                         group: str, per_cell: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Take the first eligible rows in each pre-frozen condition-layer quota."""
+    quotas = condition_layer_quotas(stage, n_min, group)
+    if sum(quotas.values()) != per_cell:
+        raise ValueError(f"{stage} N{n_min}-{group}: layer quotas do not sum to {per_cell}")
+    by_layer: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _ordered(rows):
+        by_layer[str(row["condition_id"])].append(row)
+    chosen = [row for layer in quotas for row in by_layer[layer][:quotas[layer]]]
+    layer_counts = {layer: min(len(by_layer[layer]), quota) for layer, quota in quotas.items()}
+    missing_by_layer = {
+        layer: quota - layer_counts[layer] for layer, quota in quotas.items()
+        if layer_counts[layer] < quota
+    }
     counts = {
         "slopes": dict(Counter(str(row["slope_deg"]) for row in chosen)),
         "speeds": dict(Counter(row["speed_group"] for row in chosen)),
         "intensities": dict(Counter(row["disturbance"]["intensity_group"] for row in chosen)),
         "directions": dict(Counter(str(row["disturbance"]["direction_Hpush_deg"]) for row in chosen)),
     }
-    return chosen, {"exact": exact, "reason": "EXACT" if exact else "BEST_EFFORT", "counts": counts}
+    exact = not missing_by_layer
+    return chosen, {
+        "exact": exact,
+        "reason": "EXACT_CONDITION_LAYER_QUOTAS" if exact else "CONDITION_LAYER_DEFICIT",
+        "counts": counts,
+        "required_condition_layers": len(quotas),
+        "filled_condition_layers": sum(layer_counts[layer] == quotas[layer] for layer in quotas),
+        "quota_per_condition_layer": sorted(set(quotas.values())),
+        "missing_by_condition_layer": missing_by_layer,
+    }
 
 
 def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, Any], *,
@@ -386,7 +420,10 @@ def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, An
         cell = (int(row["Nmin"]), group)
         attempts[cell] += 1
         candidates[cell].append(row)
-    selected = {cell: _balanced_cell(rows, per_cell) for cell, rows in candidates.items()}
+    selected = {
+        cell: _layer_balanced_cell(rows, stage=stage, n_min=cell[0], group=cell[1], per_cell=per_cell)
+        for cell, rows in candidates.items()
+    }
     cells = {cell: [row["trial_id"] for row in value[0]] for cell, value in selected.items()}
     accepted_in_order = [trial_id for n in TARGET_NMIN for group in MARGIN_GROUPS
                          for trial_id in cells[(n, group)]]
@@ -396,6 +433,7 @@ def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, An
             "missing": max(0, per_cell - len(cells[(n, group)])),
             "attempt_count": attempts[(n, group)], "trial_ids": cells[(n, group)],
             "condition_balance": selected[(n, group)][1],
+            "missing_by_condition_layer": selected[(n, group)][1]["missing_by_condition_layer"],
         }
         for n in TARGET_NMIN for group in MARGIN_GROUPS
     }

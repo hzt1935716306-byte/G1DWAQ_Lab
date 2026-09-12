@@ -7,7 +7,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .common import EVALUATION_SYSTEM, ROOT, atomic_write, digest, read_json, sha256_file, within, write_csv, write_json
+from .common import (EVALUATION_SYSTEM, ROOT, atomic_write, digest, protocol_bundle,
+                     read_json, sha256_file, within, write_csv, write_json)
 
 
 IDENTITY_GATE_FIELDS = (
@@ -48,8 +49,9 @@ def validate_record(record: dict[str, Any]) -> None:
     missing = required - record.keys()
     if missing:
         raise ValueError(f"trial record missing fields: {sorted(missing)}")
-    if record["evaluation_system"] != EVALUATION_SYSTEM or record["protocol_version"] != "1.2":
-        raise ValueError("legacy/non-v1.2 trial record refused")
+    current_version = protocol_bundle()[2]["protocol_version"]
+    if record["evaluation_system"] != EVALUATION_SYSTEM or record["protocol_version"] != current_version:
+        raise ValueError(f"legacy/non-v{current_version} trial record refused")
     if record["termination_kind"] not in {"HORIZON_REACHED", "PHYSICAL_RESET", "PROTOCOL_STOP", "EVALUATION_ABORT"}:
         raise ValueError("unknown termination kind")
     if record["task_outcome"] not in {"SUCCESS", "FAILURE", "INVALID"}:

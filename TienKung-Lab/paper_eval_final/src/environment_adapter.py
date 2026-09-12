@@ -1,4 +1,4 @@
-"""Isaac Lab adapter for the controlled protocol-v1.2 physical environment.
+"""Isaac Lab adapter for the controlled protocol-v1.3 physical environment.
 
 Simulator imports are intentionally lazy.  This module depends on native
 training tasks for policy observations/inference, but never on the retired

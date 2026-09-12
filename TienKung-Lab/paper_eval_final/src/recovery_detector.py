@@ -1,4 +1,4 @@
-"""Timestamp-based sustained-recovery detector frozen by protocol v1.2."""
+"""Timestamp-based sustained-recovery detector frozen by protocol v1.3."""
 from __future__ import annotations
 
 from collections import deque

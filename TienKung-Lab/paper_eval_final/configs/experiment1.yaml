@@ -83,7 +83,10 @@ coverage_probe:
 pilot_analysis_sampling:
   certificate_valid_per_cell: 40
   total_selected: 360
-  targeting_rule: deficit_round_robin_smoothed_conditional_margin_cell_yield
+  targeting_rule: fixed_seed_balanced_condition_layer_manifest
+  selected_condition_layers_per_cell: 40
+  certificate_valid_per_selected_condition_layer: 1
+  condition_layer_selection_seed: 1302137
   condition_balance:
     slope_each: 8
     speed_group_each: 20
@@ -96,10 +99,14 @@ formal_sampling:
   initial_candidates: 2000
   certificate_valid_per_cell: 160
   total_selected: 1440
+  condition_layers_per_cell: 80
+  certificate_valid_per_condition_layer: 2
   continuation_batch_candidates: 2048
-  max_candidates_total: null
-  max_candidates_per_condition_layer: null
+  max_candidates_total: 65536
+  max_candidates_per_condition_layer: 4096
   targeting_top_condition_layers: 8
   acceptance_fields: [stage, condition_id, certificate_valid, Nmin, margin_raw]
   prohibited_acceptance_fields: [task_outcome, recovered_sustained, recovery_time, nTD0, Krec, Krec_physical]
   boundaries_file: configs/experiment1_margin_boundaries.yaml
+compatible_pilot_stratification_protocol_hashes:
+  - fe37e605375936feccf73351b9bccd59f5403948cb0895bea1642a826c886a57

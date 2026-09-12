@@ -15,7 +15,9 @@ from paper_eval_final.src.experiment1_sampling import (
     MARGIN_GROUPS,
     TARGET_NMIN,
     classify_margin,
+    experiment1_condition_layers,
     fit_pilot_boundaries,
+    pilot_condition_layers,
     pilot_continuation_condition_weights,
     select_formal_samples,
     select_pilot_analysis_samples,
@@ -34,7 +36,7 @@ def _row(sequence, n_min, margin, *, stage="pilot", outcome="SUCCESS"):
         "eval_seed": 9_000_000 + sequence,
         "sequence": sequence,
         "stage": stage,
-        "condition_id": f"s{slope}_{speed}_{intensity}_d{direction}",
+        "condition_id": f"velocity_jump_s{slope:+g}_{speed}_{intensity}_d{direction}",
         "slope_deg": slope, "speed_group": speed,
         "disturbance": {"type": "velocity_jump", "intensity_group": intensity,
                         "direction_Hpush_deg": direction},
@@ -139,6 +141,11 @@ def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
     assert selected["complete"]
     assert len(selected["accepted_trial_ids"]) == 1440
     assert all(cell["accepted"] == 160 for cell in selected["cells"].values())
+    assert all(cell["condition_balance"]["required_condition_layers"] == 80
+               for cell in selected["cells"].values())
+    assert all(cell["condition_balance"]["quota_per_condition_layer"] == [2]
+               for cell in selected["cells"].values())
+    assert all(not cell["missing_by_condition_layer"] for cell in selected["cells"].values())
     assert {item["sample_role"] for item in selected["assignments"].values()} == {
         "formal_analysis", None,
     }
@@ -146,15 +153,27 @@ def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
     assert "shared_q2" not in inspect.getsource(select_formal_samples)
 
 
-def test_calibration_rows_form_exact_per_n_tertiles(tmp_path):
+def test_calibration_rows_form_exact_per_n_tertiles_independent_of_analysis_layers(tmp_path):
     rows = []
     for n_min in TARGET_NMIN:
         for index in range(120):
             rows.append(_row(len(rows), n_min, (n_min - 2) + index / 1000.0))
     boundaries = fit_pilot_boundaries(rows, source_identity={}, output_path=tmp_path / "boundaries.yaml")
-    analysis = select_pilot_analysis_samples(rows, boundaries)
-    calibration_only = [item for item in analysis["assignments"].values() if item["calibration_only"]]
-    assert len(calibration_only) == 0
+    for n_min in TARGET_NMIN:
+        counts = {group: 0 for group in MARGIN_GROUPS}
+        for row in rows:
+            if row["Nmin"] == n_min:
+                counts[classify_margin(n_min, row["margin_raw"], boundaries)] += 1
+        assert counts == {"LOWER": 40, "MIDDLE": 40, "UPPER": 40}
+
+
+def test_pilot_layer_manifest_is_fixed_balanced_and_one_per_layer():
+    all_layers = set(experiment1_condition_layers())
+    for n_min in TARGET_NMIN:
+        for group in MARGIN_GROUPS:
+            layers = pilot_condition_layers(n_min, group)
+            assert len(layers) == len(set(layers)) == 40
+            assert set(layers) <= all_layers
 
 
 def test_continuation_ranking_does_not_change_when_outcomes_change():
@@ -170,36 +189,37 @@ def test_continuation_ranking_does_not_change_when_outcomes_change():
 
 
 def test_complete_conditional_cells_need_no_continuation(tmp_path, monkeypatch):
-    plans = generate_trials("pilot", 1)
-    records = []
-    for index, plan in enumerate(plans):
-        row = dict(plan)
-        if index < 360:
-            n_min = 2 + index % 3
-            row.update(
-                certificate_valid=True, invalid_kind=None, Nmin=n_min,
-                margin_raw=(n_min - 2) * 0.05 + (index // 3) / 1000.0,
-                margin_storage_dtype="float64", margin_was_rounded=False,
-                certificate_calculation={"margin_saturated": False, "margin_clamped": False,
-                                         "margin_truncated": False},
-                push_applied=True, termination_kind="HORIZON_REACHED", task_outcome="SUCCESS",
-                failure_reason=None, recovered_sustained=True, survived_post_observation=True,
-                recovery_time=1.0, nTD0=2, Krec=3, first_entry=1.0, final_entry=1.0,
-                confirmations=[], relapse_events=[], events_path="events.json", trace_path="trace.npz",
-            )
-        else:
-            row.update(certificate_valid=False, invalid_kind=None, Nmin=None, margin_raw=None,
-                       margin_storage_dtype=None, margin_was_rounded=None)
-        records.append(row)
+    plans = {row["condition_id"]: row for row in generate_trials("pilot", 1)}
+    records = _complete_pilot()
     cfg = sampling_module.experiment1_config()
     boundary_path = tmp_path / "boundaries.yaml"
-    fit_pilot_boundaries(records, source_identity={
+    boundaries = fit_pilot_boundaries(records, source_identity={
         "stage": "pilot", "protocol_hash": protocol_bundle()[2]["protocol_hash"],
         "manifest_hash": "m", "checkpoint_sha256": cfg["checkpoint_sha256"],
         "model_id": "M1", "train_seed": 42,
     }, output_path=boundary_path)
+    centers = {
+        n_min: {
+            "LOWER": boundaries[f"n{n_min}_q1"] / 2,
+            "MIDDLE": (boundaries[f"n{n_min}_q1"] + boundaries[f"n{n_min}_q2"]) / 2,
+            "UPPER": boundaries[f"n{n_min}_q2"] + 0.01,
+        } for n_min in TARGET_NMIN
+    }
+    sequence = 1000
+    for n_min in TARGET_NMIN:
+        for group in MARGIN_GROUPS:
+            for layer in pilot_condition_layers(n_min, group):
+                row = _row(sequence, n_min, centers[n_min][group])
+                plan = plans[layer]
+                row.update(
+                    condition_id=layer, slope_deg=plan["slope_deg"], speed_group=plan["speed_group"],
+                    disturbance=plan["disturbance"],
+                )
+                records.append(row)
+                sequence += 1
     monkeypatch.setattr(sampling_module, "BOUNDARY_PATH", boundary_path)
-    continuation = generate_experiment1_continuation("pilot", 500, 24, records)
+    assert select_pilot_analysis_samples(records, boundaries)["complete"]
+    continuation = generate_experiment1_continuation("pilot", sequence, 24, records)
     assert continuation == []
 
 

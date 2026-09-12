@@ -67,6 +67,6 @@ def test_effective_config_snapshot_encodes_nonfinite_config_constants_as_strings
 
 def test_environment_seed_uses_disjoint_stage_namespace():
     protocol, _, _ = protocol_bundle()
-    assert evaluation_environment_seed(protocol, "screening") == 1201000
-    assert evaluation_environment_seed(protocol, "pilot") == 1202000
-    assert evaluation_environment_seed(protocol, "formal") == 1203000
+    assert evaluation_environment_seed(protocol, "screening") == 1301000
+    assert evaluation_environment_seed(protocol, "pilot") == 1302000
+    assert evaluation_environment_seed(protocol, "formal") == 1303000

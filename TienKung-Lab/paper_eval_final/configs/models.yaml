@@ -9,7 +9,7 @@ models:
         checkpoint_path: logs/g1_slope_nosys_d_matched/2026-09-05_18-18-07_slope_nosys_d_matched_seed42/model_9999.pt
         checkpoint_sha256: 15167ca59f001a3f1888c894d43c14a2cb7321f48aab1b0a8eaabdd9e74ce848
         training_commit: UNRECORDED_DIRTY_WORKTREE
-    formal_status: TRAIN_SEED_INCOMPLETE
+    formal_status: READY_SINGLE_FROZEN_CHECKPOINT
   M2:
     method: DWAQ
     actor_certificate_context: []
@@ -19,19 +19,19 @@ models:
         checkpoint_path: logs/g1_dwaq_slope_nosys_d_matched/2026-09-05_18-18-46_dwaq_slope_nosys_d_matched_seed42/model_9999.pt
         checkpoint_sha256: 9b09227f6b997e0c89cb87844eeb05ffbafdfdb845701c390250fca284430361
         training_commit: UNRECORDED_DIRTY_WORKTREE
-    formal_status: TRAIN_SEED_INCOMPLETE
+    formal_status: READY_SINGLE_FROZEN_CHECKPOINT
   M3:
     method: Ours w/o N
     actor_certificate_context: [margin_norm, valid]
     task_name: g1_plane_v1_estimator_context_no_reward_matched_v2_margin_valid
     checkpoints: []
-    formal_status: TRAIN_SEED_INCOMPLETE
+    formal_status: CHECKPOINT_MISSING
   M4:
     method: Ours w/o margin
     actor_certificate_context: [n_norm, valid]
     task_name: g1_plane_v1_estimator_context_no_reward_matched_v2_n_valid
     checkpoints: []
-    formal_status: TRAIN_SEED_INCOMPLETE
+    formal_status: CHECKPOINT_MISSING
   M5:
     method: Ours full context
     actor_certificate_context: [n_norm, margin_norm, valid]
@@ -43,7 +43,7 @@ models:
         checkpoint_path: logs/g1_plane_v1_estimator_context_no_reward_matched_v2/2026-09-09_01-09-21_estimator_context_no_reward_matched_v2_idle01_swing02/model_9999.pt
         checkpoint_sha256: 9bde392d2a91ef7e20bfd0b6e84625e2663caf205577f02f0b720f1830a879c1
         training_commit: UNRECORDED_DIRTY_WORKTREE
-    formal_status: TRAIN_SEED_INCOMPLETE
+    formal_status: READY_SINGLE_FROZEN_CHECKPOINT
   E1_SYS_D:
     method: PPO slope (system dynamics)
     actor_certificate_context: []
@@ -53,7 +53,7 @@ models:
         checkpoint_path: logs/g1_slope_sys_d/2026-09-04_01-44-26/model_9999.pt
         checkpoint_sha256: 3f909f5080efd614056dd6b47cc1c9ebcc28c0750efdfbdc01f2024d7a4fef4a
         training_commit: UNRECORDED_DIRTY_WORKTREE
-    formal_status: SCREENING_ONLY_TRAIN_SEED_INCOMPLETE
+    formal_status: SCREENING_ONLY
   E1_DWAQ_SLOPE:
     method: DWAQ slope
     actor_certificate_context: []
@@ -63,7 +63,7 @@ models:
         checkpoint_path: logs/g1_dwaq_slope/2026-09-03_13-22-08/model_9999.pt
         checkpoint_sha256: 8e5e6e45f5dd861b343f3a3542ee80a2a5f76d8d581f046f2c231d71ef8266cb
         training_commit: UNRECORDED_DIRTY_WORKTREE
-    formal_status: SCREENING_ONLY_TRAIN_SEED_INCOMPLETE
+    formal_status: SCREENING_ONLY
 
 screening_baselines:
   baseline:

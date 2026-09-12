@@ -13,7 +13,7 @@ def write_experiment_report(stage: str, experiment: int, aggregate: dict[str, An
     for model_id, payload in aggregate["models"].items():
         summary = payload["summary"]
         lines.extend([
-            f"## {model_id}", "", f"正式训练种子状态：`{payload['formal_status']}`", "",
+            f"## {model_id}", "", f"冻结 checkpoint 状态：`{payload['formal_status']}`", "",
             f"- 分母统计：`{summary['denominators']}`",
             f"- 生存率：`{summary['survival_rate']}`",
             f"- 持续恢复率：`{summary['recovery_rate']}`",
@@ -23,6 +23,8 @@ def write_experiment_report(stage: str, experiment: int, aggregate: dict[str, An
         relation = payload.get("stratified_relation_set")
         if relation is not None:
             lines.extend([
+                f"- 固定预算结果：`{payload.get('fixed_budget_summary')}`",
+                f"- 固定预算自然 Nmin 分布：`{payload.get('fixed_budget_natural_Nmin_counts')}`",
                 f"- 各 Nmin 条件 margin 边界：`{relation.get('boundaries')}`",
                 f"- 校准 manifest hash：`{relation.get('calibration_manifest_hash')}`",
                 f"- 分析集 manifest hash：`{relation.get('evaluation_manifest_hash')}`",

@@ -140,7 +140,7 @@ def within(path: str | Path, parent: str | Path) -> bool:
 
 
 def protocol_bundle() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    protocol = load_yaml(ROOT / "protocol/protocol_v1_2.yaml")
+    protocol = load_yaml(ROOT / "protocol/protocol_v1_3.yaml")
     freeze = load_yaml(ROOT / "protocol/implementation_freeze.yaml")
     metrics = protocol["metrics"]
     return protocol, freeze, {

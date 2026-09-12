@@ -1,13 +1,20 @@
 evaluation_system: paper_eval_final
 protocol_title: 人形机器人多步可恢复性算法实验评测协议
-protocol_version: "1.2"
+protocol_version: "1.3"
 status: pre_experiment_frozen
-protocol_revision: exp1_conditional_nmin_margin_tertiles_2026_09_12
+protocol_revision: single_frozen_checkpoint_and_exact_exp1_condition_layers_2026_09_13
+
+checkpoint_repetition:
+  checkpoints_per_method: 1
+  independent_training_seed_repetition: false
+  paired_eval_seeds: true
+  inference_scope: fixed_checkpoint_evaluation_condition_variability
+  prohibited_claim: training_seed_stability
 
 stages:
-  screening: {seed_namespace: 1201000, confirmatory: false}
-  pilot: {seed_namespace: 1202000, confirmatory: false}
-  formal: {seed_namespace: 1203000, confirmatory: true}
+  screening: {seed_namespace: 1301000, confirmatory: false}
+  pilot: {seed_namespace: 1302000, confirmatory: false}
+  formal: {seed_namespace: 1303000, confirmatory: true}
 
 physics:
   profile: g1_matched_eval_v1_2
@@ -103,8 +110,12 @@ experiment1_margin_stratification:
   shared_across_Nmin: false
   pilot_certificate_valid_per_cell: 40
   pilot_analysis_total: 360
+  pilot_selected_condition_layers_per_cell: 40
+  pilot_trials_per_selected_condition_layer: 1
   formal_certificate_valid_per_cell: 160
   formal_total: 1440
+  formal_condition_layers_per_cell: 80
+  formal_trials_per_condition_layer: 2
   outcome_blind_accept_reject: true
   boundary_freeze_required: true
 

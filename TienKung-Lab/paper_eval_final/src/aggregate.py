@@ -45,10 +45,23 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
             "cells": summarize_cells(selected),
             "train_seeds": sorted({row["train_seed"] for row in selected}),
             "checkpoint_sha256": sorted({row["checkpoint_sha256"] for row in selected}),
-            "formal_status": "READY" if len({row["train_seed"] for row in selected}) == 3 else "TRAIN_SEED_INCOMPLETE",
+            "formal_status": ("READY_SINGLE_FROZEN_CHECKPOINT"
+                              if len({row["checkpoint_sha256"] for row in selected}) == 1
+                              else "CHECKPOINT_COUNT_MISMATCH"),
         }
         if experiment == 1:
             if stage in ("pilot", "formal"):
+                fixed_budget_size = 500 if stage == "pilot" else 2000
+                fixed_budget_records = [
+                    row for row in selected if int(row.get("sequence", fixed_budget_size)) < fixed_budget_size
+                ]
+                payload["fixed_budget_summary"] = summarize(fixed_budget_records, fixed_budget_size)
+                payload["fixed_budget_natural_Nmin_counts"] = {
+                    str(n_min): sum(row.get("certificate_valid") and row.get("Nmin") == n_min
+                                    for row in fixed_budget_records)
+                    for n_min in sorted({row.get("Nmin") for row in fixed_budget_records
+                                         if row.get("certificate_valid") and row.get("Nmin") is not None})
+                }
                 relation_set = select_stratified_relation_set(
                     selected,
                     stage=stage,

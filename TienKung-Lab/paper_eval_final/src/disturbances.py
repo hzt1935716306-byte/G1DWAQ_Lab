@@ -1,4 +1,4 @@
-"""Protocol-v1.2 physical disturbance algebra and Isaac wrench bridge."""
+"""Protocol-v1.3 physical disturbance algebra and Isaac wrench bridge."""
 from __future__ import annotations
 
 import math

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for the protocol-v1.2 paper evaluation and adaptive Experiment 1 sampling."""
+"""CLI for the protocol-v1.3 paper evaluation and adaptive Experiment 1 sampling."""
 from __future__ import annotations
 
 import argparse
@@ -122,8 +122,8 @@ def registered_seeds(args: argparse.Namespace, experiment: int) -> list[int]:
         model_id = args.model
     checkpoints = data["models"][model_id].get("checkpoints", [])
     all_seeds = sorted(int(item["train_seed"]) for item in checkpoints)
-    if args.stage == "formal" and len(all_seeds) != 3:
-        raise ValueError(f"{model_id}: TRAIN_SEED_INCOMPLETE (formal requires exactly 3 independent training seeds)")
+    if args.stage == "formal" and len(all_seeds) != 1:
+        raise ValueError(f"{model_id}: protocol v1.3 requires exactly one frozen checkpoint")
     seeds = list(all_seeds)
     if args.train_seed is not None:
         seeds = [seed for seed in seeds if seed == args.train_seed]

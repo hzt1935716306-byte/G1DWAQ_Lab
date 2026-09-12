@@ -1,4 +1,4 @@
-# Final paper evaluation (protocol v1.2)
+# Final paper evaluation (protocol v1.3)
 
 This directory is the only admissible implementation for new paper evaluation.
 It does not import code, manifests, reports, or results from the retired
@@ -36,8 +36,11 @@ set independently, and freezes six boundaries, `q_n1=(m_n40+m_n41)/2` and
 Lower/Middle/Upper are relative levels within each Nmin and do not denote the
 same absolute margin ranges. The pilot then uses existing calibration rows
 and outcome-blind targeted continuation to fill all nine Nmin-margin cells to
-40 trials each. Formal Experiment 1 refuses to start without the independently
-generated frozen artifact and fills those same nine cells to 160 trials each.
+40 trials each. The pilot layer manifest fixes 40 of the 80 condition layers
+per cell and accepts one trial from each selected layer. Formal Experiment 1
+refuses to start without the independently generated frozen artifact and fills
+those same nine cells to 160 trials each by accepting exactly two trials from
+every one of the 80 slope-speed-impulse-direction condition layers.
 Recovery status, recovery time, touchdown counts, falls, survival, and success
 rate are prohibited from pilot/formal admission decisions.
 Boundary ties or evidence of clamp/precision-driven duplicate values produce
@@ -86,10 +89,10 @@ conda run -n g1 python paper_eval_final/run.py --aggregate --stage formal --expe
 
 Formal execution is fail-closed until all of the following are explicitly
 frozen in `protocol/implementation_freeze.yaml`: pilot admission, the Exp1
-baseline, Exp1 finite candidate caps, three independent training seeds per
-method, the implementation configuration, and the selected environment count.
-The currently registered seed-42 checkpoints are sufficient only for technical
-screening/pilot work.
+baseline, finite candidate caps, the implementation configuration, and the
+selected environment count. Protocol v1.3 uses one pre-trained, pre-frozen
+checkpoint per method and paired independent evaluation seeds; its confidence
+intervals quantify evaluation-condition variation, not training-seed stability.
 
 ## Technical smoke and performance selection
 

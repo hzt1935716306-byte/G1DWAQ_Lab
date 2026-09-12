@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "paper_eval_final/protocol/schema.json",
-  "title": "Paper evaluation v1.2 (Experiment 1 conditional-tertile revision) trial record",
+  "title": "Paper evaluation v1.3 (single frozen checkpoint) trial record",
   "type": "object",
   "required": [
     "evaluation_system", "trial_id", "experiment_id", "stage", "method",

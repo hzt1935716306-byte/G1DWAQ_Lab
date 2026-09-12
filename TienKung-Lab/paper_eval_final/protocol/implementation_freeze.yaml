@@ -1,6 +1,6 @@
-protocol_version: '1.2'
-config_frozen: false
-formal_enabled: false
+protocol_version: '1.3'
+config_frozen: true
+formal_enabled: true
 pilot_required: true
 formal_experiment1_baseline: slope_nosys_d_matched
 experiment1_margin_boundaries:
@@ -19,6 +19,7 @@ experiment1_margin_boundaries:
   calibration_manifest_hash: bbafaf41c3527eca03e06ca6d5c84b6ff5ff5d1aec70fda860066590e4143b41
 experiment1_pilot_coverage:
   status: COMPLETE
+  carryover_basis: protocol_v1_2_same_checkpoint_physics_metrics_and_outcome_blind_boundaries
   cells:
     N2_LOWER: 40
     N2_MIDDLE: 40
@@ -49,8 +50,8 @@ superseded_shared_margin_coverage_probe:
   manifest_hash: ee569d07585efb80f1ad7e98a195f85638ad2b71bcb070b5946f9ac19cce99ab
   attempts: 1024
 formal_stratified_caps:
-  max_candidates_total: null
-  max_candidates_per_condition_layer: null
+  max_candidates_total: 65536
+  max_candidates_per_condition_layer: 4096
 parallel_environments:
   selected: 2048
   benchmark_required: false
@@ -66,7 +67,11 @@ parallel_environments:
 notes:
 - Parallel environment count selected on RTX 4090 by the frozen six-size throughput
   benchmark; see PERFORMANCE_BENCHMARK.md.
-- Formal remains disabled until pilot PASS, cap freeze, baseline selection, and three
-  training seeds.
+- Protocol v1.3 uses one pre-trained frozen checkpoint per method and paired
+  independent eval seeds; no training-seed repetition is claimed.
 - Shared-boundary N4-HIGH probing is historical and excluded; Experiment 1 now uses
-  frozen within-Nmin conditional tertiles. Formal execution remains disabled.
+  frozen within-Nmin conditional tertiles.
+- The v1.2 Experiment 1 pilot is retained as technical validation because checkpoint,
+  physics, metrics, certificate computation, and outcome-blind boundary calibration
+  are unchanged. The v1.3 formal analysis enforces two accepted trials in every one
+  of the 80 condition layers for each Nmin-margin cell.

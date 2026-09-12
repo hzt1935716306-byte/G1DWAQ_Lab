@@ -202,9 +202,14 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                         accepted = set(selection["accepted_trial_ids"])
                         analysis_records = [row for row in records if row["trial_id"] in accepted]
                         summary = summarize(records, len(trials))
+                        fixed_ids = {row["trial_id"] for row in manifest["trials"]}
+                        fixed_records = [row for row in records if row["trial_id"] in fixed_ids]
+                        fixed_budget_summary = summarize(fixed_records, len(manifest["trials"]))
                         summary.update({
                             "status": "COMPLETE", "dataset_role": dataset_role,
                             "candidate_count": len(trials),
+                            "fixed_budget_candidate_count": len(manifest["trials"]),
+                            "fixed_budget_summary": fixed_budget_summary,
                             "accepted_count": len(analysis_records),
                             "analysis_summary": summarize(analysis_records, len(analysis_records)),
                             "analysis_cells": selection["cells"],
@@ -240,7 +245,15 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                         max_candidates_per_condition_layer=(int(layer_cap) if layer_cap is not None else None),
                     )
                     if not continuation:
-                        raise ValueError("adaptive continuation produced no trials before quotas were complete")
+                        status = {
+                            "status": "TARGET_NOT_REACHED",
+                            "candidate_count": len(trials),
+                            "max_candidates_total": int(cap),
+                            "reason": "NO_UNCAPPED_CONDITION_LAYER_WITH_REMAINING_QUOTA",
+                            "analysis_cells": selection["cells"] if selection is not None else None,
+                        }
+                        write_json(path / "sampling_status.json", status)
+                        return {**status, "path": str(path)}
                     trials.extend(continuation)
                     _write_campaign_schedule(path, manifest, trials)
                     remaining = continuation
