@@ -8,7 +8,7 @@ from pathlib import Path
 import random
 from typing import Any, Iterable
 
-from .common import ROOT, canonical_bytes, digest, git_head, load_yaml, protocol_bundle, read_json, write_json
+from .common import ROOT, canonical_bytes, digest, git_last_commit, load_yaml, protocol_bundle, read_json, write_json
 
 
 STAGES = ("screening", "pilot", "formal")
@@ -192,7 +192,9 @@ def manifest_payload(stage: str, experiment: int, protocol: dict[str, Any] | Non
         "evaluation_system": "paper_eval_final",
         "protocol_version": identity["protocol_version"],
         "protocol_hash": identity["protocol_hash"],
-        "generator_code_commit": git_head(),
+        # Model-registry/report-only commits must not change a model-independent
+        # common-random-number manifest.  Record the last generator revision.
+        "generator_code_commit": git_last_commit(Path(__file__)),
         "stage": stage,
         "experiment": experiment,
         "manifest_seed": int(protocol["stages"][stage]["seed_namespace"]),

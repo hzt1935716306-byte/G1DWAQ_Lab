@@ -111,6 +111,16 @@ def git_head() -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True).strip()
 
 
+def git_last_commit(path: str | Path) -> str:
+    """Return the commit that last changed a tracked evaluation input."""
+    relative = Path(path).resolve().relative_to(REPOSITORY.resolve())
+    return subprocess.check_output(
+        ["git", "log", "-1", "--format=%H", "--", relative.as_posix()],
+        cwd=REPOSITORY,
+        text=True,
+    ).strip()
+
+
 def git_dirty_paths() -> list[str]:
     output = subprocess.check_output(["git", "status", "--porcelain"], cwd=REPOSITORY, text=True)
     return [line[3:] for line in output.splitlines() if line]

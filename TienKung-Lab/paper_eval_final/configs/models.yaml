@@ -44,6 +44,26 @@ models:
         checkpoint_sha256: 9bde392d2a91ef7e20bfd0b6e84625e2663caf205577f02f0b720f1830a879c1
         training_commit: UNRECORDED_DIRTY_WORKTREE
     formal_status: TRAIN_SEED_INCOMPLETE
+  E1_SYS_D:
+    method: PPO slope (system dynamics)
+    actor_certificate_context: []
+    task_name: g1_slope_sys_d
+    checkpoints:
+      - train_seed: 42
+        checkpoint_path: logs/g1_slope_sys_d/2026-09-04_01-44-26/model_9999.pt
+        checkpoint_sha256: 3f909f5080efd614056dd6b47cc1c9ebcc28c0750efdfbdc01f2024d7a4fef4a
+        training_commit: UNRECORDED_DIRTY_WORKTREE
+    formal_status: SCREENING_ONLY_TRAIN_SEED_INCOMPLETE
+  E1_DWAQ_SLOPE:
+    method: DWAQ slope
+    actor_certificate_context: []
+    task_name: g1_dwaq_slope
+    checkpoints:
+      - train_seed: 42
+        checkpoint_path: logs/g1_dwaq_slope/2026-09-03_13-22-08/model_9999.pt
+        checkpoint_sha256: 8e5e6e45f5dd861b343f3a3542ee80a2a5f76d8d581f046f2c231d71ef8266cb
+        training_commit: UNRECORDED_DIRTY_WORKTREE
+    formal_status: SCREENING_ONLY_TRAIN_SEED_INCOMPLETE
 
 screening_baselines:
   baseline:
@@ -56,3 +76,12 @@ screening_baselines:
   dwaq:
     model: M2
     task_name: g1_dwaq_slope_nosys_d_matched
+  slope_sys_d:
+    model: E1_SYS_D
+    task_name: g1_slope_sys_d
+  slope_nosys_d_matched:
+    model: M1
+    task_name: g1_slope_nosys_d_matched
+  dwaq_slope:
+    model: E1_DWAQ_SLOPE
+    task_name: g1_dwaq_slope
