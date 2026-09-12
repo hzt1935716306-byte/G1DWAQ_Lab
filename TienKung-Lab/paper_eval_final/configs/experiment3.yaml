@@ -1,0 +1,5 @@
+experiment_id: 3
+name: disturbed_recovery
+disturbances: [velocity_jump, low_frequency_random_wrench, constant_wrench]
+pilot_counts: {velocity_jump: 500, low_frequency_random_wrench: 250, constant_wrench: 250}
+formal_counts: {velocity_jump: 2000, low_frequency_random_wrench: 1000, constant_wrench: 1000}

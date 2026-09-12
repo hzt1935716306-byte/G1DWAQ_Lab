@@ -1,0 +1,13 @@
+experiment_id: 1
+name: offline_certificate_relation
+disturbance: velocity_jump
+fixed_budget_primary: true
+relation_set: STRATIFIED_RELATION_SET
+formal_candidates: 2000
+pilot_candidates: 500
+screening_candidates: 80
+pilot_max_candidates_total: 4000
+pilot_max_candidates_per_condition_layer: 100
+accepted_Nmin: [3, 4, 5]
+accepted_margin: [0.0, 0.95]
+policy_must_not_receive_certificate: true

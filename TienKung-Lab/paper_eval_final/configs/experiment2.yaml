@@ -1,0 +1,8 @@
+experiment_id: 2
+name: undisturbed_walking
+external_disturbance: false
+horizon_s: 12.0
+physics_steps: 2400
+policy_steps: 600
+pilot_trials_per_slope_speed: 50
+formal_trials_per_slope_speed: 200

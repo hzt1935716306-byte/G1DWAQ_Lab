@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+manifests/screening/*.json
+manifests/pilot/*.json
+manifests/formal/*.json
+results/**
+!results/**/.gitkeep
+reports/screening/**
+reports/pilot/**
+reports/formal/**
+reports/performance/**
+!reports/**/.gitkeep

@@ -1,0 +1,124 @@
+evaluation_system: paper_eval_final
+protocol_title: 人形机器人多步可恢复性算法实验评测协议
+protocol_version: "1.2"
+status: pre_experiment_frozen
+
+stages:
+  screening: {seed_namespace: 1201000, confirmatory: false}
+  pilot: {seed_namespace: 1202000, confirmatory: false}
+  formal: {seed_namespace: 1203000, confirmatory: true}
+
+physics:
+  profile: g1_matched_eval_v1_2
+  dt_phys_s: 0.005
+  physics_hz: 200
+  decimation: 4
+  dt_policy_s: 0.02
+  policy_hz: 50
+  terrain_tile_size_m: [64.0, 64.0]
+  observation_noise: false
+  action_delay: false
+  uncontrolled_pushes: false
+  test_area_half_extent_m: 24.0
+  material:
+    static_friction_range: [0.6, 1.0]
+    dynamic_friction_range: [0.4, 0.8]
+    restitution_range: [0.0, 0.005]
+
+conditions:
+  slopes_deg: [-15.0, -5.0, 0.0, 5.0, 15.0]
+  speed_groups:
+    LOW: [0.2, 0.6]
+    HIGH: [0.6, 1.0]
+  command_vy: 0.0
+  command_yaw: 0.0
+
+initial_state:
+  joint_count: 29
+  pose:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [0.0, 0.0]
+    roll: [0.0, 0.0]
+    pitch: [0.0, 0.0]
+    yaw: [0.0, 0.0]
+  velocity:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.5, 0.5]
+    roll: [-0.5, 0.5]
+    pitch: [-0.5, 0.5]
+    yaw: [0.0, 0.0]
+  joint_position_scale: [0.5, 1.5]
+  joint_velocity: [0.0, 0.0]
+
+termination:
+  termination_force_N: 1.0
+  termination_body_regex: ".*torso.*"
+  roll_limit_rad: 1.0
+  pitch_limit_rad: 1.0
+
+metrics:
+  touchdown:
+    contact_on_N: 5.0
+    contact_off_N: 3.0
+    stable_frames: 2
+    debounce_s: 0.08
+  recovery:
+    window_s: 0.60
+    confirmation_hold_s: 0.50
+    mean_com_horizontal_velocity_error_max_mps: 0.10
+    peak_com_horizontal_velocity_error_max_mps: 0.30
+    gravity_tilt_rms_max_deg: 5.0
+    gravity_tilt_peak_max_deg: 15.0
+    world_z_angular_velocity_error_rms_max_radps: 0.20
+    pelvis_clearance_min_m: 0.50
+    entry_deadline_after_disturbance_end_s: 8.0
+    observation_after_disturbance_end_s: 10.0
+  margin_groups:
+    LOW: [0.0, 0.3167]
+    MEDIUM: [0.3167, 0.6333]
+    HIGH: [0.6333, 0.95]
+
+timing:
+  warmup_s: 2.0
+  onset_offset_s: [0.5, 1.5]
+  experiment2_horizon_s: 12.0
+
+disturbances:
+  directions_Hpush_deg: [0, 90, 180, 270]
+  velocity_jump:
+    LOW: {linear_speed_mps: [0.0, 1.0], angular_speed_radps: [0.0, 0.5]}
+    HIGH: {linear_speed_mps: [1.0, 2.0], angular_speed_radps: [0.5, 1.0]}
+    angular_axes: [roll, pitch, yaw]
+  low_frequency_random_wrench:
+    duration_s: 3.0
+    update_hz: 1.0
+    target_link: torso_link
+    force_norm_N: [0.0, 150.0]
+    torque_norm_Nm: [0.0, 150.0]
+  constant_wrench:
+    duration_s: 0.50
+    target_link: torso_link
+    force_norm_N: [0.0, 150.0]
+    torque_norm_Nm: [0.0, 150.0]
+  wrench_frame: world_Hpush_to_current_link_each_physics_substep
+  application_point: link_origin
+
+budgets:
+  screening:
+    experiment1_per_cell: 1
+    experiment2_per_cell: 2
+    experiment3_per_cell: 1
+  pilot:
+    experiment1_candidates: 500
+    experiment2_per_slope_speed: 50
+    experiment3_velocity_jump: 500
+    experiment3_each_wrench: 250
+    experiment1_stratified_per_cell: 40
+  formal:
+    experiment1_candidates: 2000
+    experiment2_per_slope_speed: 200
+    experiment3_velocity_jump: 2000
+    experiment3_each_wrench: 1000
+    experiment1_stratified_per_cell: 160

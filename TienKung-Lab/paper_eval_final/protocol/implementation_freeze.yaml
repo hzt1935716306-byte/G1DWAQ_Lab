@@ -1,0 +1,17 @@
+protocol_version: "1.2"
+config_frozen: false
+formal_enabled: false
+pilot_required: true
+formal_experiment1_baseline: null
+formal_stratified_caps:
+  max_candidates_total: null
+  max_candidates_per_condition_layer: null
+parallel_environments:
+  selected: 2048
+  benchmark_required: false
+  candidates: [64, 128, 256, 512, 1024, 2048]
+  selection_metric: valid_simulated_seconds_per_wall_second
+  benchmark_checkpoint_sha256: 9bde392d2a91ef7e20bfd0b6e84625e2663caf205577f02f0b720f1830a879c1
+notes:
+  - Parallel environment count selected on RTX 4090 by the frozen six-size throughput benchmark; see PERFORMANCE_BENCHMARK.md.
+  - Formal remains disabled until pilot PASS, cap freeze, baseline selection, and three training seeds.
