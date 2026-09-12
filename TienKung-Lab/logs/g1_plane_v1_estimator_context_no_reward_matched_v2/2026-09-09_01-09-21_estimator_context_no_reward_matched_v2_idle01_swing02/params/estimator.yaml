@@ -1,0 +1,40 @@
+checkpoint_absolute_path: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_com_velocity_estimator/v2_iteration_long_5000_random_init_fixed/com_velocity_estimator_v2_long_best.pt
+checkpoint_sha256: 8574d845f28cbc7908e437250de46ba865898056483741e8fb72a81281f9e319
+best_iteration: 4150
+metadata:
+  schema_version: 3
+  training_format: iteration_v1
+  best_iteration: 4150
+  git_commit: 6181ce41ba34fd40bb8b3db0b22cf0feffab77ad
+  input_dim: 495
+  history_length: 5
+  actor_per_frame_obs_dim: 96
+  per_frame_obs_dim: 99
+  imu_input_dim: 3
+  imu_acceleration_scale: 0.05
+  hidden_dims:
+  - 256
+  - 128
+  - 64
+  activation: ELU
+  output_dim: 2
+  output_frame: heading
+  output_quantity: whole_body_com_velocity_xy
+  output_unit: m/s
+  input_frame_layout: 5 x [actor_noisy_scaled_96, pelvis_IMU_specific_force_body_xyz_scaled]
+  imu_quantity: deployable_pelvis_specific_force_body_xyz
+  imu_unit_before_scaling: m/s^2
+  teacher_task: g1_slope_sys_d
+  teacher_checkpoint: /home/zt/project/myproject/G1DWAQ_Lab/TienKung-Lab/logs/g1_slope_sys_d.pt
+  teacher_checkpoint_hash: 3f909f5080efd614056dd6b47cc1c9ebcc28c0750efdfbdc01f2024d7a4fef4a
+  data_generation:
+    nominal_group_fraction: 0.5
+    recovery_heavy_group_fraction: 0.5
+    recovery_disturbance: manual push_by_setting_velocity before env.step
+    built_in_disturbance: unchanged g1_slope_sys_d interval velocity push
+    recovery_push_interval_s:
+    - 0.6
+    - 0.9
+    recovery_window_s: 0.5
+loaded_eval_mode: true
+all_parameters_frozen: true
