@@ -71,6 +71,8 @@ def formal_guard(args: argparse.Namespace, chosen: list[int]) -> None:
     freeze = load_yaml(ROOT / "protocol/implementation_freeze.yaml")
     if not freeze["formal_enabled"] or not freeze["config_frozen"]:
         raise ValueError("formal run refused: pilot/config freeze has not been approved")
+    if 1 in chosen and freeze.get("experiment1_pilot_coverage", {}).get("status") != "COMPLETE":
+        raise ValueError("formal Experiment 1 refused: nine-cell pilot coverage is incomplete")
     if 1 in chosen and args.baseline != freeze["formal_experiment1_baseline"]:
         raise ValueError("formal Experiment 1 baseline is not frozen or does not match")
     if 1 in chosen:

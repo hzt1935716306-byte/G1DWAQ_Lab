@@ -11,6 +11,17 @@ experiment1_margin_boundaries:
   supersedes_target_Nmin: [3, 4, 5]
   boundary_id: 3886e36eff64c4951d73502c5b8501e04b7eb560cfbc36064a967dd9bc9a6714
   calibration_manifest_hash: bbafaf41c3527eca03e06ca6d5c84b6ff5ff5d1aec70fda860066590e4143b41
+experiment1_pilot_coverage:
+  status: INCOMPLETE
+  missing_cells: {N4_HIGH: 40}
+  coverage_probe_analysis_excluded: true
+  coverage_probe_manifest_hash: ee569d07585efb80f1ad7e98a195f85638ad2b71bcb070b5946f9ac19cce99ab
+  coverage_probe_attempts: 1024
+  coverage_probe_certificate_valid: 796
+  coverage_probe_N4: 62
+  coverage_probe_N4_HIGH: 0
+  coverage_probe_N4_margin_maximum: 0.0905412348918952
+  frozen_shared_q2: 0.1401512702272109
 formal_stratified_caps:
   max_candidates_total: null
   max_candidates_per_condition_layer: null
@@ -31,3 +42,5 @@ notes:
   benchmark; see PERFORMANCE_BENCHMARK.md.
 - Formal remains disabled until pilot PASS, cap freeze, baseline selection, and three
   training seeds.
+- N4-HIGH remained empty after a 1024-trial analysis-excluded physical coverage probe;
+  shared-boundary design must be reviewed before formal enablement.
