@@ -1,0 +1,94 @@
+document_type: execution_addendum
+protocol_version: "1.3"
+status: frozen_operational_mapping
+does_not_change_protocol_hash: true
+frozen_evaluation_tag: paper-eval-v1.3-frozen
+frozen_evaluation_commit: 4434d384cea959025a31c4fad1fd056b3fc017f5
+protocol_hash: b71a1ddf929395629d34d4afc454f12a665f47beb3a92b6fca068a41cf9d3064
+
+seed_contract:
+  formula: eval_seed = stage_seed_namespace + experiment_id * 1000000 + global_sequence
+  worker_id_participates: false
+  hostname_participates: false
+  gpu_id_participates: false
+  server_specific_offset_prohibited: true
+  paired_across_models: true
+  namespaces:
+    screening: 1301000
+    pilot: 1302000
+    formal: 1303000
+  formal_first_eval_seed:
+    experiment_1: 2303000
+    experiment_2: 3303000
+    experiment_3: 4303000
+
+ownership:
+  minimum_unit: complete_model_experiment_shard
+  shard_key:
+    - protocol_hash
+    - stage
+    - experiment_id
+    - model_id
+    - train_seed
+    - manifest_hash
+  single_writer_required: true
+  assignments:
+    server_a:
+      models: [M1]
+      method: Baseline
+      responsibilities:
+        - resume_formal_experiment_1_M1
+        - experiment_2_M1
+        - experiment_3_M1
+    server_b:
+      models: [M2]
+      method: DWAQ
+      responsibilities:
+        - experiment_2_M2
+        - experiment_3_M2
+    server_c:
+      models: [M5]
+      method: Ours
+      responsibilities:
+        - experiment_2_M5
+        - experiment_3_M5
+  pending_models:
+    M3: checkpoint_missing
+    M4: checkpoint_missing
+
+current_resume_point:
+  server: server_a
+  stage: formal
+  experiment_id: 1
+  model_id: M1
+  train_seed: 42
+  completed_candidates: 18384
+  completed_global_sequence: [0, 18383]
+  analysis_accepted: 882
+  analysis_target: 1440
+  next_batch_not_generated: true
+
+merge_contract:
+  central_layout: results/<stage>/<protocol_namespace>/experiment_<id>/<model_id>/train_seed_<seed>
+  completed_shards_only: true
+  copy_whole_shard: true
+  overwrite_prohibited: true
+  duplicate_key: [model_id, train_seed, trial_id]
+  compatibility_gate:
+    - protocol_version
+    - stage
+    - experiment_id
+    - manifest_hash
+    - metrics_config_hash
+    - physics_profile_hash
+    - evaluation_code_commit
+    - asset_hash
+    - simulator_version
+  checkpoint_hash_must_match_registry: true
+  trial_and_eval_seed_uniqueness_required: true
+  outcome_based_conflict_resolution_prohibited: true
+
+notes:
+  - The three servers evaluate different models; they are not three training-seed repetitions.
+  - Equal eval seeds across models are intentional common-random-number pairing.
+  - Splitting one model-experiment shard across servers is prohibited until a tested global shard manifest exists.
