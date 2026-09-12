@@ -51,6 +51,35 @@ margin_variation_guard:
   minimum_absolute_range: 1.0e-6
   minimum_robust_range: 1.0e-4
   minimum_robust_to_pooled_ratio: 0.01
+coverage_probe:
+  dataset_role: COVERAGE_PROBE_NONANALYSIS
+  analysis_excluded: true
+  candidate_count: 1024
+  conditions:
+    - {name: downhill_lateral_left, slope_deg: -15.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 270,
+       linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
+    - {name: downhill10_lateral_left, slope_deg: -10.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 270,
+       linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
+    - {name: downhill_lateral_right, slope_deg: -15.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 90,
+       linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
+    - {name: downhill10_lateral_right, slope_deg: -10.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 90,
+       linear_speed_mps: [0.45, 0.9], angular_speed_radps: [0.0, 0.3]}
+    - {name: plane_backward_high, slope_deg: 0.0, speed_group: HIGH,
+       command_vx: [0.6, 1.0], direction_deg: 180,
+       linear_speed_mps: [1.2, 2.0], angular_speed_radps: [0.5, 1.0]}
+    - {name: uphill5_backward_high, slope_deg: 5.0, speed_group: HIGH,
+       command_vx: [0.6, 1.0], direction_deg: 180,
+       linear_speed_mps: [1.2, 2.0], angular_speed_radps: [0.5, 1.0]}
+    - {name: downhill_backward_mid, slope_deg: -15.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 180,
+       linear_speed_mps: [0.45, 1.0], angular_speed_radps: [0.0, 0.4]}
+    - {name: downhill10_backward_mid, slope_deg: -10.0, speed_group: LOW,
+       command_vx: [0.2, 0.4], direction_deg: 180,
+       linear_speed_mps: [0.45, 1.0], angular_speed_radps: [0.0, 0.4]}
 pilot_analysis_sampling:
   certificate_valid_per_cell: 40
   total_selected: 360

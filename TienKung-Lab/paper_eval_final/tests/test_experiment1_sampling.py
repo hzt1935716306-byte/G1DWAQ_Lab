@@ -4,7 +4,11 @@ import pytest
 
 from paper_eval_final.src.common import digest, load_yaml
 from paper_eval_final.src.common import protocol_bundle
-from paper_eval_final.src.trial_generator import generate_experiment1_continuation, generate_trials
+from paper_eval_final.src.trial_generator import (
+    coverage_probe_manifest,
+    generate_experiment1_continuation,
+    generate_trials,
+)
 import paper_eval_final.src.experiment1_sampling as sampling_module
 from paper_eval_final.src.experiment1_sampling import (
     MARGIN_GROUPS,
@@ -183,3 +187,13 @@ def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting
     continuation = generate_experiment1_continuation("pilot", 500, 24, records)
     assert {row["candidate_phase"] for row in continuation} == {"PILOT_CELL_TARGETED_CONTINUATION"}
     assert all("margin_group" in row["sampling_target_hint"] for row in continuation)
+
+
+def test_n4_high_coverage_probe_is_fixed_and_analysis_excluded():
+    manifest = coverage_probe_manifest(count=32)
+    assert manifest["dataset_role"] == "COVERAGE_PROBE_NONANALYSIS"
+    assert len(manifest["trials"]) == 32
+    assert len({row["condition_id"] for row in manifest["trials"]}) == 8
+    assert all(row["analysis_excluded"] is True for row in manifest["trials"])
+    assert all(row["sampling_target_hint"] == {"Nmin": 4, "margin_group": "HIGH"}
+               for row in manifest["trials"])

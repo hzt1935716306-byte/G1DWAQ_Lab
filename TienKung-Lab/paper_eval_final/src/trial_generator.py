@@ -305,6 +305,77 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
     return rows
 
 
+def generate_experiment1_coverage_probe(
+    protocol: dict[str, Any] | None = None, *, count: int | None = None,
+) -> list[dict[str, Any]]:
+    """Generate a fixed, outcome-free probe for the missing N4-HIGH cell."""
+    protocol = protocol or protocol_bundle()[0]
+    cfg = load_yaml(ROOT / "configs/experiment1.yaml")["coverage_probe"]
+    conditions = list(cfg["conditions"])
+    total = int(cfg["candidate_count"] if count is None else count)
+    counts = _balanced_counts(len(conditions), total, 234_20260912)
+    rows = []
+    for condition_index, (condition, condition_count) in enumerate(zip(conditions, counts)):
+        for repeat in range(condition_count):
+            sequence = len(rows)
+            condition_id = f"n4_high_probe_{condition['name']}"
+            row = _base_trial(
+                protocol, "pilot", 1, sequence, float(condition["slope_deg"]),
+                str(condition["speed_group"]), condition_id, repeat,
+            )
+            rng = random.Random(row["eval_seed"] ^ 0xC04E4A6E)
+            row["trial_id"] = f"v1_2-pilot-e1-n4probe-{sequence:06d}"
+            row["command_vx"] = _sample(rng, condition["command_vx"], high_open=True)
+            onset_offset, planned = _onset(rng, protocol)
+            disturbance = {
+                "type": "velocity_jump",
+                "intensity_group": "N4_HIGH_COVERAGE_PROBE",
+                "direction_Hpush_deg": int(condition["direction_deg"]),
+                "linear_speed_mps": _sample(rng, condition["linear_speed_mps"], high_open=True),
+                "angular_speed_radps": _sample(rng, condition["angular_speed_radps"], high_open=True),
+                "angular_axis": protocol["disturbances"]["velocity_jump"]["angular_axes"][rng.randrange(3)],
+                "angular_sign": -1 if rng.randrange(2) else 1,
+                "duration_s": 0.0,
+                "target_link": "root",
+            }
+            row.update(
+                onset_offset_s=onset_offset,
+                planned_disturbance_start_s=planned,
+                disturbance=disturbance,
+                observation_end_s=planned + 10.0,
+                candidate_phase="N4_HIGH_COVERAGE_PROBE",
+                sampling_target_hint={"Nmin": 4, "margin_group": "HIGH"},
+                analysis_excluded=True,
+                probe_condition_index=condition_index,
+            )
+            rows.append(row)
+    return rows
+
+
+def coverage_probe_manifest(
+    protocol: dict[str, Any] | None = None, *, count: int | None = None,
+) -> dict[str, Any]:
+    protocol, _, identity = protocol_bundle() if protocol is None else (
+        protocol, {}, {"protocol_version": str(protocol["protocol_version"]), "protocol_hash": digest(protocol)}
+    )
+    trials = generate_experiment1_coverage_probe(protocol, count=count)
+    payload = {
+        "evaluation_system": "paper_eval_final",
+        "protocol_version": identity["protocol_version"],
+        "protocol_hash": identity["protocol_hash"],
+        "generator_code_commit": git_last_commit(Path(__file__)),
+        "stage": "pilot",
+        "experiment": 1,
+        "manifest_seed": 234_20260912,
+        "trial_count": len(trials),
+        "dataset_role": "COVERAGE_PROBE_NONANALYSIS",
+        "analysis_excluded": True,
+        "trials": trials,
+    }
+    payload["manifest_sha256"] = digest(payload)
+    return payload
+
+
 def manifest_payload(stage: str, experiment: int, protocol: dict[str, Any] | None = None) -> dict[str, Any]:
     protocol, _, identity = protocol_bundle() if protocol is None else (protocol, {}, {
         "protocol_version": str(protocol["protocol_version"]), "protocol_hash": digest(protocol)})

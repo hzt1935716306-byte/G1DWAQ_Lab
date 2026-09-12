@@ -52,6 +52,19 @@ from the balanced nine-cell analysis. The boundary diagnostic also refuses to
 freeze when any target Nmin, including Nmin=2, has an insufficient raw-margin
 range or too few distinct binary64 values.
 
+When a shared-boundary cell lacks coverage, run the fixed, non-analysis probe
+without changing or refitting the boundary:
+
+```bash
+conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 \
+  --baseline slope_nosys_d_matched --coverage-probe --probe-candidates 1024
+```
+
+Probe trials are stored under `results/coverage_probe`, carry
+`analysis_excluded=true`, and cannot enter calibration, pilot, or formal
+statistics. Their conditions are frozen in `configs/experiment1.yaml` and use
+only certificate coverage evidence, never recovery outcomes.
+
 Raw terminal records remain immutable. Final dual-role membership (a calibration
 row may also be a pilot-analysis row), `calibration_only`, shared q values, and
 both calibration/evaluation manifest hashes are materialized in each completed

@@ -17,7 +17,7 @@ from .environment_adapter import DisturbanceRuntime, close_environment, make_env
 from .model_loader import ModelIdentity, resolve_baseline, resolve_model
 from .statistics import summarize
 from .storage import RunStore
-from .trial_generator import (generate_experiment1_continuation, prepare_manifest,
+from .trial_generator import (coverage_probe_manifest, generate_experiment1_continuation, prepare_manifest,
                               smoke_subset, validate_manifest)
 
 
@@ -56,8 +56,9 @@ def _identity(model: ModelIdentity, manifest: dict[str, Any], experiment: int, e
     }
 
 
-def _run_path(stage: str, experiment: int, model: ModelIdentity, *, smoke: bool) -> Path:
-    category = "technical_smoke" if smoke else stage
+def _run_path(stage: str, experiment: int, model: ModelIdentity, *, smoke: bool,
+              coverage_probe: bool = False) -> Path:
+    category = "coverage_probe" if coverage_probe else "technical_smoke" if smoke else stage
     return (ROOT / "results" / category / result_namespace() / f"experiment_{experiment}"
             / model.model_id / f"train_seed_{model.train_seed}")
 
@@ -88,12 +89,16 @@ def _write_campaign_schedule(path: Path, manifest: dict[str, Any], trials: list[
 
 
 def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_id: str | None,
-                num_envs: int, device: str, smoke: bool, train_seed: int | None = None) -> dict[str, Any]:
+                num_envs: int, device: str, smoke: bool, train_seed: int | None = None,
+                coverage_probe: bool = False, probe_candidates: int | None = None) -> dict[str, Any]:
     import torch
     from isaaclab.app import AppLauncher
 
     protocol, _, _ = protocol_bundle()
-    manifest = prepare_manifest(stage, experiment)
+    if coverage_probe and (stage != "pilot" or experiment != 1 or smoke):
+        raise ValueError("coverage probe is only valid for non-smoke pilot Experiment 1")
+    manifest = (coverage_probe_manifest(protocol, count=probe_candidates)
+                if coverage_probe else prepare_manifest(stage, experiment))
     validate_manifest(manifest)
     initial_trials = list(manifest["trials"])
     if smoke:
@@ -110,7 +115,7 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
         model = resolve_model(model_id, train_seed)
     if experiment == 1 and model.actor_certificate_context and not smoke:
         raise ValueError("Experiment 1 confirmatory baseline cannot receive Nmin/margin")
-    adaptive_exp1 = experiment == 1 and stage in ("pilot", "formal") and not smoke
+    adaptive_exp1 = experiment == 1 and stage in ("pilot", "formal") and not smoke and not coverage_probe
     if adaptive_exp1:
         experiment1_cfg = load_yaml(ROOT / "configs/experiment1.yaml")
         if model.model_id != experiment1_cfg["model_id"] or model.checkpoint_sha256 != experiment1_cfg["checkpoint_sha256"]:
@@ -123,10 +128,11 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
         env, runner, policy, effective = make_environment(
             model, protocol, stage=stage, num_envs=num_envs, device=device, headless=True,
         )
-        dataset_role = ("TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else
+        dataset_role = ("COVERAGE_PROBE_NONANALYSIS" if coverage_probe else
+                        "TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else
                         "ADAPTIVE_OUTCOME_BLIND_CANDIDATE_STREAM" if adaptive_exp1 else "FIXED_BUDGET")
         identity = _identity(model, manifest, experiment, effective, dataset_role=dataset_role)
-        path = _run_path(stage, experiment, model, smoke=smoke)
+        path = _run_path(stage, experiment, model, smoke=smoke, coverage_probe=coverage_probe)
         store = RunStore(path, identity)
         if (path / "completion.json").exists():
             return {"status": "ALREADY_COMPLETE", "path": str(path), "completion": read_json(path / "completion.json")}
@@ -144,7 +150,7 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                         summary.update({"status": "COMPLETE", "dataset_role": dataset_role,
                                         "technical_only_nonbaseline": bool(
                                             smoke and experiment == 1 and model.actor_certificate_context
-                                        )})
+                                        ), "analysis_excluded": bool(coverage_probe)})
                         completion = store.seal([trial["trial_id"] for trial in trials], summary)
                         return {"status": "COMPLETE", "path": str(path), "summary": summary,
                                 "completion": completion}
@@ -305,7 +311,8 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                 })
     except BaseException as exc:
         if env is not None:
-            failure_path = _run_path(stage, experiment, model, smoke=smoke) if "model" in locals() else ROOT / "results/failure.json"
+            failure_path = _run_path(stage, experiment, model, smoke=smoke,
+                                     coverage_probe=coverage_probe) if "model" in locals() else ROOT / "results/failure.json"
             failure_path.mkdir(parents=True, exist_ok=True)
             write_json(failure_path / "failure.json", {"error": str(exc), "traceback": traceback.format_exc()})
         raise

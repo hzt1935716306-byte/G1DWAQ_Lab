@@ -31,6 +31,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--aggregate", action="store_true")
     value.add_argument("--prepare", action="store_true")
     value.add_argument("--smoke", action="store_true")
+    value.add_argument("--coverage-probe", action="store_true")
+    value.add_argument("--probe-candidates", type=int, default=1024)
     value.add_argument("--full-audit", action="store_true")
     value.add_argument("--num-envs", type=int)
     value.add_argument("--device", default="cuda:0")
@@ -138,6 +140,8 @@ def worker_command(args: argparse.Namespace, experiment: int, train_seed: int) -
         command += ["--baseline", args.baseline]
     if args.smoke:
         command.append("--smoke")
+    if args.coverage_probe:
+        command += ["--coverage-probe", "--probe-candidates", str(args.probe_candidates)]
     return command
 
 
@@ -218,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         from paper_eval_final.src.executor import execute_one
         result = execute_one(stage=args.stage, experiment=chosen[0], model_id=args.model,
                              baseline_id=args.baseline, num_envs=selected_num_envs(args),
-                             device=args.device, smoke=args.smoke, train_seed=args.train_seed)
+                             device=args.device, smoke=args.smoke, train_seed=args.train_seed,
+                             coverage_probe=args.coverage_probe, probe_candidates=args.probe_candidates)
         print("RUN_RESULT=" + json.dumps(result, sort_keys=True))
         return 0
     # Each experiment is a separate process. Completion closes Isaac before the next launch.
