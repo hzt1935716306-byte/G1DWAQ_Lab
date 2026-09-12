@@ -208,8 +208,7 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                             "accepted_count": len(analysis_records),
                             "analysis_summary": summarize(analysis_records, len(analysis_records)),
                             "analysis_cells": selection["cells"],
-                            "shared_q1": boundaries["shared_q1"],
-                            "shared_q2": boundaries["shared_q2"],
+                            "boundaries": boundaries["boundaries"],
                             "calibration_manifest_hash": boundaries["calibration_manifest_hash"],
                             "evaluation_manifest_hash": selection["evaluation_manifest_hash"],
                         })

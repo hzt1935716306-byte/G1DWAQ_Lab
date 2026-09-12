@@ -1,4 +1,5 @@
 import copy
+import inspect
 
 import pytest
 
@@ -23,12 +24,20 @@ from paper_eval_final.src.experiment1_sampling import (
 
 
 def _row(sequence, n_min, margin, *, stage="pilot", outcome="SUCCESS"):
+    condition_index = sequence % 80
+    slope = (-15.0, -5.0, 0.0, 5.0, 15.0)[condition_index % 5]
+    speed = ("LOW", "HIGH")[(condition_index // 5) % 2]
+    intensity = ("LOW", "HIGH")[(condition_index // 10) % 2]
+    direction = (0, 90, 180, 270)[(condition_index // 20) % 4]
     return {
         "trial_id": f"trial-{sequence:06d}",
         "eval_seed": 9_000_000 + sequence,
         "sequence": sequence,
         "stage": stage,
-        "condition_id": f"layer-{sequence % 5}",
+        "condition_id": f"s{slope}_{speed}_{intensity}_d{direction}",
+        "slope_deg": slope, "speed_group": speed,
+        "disturbance": {"type": "velocity_jump", "intensity_group": intensity,
+                        "direction_Hpush_deg": direction},
         "certificate_valid": True,
         "invalid_kind": None,
         "Nmin": n_min,
@@ -44,6 +53,11 @@ def _row(sequence, n_min, margin, *, stage="pilot", outcome="SUCCESS"):
         "recovered_sustained": outcome == "SUCCESS",
         "recovery_time": 1.0 if outcome == "SUCCESS" else None,
         "nTD0": sequence % 7,
+        "Krec": sequence % 7 + 1, "push_applied": True,
+        "termination_kind": "HORIZON_REACHED", "failure_reason": None,
+        "survived_post_observation": True, "first_entry": None, "final_entry": None,
+        "confirmations": [], "relapse_events": [], "events_path": "events.json",
+        "trace_path": "trace.npz",
     }
 
 
@@ -51,7 +65,7 @@ def _complete_pilot():
     rows = []
     for n_min in TARGET_NMIN:
         for index in range(120):
-            rows.append(_row(len(rows), n_min, index / 1000.0,
+            rows.append(_row(index, n_min, (n_min - 2) * 0.2 + index / 1000.0,
                              outcome="SUCCESS" if index % 3 else "FAILURE"))
     return rows
 
@@ -66,25 +80,22 @@ def test_pilot_selects_exactly_120_per_nmin_without_outcome_filtering():
     assert {row["task_outcome"] for row in selected} == {"SUCCESS", "FAILURE"}
 
 
-def test_exact_pooled_order_statistics_create_one_shared_pair_and_40_each_cell(tmp_path):
+def test_exact_per_n_order_statistics_create_distinct_pairs_and_40_each_cell(tmp_path):
     boundaries = fit_pilot_boundaries(
         _complete_pilot(), source_identity={"checkpoint_sha256": "a" * 64},
         output_path=tmp_path / "boundaries.yaml",
     )
     assert boundaries["status"] == "FROZEN"
-    assert boundaries["shared_q1"] == pytest.approx(0.0395)
-    assert boundaries["shared_q2"] == pytest.approx(0.0795)
-    assert "boundaries" not in boundaries
+    assert boundaries["n2_q1"] == pytest.approx(0.0395)
+    assert boundaries["n3_q1"] == pytest.approx(0.2395)
+    assert boundaries["n4_q1"] == pytest.approx(0.4395)
     reloaded = load_yaml(tmp_path / "boundaries.yaml")
     assert reloaded["boundary_id"] == digest({key: value for key, value in reloaded.items() if key != "boundary_id"})
     for n_min in TARGET_NMIN:
         counts = {group: 0 for group in MARGIN_GROUPS}
         for index in range(120):
-            counts[classify_margin(index / 1000.0, boundaries)] += 1
-        assert counts == {"LOW": 40, "MEDIUM": 40, "HIGH": 40}
-    analysis = select_pilot_analysis_samples(_complete_pilot(), boundaries)
-    assert analysis["complete"]
-    assert len(analysis["accepted_trial_ids"]) == 360
+            counts[classify_margin(n_min, (n_min - 2) * 0.2 + index / 1000.0, boundaries)] += 1
+        assert counts == {"LOWER": 40, "MIDDLE": 40, "UPPER": 40}
 
 
 def test_boundary_tie_is_margin_degenerate_and_raw_trace_is_emitted(tmp_path):
@@ -95,9 +106,9 @@ def test_boundary_tie_is_margin_degenerate_and_raw_trace_is_emitted(tmp_path):
         rows, source_identity={}, output_path=tmp_path / "boundaries.yaml",
     )
     assert boundaries["status"] == "MARGIN_DEGENERATE"
-    diagnostic = boundaries["diagnostic"]
-    assert "M120_EQUALS_M121" in diagnostic["degeneracy_reasons"]
-    assert len(diagnostic["raw_margin_and_intermediates"]) == 360
+    diagnostic = boundaries["diagnostic"]["per_Nmin"]["2"]
+    assert "M40_EQUALS_M41" in diagnostic["degeneracy_reasons"]
+    assert len(diagnostic["raw_margin_and_intermediates"]) == 120
 
 
 def test_nmin2_narrow_margin_range_blocks_boundary_freeze(tmp_path):
@@ -108,8 +119,7 @@ def test_nmin2_narrow_margin_range_blocks_boundary_freeze(tmp_path):
         rows, source_identity={}, output_path=tmp_path / "boundaries.yaml",
     )
     assert boundaries["status"] == "MARGIN_DEGENERATE"
-    assert "N2_MARGIN_VARIATION_INSUFFICIENT" in boundaries["diagnostic"]["degeneracy_reasons"]
-    assert boundaries["diagnostic"]["per_Nmin_descriptive"]["2"]["variation_sufficient"] is False
+    assert "N2_MARGIN_VARIATION_INSUFFICIENT" in boundaries["diagnostic"]["per_Nmin"]["2"]["degeneracy_reasons"]
 
 
 def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
@@ -117,12 +127,12 @@ def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
         _complete_pilot(), source_identity={}, output_path=tmp_path / "boundaries.yaml",
     )
     rows = []
-    centers = {"LOW": 0.01, "MEDIUM": 0.06, "HIGH": 0.10}
+    centers = {"LOWER": 0.01, "MIDDLE": 0.06, "UPPER": 0.10}
     for n_min in TARGET_NMIN:
         for group in MARGIN_GROUPS:
             for index in range(170):
                 rows.append(_row(
-                    len(rows), n_min, centers[group], stage="formal",
+                    len(rows), n_min, centers[group] + (n_min - 2) * 0.2, stage="formal",
                     outcome="FAILURE" if index < 160 else "SUCCESS",
                 ))
     selected = select_formal_samples(rows, boundaries)
@@ -132,9 +142,11 @@ def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
     assert {item["sample_role"] for item in selected["assignments"].values()} == {
         "formal_analysis", None,
     }
+    assert "shared_q1" not in inspect.getsource(select_formal_samples)
+    assert "shared_q2" not in inspect.getsource(select_formal_samples)
 
 
-def test_excess_calibration_rows_are_marked_calibration_only(tmp_path):
+def test_calibration_rows_form_exact_per_n_tertiles(tmp_path):
     rows = []
     for n_min in TARGET_NMIN:
         for index in range(120):
@@ -142,8 +154,7 @@ def test_excess_calibration_rows_are_marked_calibration_only(tmp_path):
     boundaries = fit_pilot_boundaries(rows, source_identity={}, output_path=tmp_path / "boundaries.yaml")
     analysis = select_pilot_analysis_samples(rows, boundaries)
     calibration_only = [item for item in analysis["assignments"].values() if item["calibration_only"]]
-    assert len(calibration_only) == 240
-    assert all(item["sample_role"] == "calibration" for item in calibration_only)
+    assert len(calibration_only) == 0
 
 
 def test_continuation_ranking_does_not_change_when_outcomes_change():
@@ -158,7 +169,7 @@ def test_continuation_ranking_does_not_change_when_outcomes_change():
     assert pilot_continuation_condition_weights(changed) == first
 
 
-def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting(tmp_path, monkeypatch):
+def test_complete_conditional_cells_need_no_continuation(tmp_path, monkeypatch):
     plans = generate_trials("pilot", 1)
     records = []
     for index, plan in enumerate(plans):
@@ -171,6 +182,10 @@ def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting
                 margin_storage_dtype="float64", margin_was_rounded=False,
                 certificate_calculation={"margin_saturated": False, "margin_clamped": False,
                                          "margin_truncated": False},
+                push_applied=True, termination_kind="HORIZON_REACHED", task_outcome="SUCCESS",
+                failure_reason=None, recovered_sustained=True, survived_post_observation=True,
+                recovery_time=1.0, nTD0=2, Krec=3, first_entry=1.0, final_entry=1.0,
+                confirmations=[], relapse_events=[], events_path="events.json", trace_path="trace.npz",
             )
         else:
             row.update(certificate_valid=False, invalid_kind=None, Nmin=None, margin_raw=None,
@@ -185,15 +200,9 @@ def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting
     }, output_path=boundary_path)
     monkeypatch.setattr(sampling_module, "BOUNDARY_PATH", boundary_path)
     continuation = generate_experiment1_continuation("pilot", 500, 24, records)
-    assert {row["candidate_phase"] for row in continuation} == {"PILOT_CELL_TARGETED_CONTINUATION"}
-    assert all("margin_group" in row["sampling_target_hint"] for row in continuation)
+    assert continuation == []
 
 
 def test_n4_high_coverage_probe_is_fixed_and_analysis_excluded():
-    manifest = coverage_probe_manifest(count=32)
-    assert manifest["dataset_role"] == "COVERAGE_PROBE_NONANALYSIS"
-    assert len(manifest["trials"]) == 32
-    assert len({row["condition_id"] for row in manifest["trials"]}) == 8
-    assert all(row["analysis_excluded"] is True for row in manifest["trials"])
-    assert all(row["sampling_target_hint"] == {"Nmin": 4, "margin_group": "HIGH"}
-               for row in manifest["trials"])
+    with pytest.raises(ValueError, match="retired"):
+        coverage_probe_manifest(count=32)

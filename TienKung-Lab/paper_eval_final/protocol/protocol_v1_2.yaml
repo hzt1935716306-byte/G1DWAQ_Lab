@@ -2,7 +2,7 @@ evaluation_system: paper_eval_final
 protocol_title: 人形机器人多步可恢复性算法实验评测协议
 protocol_version: "1.2"
 status: pre_experiment_frozen
-protocol_revision: exp1_shared_margin_tertiles_2026_09_12
+protocol_revision: exp1_conditional_nmin_margin_tertiles_2026_09_12
 
 stages:
   screening: {seed_namespace: 1201000, confirmatory: false}
@@ -79,10 +79,10 @@ metrics:
 
 experiment1_margin_stratification:
   definition_zh: >-
-    使用由平衡pilot校准数据确定的共享三分位边界划分margin。校准数据包含
-    N_min=2、3、4各120条证书有效试验。合并360个margin后计算共享的33.3%和
-    66.7%分位点q_1、q_2。三个N_min均使用相同数值边界，从而保证Low、Medium
-    和High在不同N_min下具有一致含义。边界在正式实验前冻结，正式实验不得重新计算。
+    使用平衡pilot校准数据在每个N_min内独立确定margin三分位边界。N_min=2、3、4
+    各使用120条证书有效试验，分别由第40/41和第80/81顺序统计量的中点计算q_n1、q_n2。
+    Lower、Middle、Upper仅表示各N_min内部的相对等级，不代表相同绝对margin范围。
+    六个边界在正式实验前冻结，正式实验不得重新计算。
   source_stage: pilot
   accepted_Nmin: [2, 3, 4]
   scope_freeze_reason: >-
@@ -93,14 +93,14 @@ experiment1_margin_stratification:
   pilot_certificate_valid_per_Nmin: 120
   pilot_initial_candidates: 500
   calibration_total: 360
-  shared_quantile_boundaries:
-    q1: "(m_(120) + m_(121)) / 2"
-    q2: "(m_(240) + m_(241)) / 2"
+  conditional_quantile_boundaries:
+    q_n1: "(m_n(40) + m_n(41)) / 2"
+    q_n2: "(m_n(80) + m_n(81)) / 2"
   groups:
-    LOW: "margin < q1"
-    MEDIUM: "q1 <= margin < q2"
-    HIGH: "margin >= q2"
-  shared_across_Nmin: true
+    LOWER: "margin < q_n1"
+    MIDDLE: "q_n1 <= margin < q_n2"
+    UPPER: "margin >= q_n2"
+  shared_across_Nmin: false
   pilot_certificate_valid_per_cell: 40
   pilot_analysis_total: 360
   formal_certificate_valid_per_cell: 160

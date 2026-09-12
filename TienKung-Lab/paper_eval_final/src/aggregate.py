@@ -67,7 +67,7 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
                 payload["stratified_relation_set"] = relation_set
             n_margin = {}
             for n_min in TARGET_NMIN:
-                for margin in ("LOW", "MEDIUM", "HIGH"):
+                for margin in ("LOWER", "MIDDLE", "UPPER"):
                     rows = [row for row in analysis_records if row.get("certificate_valid")
                             and row.get("Nmin") == n_min and row.get("margin_group") == margin]
                     recovered = sum(bool(row.get("recovered_sustained")) for row in rows)

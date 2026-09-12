@@ -308,7 +308,8 @@ def generate_experiment1_continuation(stage: str, start_sequence: int, count: in
 def generate_experiment1_coverage_probe(
     protocol: dict[str, Any] | None = None, *, count: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate a fixed, outcome-free probe for the missing N4-HIGH cell."""
+    """Refuse the superseded shared-boundary N4-HIGH coverage probe."""
+    raise ValueError("N4-HIGH coverage probing was retired with shared margin boundaries")
     protocol = protocol or protocol_bundle()[0]
     cfg = load_yaml(ROOT / "configs/experiment1.yaml")["coverage_probe"]
     conditions = list(cfg["conditions"])

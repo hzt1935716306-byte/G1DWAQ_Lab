@@ -5,23 +5,49 @@ pilot_required: true
 formal_experiment1_baseline: slope_nosys_d_matched
 experiment1_margin_boundaries:
   file: configs/experiment1_margin_boundaries.yaml
-  kind: SHARED_MARGIN_TERTILES
+  kind: CONDITIONAL_NMIN_MARGIN_TERTILES
   status: FROZEN
-  target_Nmin: [2, 3, 4]
-  supersedes_target_Nmin: [3, 4, 5]
-  boundary_id: 3886e36eff64c4951d73502c5b8501e04b7eb560cfbc36064a967dd9bc9a6714
+  target_Nmin:
+  - 2
+  - 3
+  - 4
+  supersedes_target_Nmin:
+  - 3
+  - 4
+  - 5
+  boundary_id: fe83326a43941342e9d314f48baf63598a9996968477caed955c51aca242dab1
   calibration_manifest_hash: bbafaf41c3527eca03e06ca6d5c84b6ff5ff5d1aec70fda860066590e4143b41
 experiment1_pilot_coverage:
-  status: INCOMPLETE
-  missing_cells: {N4_HIGH: 40}
-  coverage_probe_analysis_excluded: true
-  coverage_probe_manifest_hash: ee569d07585efb80f1ad7e98a195f85638ad2b71bcb070b5946f9ac19cce99ab
-  coverage_probe_attempts: 1024
-  coverage_probe_certificate_valid: 796
-  coverage_probe_N4: 62
-  coverage_probe_N4_HIGH: 0
-  coverage_probe_N4_margin_maximum: 0.0905412348918952
-  frozen_shared_q2: 0.1401512702272109
+  status: COMPLETE
+  cells:
+    N2_LOWER: 40
+    N2_MIDDLE: 40
+    N2_UPPER: 40
+    N3_LOWER: 40
+    N3_MIDDLE: 40
+    N3_UPPER: 40
+    N4_LOWER: 40
+    N4_MIDDLE: 40
+    N4_UPPER: 40
+  reused_trials: 360
+  newly_scheduled_trials: 0
+  evaluation_manifest_hash: eb983370e48b47b1868130312ce0a6c00783b9de255c63b2be66e5ae90a20490
+  condition_balance: best_effort_minimum_total_marginal_deviation
+  exact_balance_cells:
+  - N2_LOWER
+  - N2_MIDDLE
+  conditional_support_limited_cells:
+  - N2_UPPER
+  - N3_LOWER
+  - N3_MIDDLE
+  - N3_UPPER
+  - N4_LOWER
+  - N4_MIDDLE
+  - N4_UPPER
+superseded_shared_margin_coverage_probe:
+  status: HISTORICAL_ANALYSIS_EXCLUDED
+  manifest_hash: ee569d07585efb80f1ad7e98a195f85638ad2b71bcb070b5946f9ac19cce99ab
+  attempts: 1024
 formal_stratified_caps:
   max_candidates_total: null
   max_candidates_per_condition_layer: null
@@ -42,5 +68,5 @@ notes:
   benchmark; see PERFORMANCE_BENCHMARK.md.
 - Formal remains disabled until pilot PASS, cap freeze, baseline selection, and three
   training seeds.
-- N4-HIGH remained empty after a 1024-trial analysis-excluded physical coverage probe;
-  shared-boundary design must be reviewed before formal enablement.
+- Shared-boundary N4-HIGH probing is historical and excluded; Experiment 1 now uses
+  frozen within-Nmin conditional tertiles. Formal execution remains disabled.

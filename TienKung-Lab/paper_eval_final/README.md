@@ -30,10 +30,11 @@ conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 --ba
 conda run -n g1 python paper_eval_final/run.py --stage formal --experiment 1 --baseline slope_nosys_d_matched
 ```
 
-The pilot pools the balanced 3x120 calibration margins, sorts all 360 values,
-and freezes one shared pair, `q1=(m120+m121)/2` and
-`q2=(m240+m241)/2`, in `configs/experiment1_margin_boundaries.yaml`. All three
-Nmin levels use that same pair. The pilot then uses existing calibration rows
+The pilot keeps the frozen 120 calibration trials for each Nmin, sorts each
+set independently, and freezes six boundaries, `q_n1=(m_n40+m_n41)/2` and
+`q_n2=(m_n80+m_n81)/2`, in `configs/experiment1_margin_boundaries.yaml`.
+Lower/Middle/Upper are relative levels within each Nmin and do not denote the
+same absolute margin ranges. The pilot then uses existing calibration rows
 and outcome-blind targeted continuation to fill all nine Nmin-margin cells to
 40 trials each. Formal Experiment 1 refuses to start without the independently
 generated frozen artifact and fills those same nine cells to 160 trials each.

@@ -14,7 +14,7 @@ from .common import ROOT, atomic_write, digest, load_yaml, protocol_bundle, writ
 
 
 TARGET_NMIN = (2, 3, 4)
-MARGIN_GROUPS = ("LOW", "MEDIUM", "HIGH")
+MARGIN_GROUPS = ("LOWER", "MIDDLE", "UPPER")
 BOUNDARY_PATH = ROOT / "configs/experiment1_margin_boundaries.yaml"
 
 
@@ -25,34 +25,37 @@ def experiment1_config() -> dict[str, Any]:
 def load_boundaries(*, require_frozen: bool = False) -> dict[str, Any]:
     value = load_yaml(BOUNDARY_PATH)
     if require_frozen and value.get("status") != "FROZEN":
-        raise ValueError("Experiment 1 shared margin boundaries are not frozen")
+        raise ValueError("Experiment 1 conditional margin boundaries are not frozen")
     if value.get("status") != "FROZEN":
         return value
 
     claimed = value.get("boundary_id")
     calculated = digest({key: item for key, item in value.items() if key != "boundary_id"})
     if claimed != calculated:
-        raise ValueError("Experiment 1 frozen shared-margin boundary hash mismatch")
+        raise ValueError("Experiment 1 frozen conditional-margin boundary hash mismatch")
     cfg = experiment1_config()
     if tuple(int(n) for n in value.get("target_Nmin", [])) != TARGET_NMIN:
         raise ValueError("Experiment 1 frozen boundaries target a superseded Nmin scope")
+    if value.get("boundary_kind") != "CONDITIONAL_NMIN_MARGIN_TERTILES":
+        raise ValueError("Experiment 1 boundary artifact uses a superseded scheme")
     source = value.get("source_identity", {})
     current_protocol_hash = protocol_bundle()[2]["protocol_hash"]
     if value.get("source_stage") != "pilot" or source.get("stage") != "pilot":
         raise ValueError("Experiment 1 boundaries must come from the independent pilot stage")
-    if source.get("protocol_hash") != current_protocol_hash:
-        raise ValueError("Experiment 1 boundaries belong to a different protocol revision")
+    if value.get("stratification_protocol_hash") != current_protocol_hash:
+        raise ValueError("Experiment 1 boundaries belong to a different stratification protocol revision")
     if value.get("baseline_id") != cfg["baseline_id"] or value.get("checkpoint_sha256") != cfg["checkpoint_sha256"]:
         raise ValueError("Experiment 1 boundaries belong to a different baseline/checkpoint")
     expected = int(cfg["calibration_sampling"]["certificate_valid_per_Nmin"])
     selected = value.get("calibration_trial_ids", {})
     if any(len(selected.get(str(n), [])) != expected for n in TARGET_NMIN):
         raise ValueError("Experiment 1 boundary artifact does not contain balanced Nmin=2/3/4 calibration IDs")
-    q1, q2 = value.get("shared_q1"), value.get("shared_q2")
-    if q1 is None or q2 is None or not (
-        math.isfinite(float(q1)) and math.isfinite(float(q2)) and float(q1) < float(q2)
-    ):
-        raise ValueError("Experiment 1 shared q1/q2 are invalid")
+    for n in TARGET_NMIN:
+        q1, q2 = value.get(f"n{n}_q1"), value.get(f"n{n}_q2")
+        if q1 is None or q2 is None or not (
+            math.isfinite(float(q1)) and math.isfinite(float(q2)) and float(q1) < float(q2)
+        ):
+            raise ValueError(f"Experiment 1 Nmin={n} q1/q2 are invalid")
     if not value.get("calibration_manifest_hash") or not value.get("computed_at_utc"):
         raise ValueError("Experiment 1 frozen boundary provenance is incomplete")
     return value
@@ -134,13 +137,13 @@ def _calculation_trace(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _shared_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    if len(rows) != 360:
-        raise ValueError("shared margin calibration requires exactly 360 rows")
+def _nmin_diagnostic(n_min: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(rows) != 120:
+        raise ValueError(f"Nmin={n_min} margin calibration requires exactly 120 rows")
     margins = np.sort(np.asarray([_raw_margin(row) for row in rows], dtype=np.float64))
-    m120, m121 = float(margins[119]), float(margins[120])
-    m240, m241 = float(margins[239]), float(margins[240])
-    q1, q2 = (m120 + m121) / 2.0, (m240 + m241) / 2.0
+    m40, m41 = float(margins[39]), float(margins[40])
+    m80, m81 = float(margins[79]), float(margins[80])
+    q1, q2 = (m40 + m41) / 2.0, (m80 + m81) / 2.0
     unique = int(np.unique(margins).size)
     calculations = [row.get("certificate_calculation") or {} for row in rows]
     saturation = any(bool(item.get("margin_saturated")) for item in calculations)
@@ -150,59 +153,33 @@ def _shared_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row.get("margin_storage_dtype") != "float64" or row.get("margin_was_rounded") is not False
         for row in rows
     )
-    large_duplicate_block = unique < 324
+    large_duplicate_block = unique < 108
     reasons = []
-    if m120 == m121:
-        reasons.append("M120_EQUALS_M121")
-    if m240 == m241:
-        reasons.append("M240_EQUALS_M241")
+    if m40 == m41:
+        reasons.append("M40_EQUALS_M41")
+    if m80 == m81:
+        reasons.append("M80_EQUALS_M81")
     if q1 >= q2:
         reasons.append("Q1_NOT_BELOW_Q2")
     if large_duplicate_block and (saturation or clamp or truncation or precision_loss):
         reasons.append("DUPLICATES_WITH_CLAMP_TRUNCATION_OR_PRECISION_LOSS")
-    pooled_q05, pooled_q95 = float(np.quantile(margins, 0.05)), float(np.quantile(margins, 0.95))
-    pooled_robust_range = pooled_q95 - pooled_q05
     cfg = experiment1_config().get("margin_variation_guard", {})
-    per_nmin_descriptive: dict[str, dict[str, Any]] = {}
-    insufficient_variation = []
-    for n in TARGET_NMIN:
-        values = np.asarray([_raw_margin(row) for row in rows if row["Nmin"] == n], dtype=np.float64)
-        q05, q95 = float(np.quantile(values, 0.05)), float(np.quantile(values, 0.95))
-        robust_range = q95 - q05
-        unique_count = int(np.unique(values).size)
-        checks = {
-            "unique_values": unique_count >= int(cfg.get("minimum_unique_values", 12)),
-            "absolute_range": float(np.ptp(values)) >= float(cfg.get("minimum_absolute_range", 1.0e-6)),
-            "robust_range": robust_range >= float(cfg.get("minimum_robust_range", 1.0e-4)),
-            "relative_robust_range": (
-                pooled_robust_range > 0.0
-                and robust_range / pooled_robust_range
-                >= float(cfg.get("minimum_robust_to_pooled_ratio", 0.01))
-            ),
-        }
-        sufficient = all(checks.values())
-        if not sufficient:
-            insufficient_variation.append(n)
-        per_nmin_descriptive[str(n)] = {
-            "count": int(values.size),
-            "minimum": float(np.min(values)), "maximum": float(np.max(values)),
-            "range": float(np.ptp(values)), "median": float(np.median(values)),
-            "q05": q05, "q95": q95, "robust_range_q05_q95": robust_range,
-            "robust_to_pooled_ratio": robust_range / pooled_robust_range if pooled_robust_range > 0 else None,
-            "different_margin_value_count": unique_count,
-            "variation_checks": checks,
-            "variation_sufficient": sufficient,
-        }
-    if insufficient_variation:
-        reasons.extend(f"N{n}_MARGIN_VARIATION_INSUFFICIENT" for n in insufficient_variation)
+    q05, q95 = float(np.quantile(margins, 0.05)), float(np.quantile(margins, 0.95))
+    checks = {
+        "unique_values": unique >= int(cfg.get("minimum_unique_values", 12)),
+        "absolute_range": float(np.ptp(margins)) >= float(cfg.get("minimum_absolute_range", 1.0e-6)),
+        "robust_range": q95 - q05 >= float(cfg.get("minimum_robust_range", 1.0e-4)),
+    }
+    if not all(checks.values()):
+        reasons.append(f"N{n_min}_MARGIN_VARIATION_INSUFFICIENT")
     return {
         "status": "MARGIN_DEGENERATE" if reasons else "VALID",
         "degeneracy_reasons": reasons,
-        "count": 360,
+        "Nmin": n_min, "count": 120,
         "minimum": float(margins[0]), "maximum": float(margins[-1]),
         "median": float(np.median(margins)),
         "quantile_33_3": q1, "quantile_66_7": q2,
-        "order_statistics": {"m120": m120, "m121": m121, "m240": m240, "m241": m241},
+        "order_statistics": {"m40": m40, "m41": m41, "m80": m80, "m81": m81},
         "different_margin_value_count": unique,
         "zero_fraction": float(np.mean(margins == 0.0)),
         "large_duplicate_block": large_duplicate_block,
@@ -210,11 +187,9 @@ def _shared_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "margin_clamp_detected": clamp,
         "margin_truncation_detected": truncation,
         "precision_loss_detected": precision_loss,
-        "pooled_q05": pooled_q05, "pooled_q95": pooled_q95,
-        "pooled_robust_range_q05_q95": pooled_robust_range,
+        "q05": q05, "q95": q95, "robust_range_q05_q95": q95 - q05,
         "margin_variation_guard": cfg,
-        "insufficient_variation_Nmin": insufficient_variation,
-        "per_Nmin_descriptive": per_nmin_descriptive,
+        "variation_checks": checks,
         "raw_margin_and_intermediates": [_calculation_trace(row) for row in rows],
     }
 
@@ -234,27 +209,42 @@ def _calibration_manifest_hash(selection: dict[str, Any], source_identity: dict[
 
 
 def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: dict[str, Any],
-                         output_path: str | Path = BOUNDARY_PATH) -> dict[str, Any]:
-    """Fit one shared q1/q2 pair, or emit a non-frozen degeneracy report."""
+                         output_path: str | Path = BOUNDARY_PATH,
+                         required_trial_ids: dict[str, list[str]] | None = None,
+                         required_calibration_manifest_hash: str | None = None) -> dict[str, Any]:
+    """Fit six within-Nmin boundaries, preserving a supplied frozen manifest."""
     cfg = experiment1_config()
     per_nmin = int(cfg["calibration_sampling"]["certificate_valid_per_Nmin"])
-    selection = select_calibration_samples(records, per_nmin=per_nmin)
+    rows = list(records)
+    selection = select_calibration_samples(rows, per_nmin=per_nmin)
+    if required_trial_ids is not None:
+        by_id = {row["trial_id"]: row for row in rows}
+        if any(len(required_trial_ids.get(str(n), [])) != per_nmin
+               or len(set(required_trial_ids[str(n)])) != per_nmin for n in TARGET_NMIN):
+            raise ValueError("frozen calibration manifest must contain 120 unique IDs per Nmin")
+        selected = {n: [by_id[trial_id] for trial_id in required_trial_ids[str(n)]] for n in TARGET_NMIN}
+        if any(not pilot_eligibility(row)[0] or int(row["Nmin"]) != n
+               for n, group in selected.items() for row in group):
+            raise ValueError("frozen calibration manifest contains an ineligible trial")
+        selection = {**selection, "selected": selected, "selected_trial_ids": required_trial_ids,
+                     "complete": True, "deficits": {str(n): 0 for n in TARGET_NMIN}}
     payload: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "experiment_id": 1,
-        "boundary_kind": "SHARED_MARGIN_TERTILES",
+        "boundary_kind": "CONDITIONAL_NMIN_MARGIN_TERTILES",
         "baseline_id": cfg["baseline_id"],
         "checkpoint_sha256": cfg["checkpoint_sha256"],
         "source_stage": "pilot",
         "source_identity": source_identity,
-        "calibration_selection_rule": "first eligible candidates by preassigned (sequence, trial_id); outcome-blind",
+        "stratification_protocol_hash": protocol_bundle()[2]["protocol_hash"],
+        "calibration_selection_rule": "frozen calibration trial IDs; outcome-blind" if required_trial_ids else "first eligible candidates by preassigned (sequence, trial_id); outcome-blind",
         "target_Nmin": list(TARGET_NMIN),
         "supersedes_target_Nmin": [3, 4, 5],
         "scope_change_basis": "certificate-valid sample coverage only; recovery outcomes were not inspected",
         "samples_per_Nmin": per_nmin,
         "calibration_trial_ids": selection["selected_trial_ids"],
         "selection_exclusions": selection["exclusions"],
-        "shared_q1": None, "shared_q2": None,
+        "group_labels": list(MARGIN_GROUPS),
         "calibration_manifest_hash": None, "computed_at_utc": None,
         "code_version": {
             "evaluation_code_commit": source_identity.get("evaluation_code_commit"),
@@ -270,16 +260,18 @@ def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: 
     if not selection["complete"]:
         payload.update(status="COLLECTING", deficits=selection["deficits"], diagnostic={})
     else:
-        calibration_rows = [row for n in TARGET_NMIN for row in selection["selected"][n]]
-        diagnostic = _shared_diagnostic(calibration_rows)
-        payload["diagnostic"] = diagnostic
-        payload["calibration_manifest_hash"] = _calibration_manifest_hash(selection, source_identity)
+        diagnostics = {str(n): _nmin_diagnostic(n, selection["selected"][n]) for n in TARGET_NMIN}
+        reasons = [reason for item in diagnostics.values() for reason in item["degeneracy_reasons"]]
+        payload["diagnostic"] = {"status": "MARGIN_DEGENERATE" if reasons else "VALID",
+                                 "degeneracy_reasons": reasons, "per_Nmin": diagnostics}
+        payload["calibration_manifest_hash"] = required_calibration_manifest_hash or _calibration_manifest_hash(selection, source_identity)
         payload["computed_at_utc"] = datetime.now(timezone.utc).isoformat()
-        if diagnostic["status"] == "MARGIN_DEGENERATE":
+        if reasons:
             payload["status"] = "MARGIN_DEGENERATE"
         else:
-            payload["shared_q1"] = diagnostic["quantile_33_3"]
-            payload["shared_q2"] = diagnostic["quantile_66_7"]
+            for n in TARGET_NMIN:
+                payload[f"n{n}_q1"] = diagnostics[str(n)]["quantile_33_3"]
+                payload[f"n{n}_q2"] = diagnostics[str(n)]["quantile_66_7"]
             payload["status"] = "FROZEN"
     payload["boundary_id"] = digest({key: value for key, value in payload.items() if key != "boundary_id"})
     atomic_write(output_path, yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
@@ -289,7 +281,7 @@ def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: 
         freeze = load_yaml(freeze_path)
         freeze["experiment1_margin_boundaries"] = {
             "file": str(Path(output_path).resolve().relative_to(ROOT)),
-            "kind": "SHARED_MARGIN_TERTILES",
+            "kind": "CONDITIONAL_NMIN_MARGIN_TERTILES",
             "status": payload["status"],
             "target_Nmin": list(TARGET_NMIN),
             "supersedes_target_Nmin": [3, 4, 5],
@@ -302,49 +294,108 @@ def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: 
     return payload
 
 
-def classify_margin(margin_raw: float | None, boundaries: dict[str, Any]) -> str | None:
-    """Classify margin with the one shared pair; Nmin is deliberately absent."""
-    if boundaries.get("status") != "FROZEN" or margin_raw is None:
+def classify_margin(n_min: int | None, margin_raw: float | None, boundaries: dict[str, Any]) -> str | None:
+    """Classify raw LP margin against the frozen pair for its Nmin."""
+    if boundaries.get("status") != "FROZEN" or margin_raw is None or n_min not in TARGET_NMIN:
         return None
     margin = float(margin_raw)
     if not math.isfinite(margin):
         return None
-    if margin < float(boundaries["shared_q1"]):
-        return "LOW"
-    if margin < float(boundaries["shared_q2"]):
-        return "MEDIUM"
-    return "HIGH"
+    if margin < float(boundaries[f"n{n_min}_q1"]):
+        return "LOWER"
+    if margin < float(boundaries[f"n{n_min}_q2"]):
+        return "MIDDLE"
+    return "UPPER"
+
+
+def _analysis_eligibility(row: dict[str, Any], stage: str) -> tuple[bool, str]:
+    eligible, reason = certificate_sample_eligibility(row, stage=stage)
+    if not eligible or row.get("analysis_excluded"):
+        return (False, "ANALYSIS_EXCLUDED") if eligible else (eligible, reason)
+    required = {"disturbance", "push_applied", "termination_kind", "task_outcome", "failure_reason",
+                "recovered_sustained", "survived_post_observation", "recovery_time", "nTD0", "Krec",
+                "first_entry", "final_entry", "confirmations", "relapse_events", "events_path", "trace_path"}
+    if required - row.keys():
+        return False, "INCOMPLETE_RECOVERY_LANDING_TERMINATION_OR_DISTURBANCE_DATA"
+    return True, "ELIGIBLE"
+
+
+def _balanced_cell(rows: list[dict[str, Any]], per_cell: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Minimize marginal imbalance using condition fields only; trial order breaks ties."""
+    rows = _ordered(rows)
+    if len(rows) < per_cell:
+        return rows, {"exact": False, "reason": "COUNT_DEFICIT", "counts": {}}
+    axes = (("slope_deg", (-15.0, -5.0, 0.0, 5.0, 15.0)),
+            ("speed_group", ("LOW", "HIGH")),
+            ("intensity_group", ("LOW", "HIGH")),
+            ("direction_Hpush_deg", (0, 90, 180, 270)))
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    matrix, targets = [[1.0] * len(rows)], [float(per_cell)]
+    for name, values in axes:
+        quotient, remainder = divmod(per_cell, len(values))
+        for index, value in enumerate(values):
+            matrix.append([1.0 if (row.get(name) if name in row else row["disturbance"].get(name)) == value else 0.0 for row in rows])
+            targets.append(float(quotient + (index < remainder)))
+    result = milp(c=np.arange(len(rows), dtype=float), integrality=np.ones(len(rows)),
+                  bounds=Bounds(np.zeros(len(rows)), np.ones(len(rows))),
+                  constraints=LinearConstraint(np.asarray(matrix), targets, targets))
+    exact = bool(result.success)
+    if not exact:
+        category_count, row_count = len(matrix) - 1, len(rows)
+        soft_matrix = []
+        for index, values in enumerate(matrix):
+            slack = [0.0] * (2 * category_count)
+            if index:
+                slack[2 * (index - 1)] = 1.0
+                slack[2 * (index - 1) + 1] = -1.0
+            soft_matrix.append(values + slack)
+        result = milp(c=np.r_[np.arange(row_count) / max(1.0, row_count * 1e6), np.ones(2 * category_count)],
+                      integrality=np.r_[np.ones(row_count), np.zeros(2 * category_count)],
+                      bounds=Bounds(np.zeros(row_count + 2 * category_count),
+                                    np.r_[np.ones(row_count), np.full(2 * category_count, np.inf)]),
+                      constraints=LinearConstraint(np.asarray(soft_matrix), targets, targets))
+        if not result.success:
+            raise RuntimeError("condition-balance optimization failed")
+    chosen = [row for row, flag in zip(rows, result.x[:len(rows)]) if flag > 0.5]
+    counts = {
+        "slopes": dict(Counter(str(row["slope_deg"]) for row in chosen)),
+        "speeds": dict(Counter(row["speed_group"] for row in chosen)),
+        "intensities": dict(Counter(row["disturbance"]["intensity_group"] for row in chosen)),
+        "directions": dict(Counter(str(row["disturbance"]["direction_Hpush_deg"]) for row in chosen)),
+    }
+    return chosen, {"exact": exact, "reason": "EXACT" if exact else "BEST_EFFORT", "counts": counts}
 
 
 def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, Any], *,
                      stage: str, per_cell: int, sample_role: str) -> dict[str, Any]:
     if boundaries.get("status") != "FROZEN":
-        raise ValueError("analysis selection requires frozen shared pilot boundaries")
-    cells: dict[tuple[int, str], list[str]] = {
+        raise ValueError("analysis selection requires frozen conditional pilot boundaries")
+    candidates: dict[tuple[int, str], list[dict[str, Any]]] = {
         (n, group): [] for n in TARGET_NMIN for group in MARGIN_GROUPS
     }
     attempts: Counter[tuple[int, str]] = Counter()
     exclusions: Counter[str] = Counter()
     accepted_in_order: list[str] = []
     for row in _ordered(records):
-        eligible, reason = certificate_sample_eligibility(row, stage=stage)
+        eligible, reason = _analysis_eligibility(row, stage)
         if not eligible:
             exclusions[reason] += 1
             continue
-        group = classify_margin(_raw_margin(row), boundaries)
+        group = classify_margin(row.get("Nmin"), _raw_margin(row), boundaries)
         assert group is not None
         cell = (int(row["Nmin"]), group)
         attempts[cell] += 1
-        if len(cells[cell]) >= per_cell:
-            exclusions[f"N{cell[0]}_{cell[1]}_QUOTA_FILLED"] += 1
-            continue
-        cells[cell].append(row["trial_id"])
-        accepted_in_order.append(row["trial_id"])
+        candidates[cell].append(row)
+    selected = {cell: _balanced_cell(rows, per_cell) for cell, rows in candidates.items()}
+    cells = {cell: [row["trial_id"] for row in value[0]] for cell, value in selected.items()}
+    accepted_in_order = [trial_id for n in TARGET_NMIN for group in MARGIN_GROUPS
+                         for trial_id in cells[(n, group)]]
     detail = {
         f"N{n}_{group}": {
             "accepted": len(cells[(n, group)]), "target": per_cell,
             "missing": max(0, per_cell - len(cells[(n, group)])),
             "attempt_count": attempts[(n, group)], "trial_ids": cells[(n, group)],
+            "condition_balance": selected[(n, group)][1],
         }
         for n in TARGET_NMIN for group in MARGIN_GROUPS
     }
@@ -371,8 +422,9 @@ def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, An
             "sample_roles": roles,
             "certificate_valid": bool(row.get("certificate_valid")),
             "Nmin": row.get("Nmin"), "margin_raw": row.get("margin_raw"),
-            "margin_group": classify_margin(raw, boundaries) if raw is not None else None,
-            "shared_q1": boundaries["shared_q1"], "shared_q2": boundaries["shared_q2"],
+            "margin_group": classify_margin(row.get("Nmin"), raw, boundaries) if raw is not None else None,
+            "nmin_q1": boundaries.get(f"n{row.get('Nmin')}_q1"),
+            "nmin_q2": boundaries.get(f"n{row.get('Nmin')}_q2"),
             "calibration_only": bool(calibration_member and not analysis_member),
             "margin_degenerate": False,
             "trial_id": trial_id, "eval_seed": row.get("eval_seed"),
@@ -383,7 +435,8 @@ def _select_analysis(records: Iterable[dict[str, Any]], boundaries: dict[str, An
         "dataset_role": "PILOT_ANALYSIS_SET" if stage == "pilot" else "FORMAL_ANALYSIS_SET",
         "stage": stage, "sample_role": sample_role,
         "boundary_id": boundaries["boundary_id"],
-        "shared_q1": boundaries["shared_q1"], "shared_q2": boundaries["shared_q2"],
+        "boundaries": {str(n): {"q1": boundaries[f"n{n}_q1"], "q2": boundaries[f"n{n}_q2"]}
+                       for n in TARGET_NMIN},
         "calibration_manifest_hash": boundaries["calibration_manifest_hash"],
         "evaluation_manifest_hash": evaluation_manifest_hash,
         "accepted_trial_ids": accepted_in_order,
@@ -410,7 +463,7 @@ def write_sampling_assignments(path: str | Path, selection: dict[str, Any]) -> N
     write_json(target / "sampling_assignments.json", selection)
     fields = [
         "stage", "sample_role", "sample_roles", "certificate_valid", "Nmin", "margin_raw",
-        "margin_group", "shared_q1", "shared_q2", "calibration_only", "margin_degenerate",
+        "margin_group", "nmin_q1", "nmin_q2", "calibration_only", "margin_degenerate",
         "trial_id", "eval_seed", "calibration_manifest_hash", "evaluation_manifest_hash",
     ]
     write_csv(target / "sampling_assignments.csv", selection["assignments"].values(), fields)
@@ -440,7 +493,7 @@ def annotate_sampling_batch(records: list[dict[str, Any]], prior_records: Iterab
             eligible, reason = pilot_eligibility(row)
             calibration_member = row["trial_id"] in calibration_ids
             analysis_member = row["trial_id"] in analysis_ids
-            group = classify_margin(_raw_margin(row), boundaries) if boundaries and eligible else None
+            group = classify_margin(row.get("Nmin"), _raw_margin(row), boundaries) if boundaries and eligible else None
             roles = (["calibration"] if calibration_member else []) + (["pilot_analysis"] if analysis_member else [])
             chosen = analysis_member if boundaries else calibration_member
             row.update(
@@ -454,8 +507,8 @@ def annotate_sampling_batch(records: list[dict[str, Any]], prior_records: Iterab
                 pilot_analysis_selected=analysis_member, formal_analysis_selected=False,
                 margin_group=group,
                 margin_boundary_id=boundaries.get("boundary_id") if boundaries else None,
-                shared_q1=boundaries.get("shared_q1") if boundaries else None,
-                shared_q2=boundaries.get("shared_q2") if boundaries else None,
+                nmin_q1=boundaries.get(f"n{row.get('Nmin')}_q1") if boundaries else None,
+                nmin_q2=boundaries.get(f"n{row.get('Nmin')}_q2") if boundaries else None,
                 calibration_only=bool(calibration_member and boundaries and not analysis_member),
                 margin_degenerate=bool(boundaries and boundaries.get("status") == "MARGIN_DEGENERATE"),
                 calibration_manifest_hash=boundaries.get("calibration_manifest_hash") if boundaries else None,
@@ -472,7 +525,7 @@ def annotate_sampling_batch(records: list[dict[str, Any]], prior_records: Iterab
     for row in records:
         eligible, reason = certificate_sample_eligibility(row, stage="formal")
         analysis_member = row["trial_id"] in accepted
-        group = classify_margin(_raw_margin(row), boundaries) if eligible else None
+        group = classify_margin(row.get("Nmin"), _raw_margin(row), boundaries) if eligible else None
         row.update(
             sampling_eligible=eligible, sampling_accepted=analysis_member,
             sampling_rejection_reason=None if analysis_member else (
@@ -483,7 +536,8 @@ def annotate_sampling_batch(records: list[dict[str, Any]], prior_records: Iterab
             calibration_selected=False, pilot_analysis_selected=False,
             formal_analysis_selected=analysis_member,
             margin_group=group, margin_boundary_id=boundaries["boundary_id"],
-            shared_q1=boundaries["shared_q1"], shared_q2=boundaries["shared_q2"],
+            nmin_q1=boundaries.get(f"n{row.get('Nmin')}_q1"),
+            nmin_q2=boundaries.get(f"n{row.get('Nmin')}_q2"),
             calibration_only=False, margin_degenerate=False,
             calibration_manifest_hash=boundaries["calibration_manifest_hash"],
             evaluation_manifest_hash=analysis["evaluation_manifest_hash"],
@@ -539,7 +593,7 @@ def analysis_condition_rankings(records: Iterable[dict[str, Any]], boundaries: d
         attempts[layer] += 1
         eligible, _ = certificate_sample_eligibility(row, stage=stage)
         if eligible:
-            group = classify_margin(_raw_margin(row), boundaries)
+            group = classify_margin(row.get("Nmin"), _raw_margin(row), boundaries)
             assert group is not None
             hits[(int(row["Nmin"]), group)][layer] += 1
     return {

@@ -91,6 +91,66 @@ def summarize(records: list[dict[str, Any]], scheduled: int) -> dict[str, Any]:
     return result
 
 
+def summarize_experiment1_cell(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Experiment 1 denominators; Trec is never imputed for non-recovery."""
+    scheduled = len(records)
+    pushed = [row for row in records if row.get("push_applied")]
+    recovered = [row for row in records if row.get("recovered_sustained")]
+    recovered_after_push = [row for row in pushed if row.get("recovered_sustained")]
+    survived_after_push = [row for row in pushed if row.get("survived_post_observation")]
+    sustained_count = len(recovered)
+    return {
+        "scheduled": scheduled,
+        "push_applied": len(pushed),
+        "push_applied_over_scheduled": len(pushed) / scheduled if scheduled else None,
+        "sustained_recovery_count": sustained_count,
+        "sustained_recovery_rate": sustained_count / scheduled if scheduled else None,
+        "sustained_recovery_wilson_95": wilson(sustained_count, scheduled),
+        "post_push_recovery_rate": len(recovered_after_push) / len(pushed) if pushed else None,
+        "post_push_recovery_wilson_95": wilson(len(recovered_after_push), len(pushed)),
+        "post_push_survival_rate": len(survived_after_push) / len(pushed) if pushed else None,
+        "post_push_survival_wilson_95": wilson(len(survived_after_push), len(pushed)),
+        "Trec": quantiles(row.get("recovery_time") for row in recovered),
+        "nTD0": quantiles(row.get("nTD0") for row in records),
+        "Krec": quantiles(row.get("Krec") for row in records),
+        "eval_invalid": sum(bool(row.get("eval_invalid")) for row in records),
+        "cert_invalid": sum(bool(row.get("cert_invalid")) for row in records),
+        "failure_reasons": dict(sorted({
+            reason: sum(row.get("failure_reason") == reason for row in records)
+            for reason in {row.get("failure_reason") for row in records if row.get("failure_reason")}
+        }.items())),
+    }
+
+
+def _spearman(x: list[float], y: list[float]) -> dict[str, Any]:
+    if len(x) < 2 or len(set(x)) < 2 or len(set(y)) < 2:
+        return {"n": len(x), "rho": None, "pvalue": None}
+    rho, pvalue = spearmanr(x, y)
+    return {"n": len(x), "rho": float(rho) if math.isfinite(rho) else None,
+            "pvalue": float(pvalue) if math.isfinite(pvalue) else None}
+
+
+def continuous_margin_diagnostics(records: list[dict[str, Any]]) -> dict[str, Any]:
+    output = {}
+    for n_min in (2, 3, 4):
+        rows = [row for row in records if row.get("Nmin") == n_min]
+        recovered = [row for row in rows if row.get("recovered_sustained")
+                     and row.get("recovery_time") is not None]
+        touchdown = [row for row in rows if row.get("nTD0") is not None]
+        output[str(n_min)] = {
+            "margin_vs_sustained_recovery": _spearman(
+                [float(row["margin_raw"]) for row in rows],
+                [float(bool(row.get("recovered_sustained"))) for row in rows]),
+            "margin_vs_recovery_time": _spearman(
+                [float(row["margin_raw"]) for row in recovered],
+                [float(row["recovery_time"]) for row in recovered]),
+            "margin_vs_nTD0": _spearman(
+                [float(row["margin_raw"]) for row in touchdown],
+                [float(row["nTD0"]) for row in touchdown]),
+        }
+    return output
+
+
 def summarize_cells(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in records:
@@ -101,5 +161,7 @@ def summarize_cells(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output = []
     for key, rows in sorted(groups.items(), key=lambda item: str(item[0])):
         summary = summarize(rows, len(rows))
+        if rows[0]["experiment_id"] == 1:
+            summary.update(summarize_experiment1_cell(rows))
         output.append({"cell": list(key), **summary})
     return output

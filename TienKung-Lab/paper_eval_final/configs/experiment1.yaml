@@ -4,7 +4,7 @@ disturbance: velocity_jump
 baseline_id: slope_nosys_d_matched
 model_id: M1
 checkpoint_sha256: 15167ca59f001a3f1888c894d43c14a2cb7321f48aab1b0a8eaabdd9e74ce848
-relation_set: SHARED_MARGIN_TERTILE_SET
+relation_set: CONDITIONAL_NMIN_MARGIN_TERTILE_SET
 screening_candidates: 80
 accepted_Nmin: [2, 3, 4]
 fixed_budget_natural_distribution_include_all_certificate_valid_Nmin: true
@@ -25,8 +25,8 @@ record_fields:
   - Nmin
   - margin_raw
   - margin_group
-  - shared_q1
-  - shared_q2
+  - nmin_q1
+  - nmin_q2
   - calibration_only
   - margin_degenerate
   - trial_id
@@ -44,7 +44,7 @@ calibration_sampling:
   targeting_top_condition_layers: 8
   acceptance_fields: [stage, certificate_valid, Nmin, margin_raw]
   prohibited_acceptance_fields: [task_outcome, recovered_sustained, recovery_time, nTD0, Krec, Krec_physical]
-  boundary_formula: shared_midpoint_of_pooled_order_statistics_120_121_and_240_241
+  boundary_formula: per_Nmin_midpoints_of_order_statistics_40_41_and_80_81
   boundaries_file: configs/experiment1_margin_boundaries.yaml
 margin_variation_guard:
   minimum_unique_values: 12
@@ -83,7 +83,12 @@ coverage_probe:
 pilot_analysis_sampling:
   certificate_valid_per_cell: 40
   total_selected: 360
-  targeting_rule: deficit_round_robin_smoothed_shared_margin_cell_yield
+  targeting_rule: deficit_round_robin_smoothed_conditional_margin_cell_yield
+  condition_balance:
+    slope_each: 8
+    speed_group_each: 20
+    impulse_group_each: 20
+    direction_each: 10
   targeting_top_condition_layers: 8
   acceptance_fields: [stage, condition_id, certificate_valid, Nmin, margin_raw, margin_group]
   prohibited_acceptance_fields: [task_outcome, recovered_sustained, recovery_time, nTD0, Krec, Krec_physical]

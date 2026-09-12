@@ -80,7 +80,7 @@ def formal_guard(args: argparse.Namespace, chosen: list[int]) -> None:
 
         boundaries = load_boundaries(require_frozen=True)
         frozen_boundary = freeze.get("experiment1_margin_boundaries", {})
-        if (frozen_boundary.get("kind") != "SHARED_MARGIN_TERTILES"
+        if (frozen_boundary.get("kind") != "CONDITIONAL_NMIN_MARGIN_TERTILES"
                 or frozen_boundary.get("status") != "FROZEN"
                 or frozen_boundary.get("boundary_id") != boundaries["boundary_id"]
                 or frozen_boundary.get("calibration_manifest_hash") != boundaries["calibration_manifest_hash"]):

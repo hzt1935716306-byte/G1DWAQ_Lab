@@ -26,7 +26,7 @@ TRIAL_COLUMNS = [
     "TD0_time", "certificate_valid", "Nmin", "margin", "margin_raw", "margin_storage_dtype",
     "margin_was_rounded", "margin_group", "margin_boundary_id", "sampling_eligible",
     "sampling_accepted", "sampling_rejection_reason", "certificate_diagnostic",
-    "shared_q1", "shared_q2", "sample_role", "sample_roles", "calibration_selected",
+    "nmin_q1", "nmin_q2", "sample_role", "sample_roles", "calibration_selected",
     "pilot_analysis_selected", "formal_analysis_selected", "calibration_only", "margin_degenerate",
     "calibration_manifest_hash", "evaluation_manifest_hash", "certificate_calculation", "CERT_AFTER_RECOVERY",
     "termination_kind", "task_outcome", "failure_reason", "reset_time", "out_of_area", "pre_reset_snapshot_path",
@@ -66,11 +66,11 @@ def validate_record(record: dict[str, Any]) -> None:
         if not np.isfinite(float(record["margin_raw"])):
             raise ValueError("Experiment 1 raw margin must be finite when recorded")
     if record.get("margin_group") is not None:
-        if record.get("margin_group") not in {"LOW", "MEDIUM", "HIGH"}:
+        if record.get("margin_group") not in {"LOWER", "MIDDLE", "UPPER"}:
             raise ValueError("unknown margin group")
-        if (record.get("shared_q1") is None or record.get("shared_q2") is None
-                or not float(record["shared_q1"]) < float(record["shared_q2"])):
-            raise ValueError("margin groups require one valid shared q1/q2 pair")
+        if (record.get("nmin_q1") is None or record.get("nmin_q2") is None
+                or not float(record["nmin_q1"]) < float(record["nmin_q2"])):
+            raise ValueError("margin groups require the valid q1/q2 pair for their Nmin")
         if not record.get("margin_boundary_id") or not record.get("calibration_manifest_hash"):
             raise ValueError("margin group provenance is incomplete")
 
