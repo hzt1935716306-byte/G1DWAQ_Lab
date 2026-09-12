@@ -57,7 +57,7 @@ def test_pilot_selects_exactly_120_per_nmin_without_outcome_filtering():
     rows += [_row(1000 + i, 3, 9.0, outcome="FAILURE") for i in range(10)]
     selection = select_pilot_samples(rows)
     assert selection["complete"]
-    assert selection["counts"] == {"3": 120, "4": 120, "5": 120}
+    assert selection["counts"] == {"2": 120, "3": 120, "4": 120}
     selected = [row for group in selection["selected"].values() for row in group]
     assert {row["task_outcome"] for row in selected} == {"SUCCESS", "FAILURE"}
 
@@ -85,8 +85,8 @@ def test_exact_pooled_order_statistics_create_one_shared_pair_and_40_each_cell(t
 
 def test_boundary_tie_is_margin_degenerate_and_raw_trace_is_emitted(tmp_path):
     rows = _complete_pilot()
-    n3 = [row for row in rows if row["Nmin"] == 3]
-    n3[40]["margin_raw"] = n3[39]["margin_raw"]
+    n2 = [row for row in rows if row["Nmin"] == 2]
+    n2[40]["margin_raw"] = n2[39]["margin_raw"]
     boundaries = fit_pilot_boundaries(
         rows, source_identity={}, output_path=tmp_path / "boundaries.yaml",
     )
@@ -94,6 +94,18 @@ def test_boundary_tie_is_margin_degenerate_and_raw_trace_is_emitted(tmp_path):
     diagnostic = boundaries["diagnostic"]
     assert "M120_EQUALS_M121" in diagnostic["degeneracy_reasons"]
     assert len(diagnostic["raw_margin_and_intermediates"]) == 360
+
+
+def test_nmin2_narrow_margin_range_blocks_boundary_freeze(tmp_path):
+    rows = _complete_pilot()
+    for index, row in enumerate(item for item in rows if item["Nmin"] == 2):
+        row["margin_raw"] = 0.1 + index * 1.0e-10
+    boundaries = fit_pilot_boundaries(
+        rows, source_identity={}, output_path=tmp_path / "boundaries.yaml",
+    )
+    assert boundaries["status"] == "MARGIN_DEGENERATE"
+    assert "N2_MARGIN_VARIATION_INSUFFICIENT" in boundaries["diagnostic"]["degeneracy_reasons"]
+    assert boundaries["diagnostic"]["per_Nmin_descriptive"]["2"]["variation_sufficient"] is False
 
 
 def test_formal_acceptance_is_outcome_blind_and_exact_per_cell(tmp_path):
@@ -122,7 +134,7 @@ def test_excess_calibration_rows_are_marked_calibration_only(tmp_path):
     rows = []
     for n_min in TARGET_NMIN:
         for index in range(120):
-            rows.append(_row(len(rows), n_min, (n_min - 3) + index / 1000.0))
+            rows.append(_row(len(rows), n_min, (n_min - 2) + index / 1000.0))
     boundaries = fit_pilot_boundaries(rows, source_identity={}, output_path=tmp_path / "boundaries.yaml")
     analysis = select_pilot_analysis_samples(rows, boundaries)
     calibration_only = [item for item in analysis["assignments"].values() if item["calibration_only"]]
@@ -148,10 +160,10 @@ def test_pilot_continuation_switches_from_N_calibration_to_shared_cell_targeting
     for index, plan in enumerate(plans):
         row = dict(plan)
         if index < 360:
-            n_min = 3 + index % 3
+            n_min = 2 + index % 3
             row.update(
                 certificate_valid=True, invalid_kind=None, Nmin=n_min,
-                margin_raw=(n_min - 3) + index / 100000.0,
+                margin_raw=(n_min - 2) * 0.05 + (index // 3) / 1000.0,
                 margin_storage_dtype="float64", margin_was_rounded=False,
                 certificate_calculation={"margin_saturated": False, "margin_clamped": False,
                                          "margin_truncated": False},

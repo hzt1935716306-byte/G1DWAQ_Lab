@@ -73,7 +73,7 @@ def summarize(records: list[dict[str, Any]], scheduled: int) -> dict[str, Any]:
         "Krec": quantiles(row.get("Krec") for row in recovered),
         "nTD0": quantiles(row.get("nTD0") for row in recovered),
     }
-    relation = [row for row in valid if row.get("certificate_valid") and row.get("Nmin") in (3, 4, 5)
+    relation = [row for row in valid if row.get("certificate_valid") and row.get("Nmin") in (2, 3, 4)
                 and row.get("nTD0") is not None and not row.get("CERT_AFTER_RECOVERY")]
     n_values = [row["Nmin"] for row in relation]
     touchdown_values = [row["nTD0"] for row in relation]

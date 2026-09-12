@@ -8,6 +8,7 @@ from .common import ROOT, read_json, result_namespace, write_json
 from .statistics import summarize, summarize_cells
 from .storage import compatibility_gate, validate_record
 from .trial_generator import select_stratified_relation_set
+from .experiment1_sampling import TARGET_NMIN
 
 
 def discover_shards(stage: str, experiment: int) -> list[Path]:
@@ -65,7 +66,7 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
                 payload["cells"] = summarize_cells(analysis_records)
                 payload["stratified_relation_set"] = relation_set
             n_margin = {}
-            for n_min in (3, 4, 5):
+            for n_min in TARGET_NMIN:
                 for margin in ("LOW", "MEDIUM", "HIGH"):
                     rows = [row for row in analysis_records if row.get("certificate_valid")
                             and row.get("Nmin") == n_min and row.get("margin_group") == margin]
@@ -77,8 +78,16 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
             payload["screening_detail"] = {
                 "TD0_count": sum(row.get("TD0_time") is not None for row in selected),
                 "certificate_valid_count": sum(bool(row.get("certificate_valid")) for row in selected),
-                "Nmin_counts": {str(n_min): sum(row.get("certificate_valid") and row.get("Nmin") == n_min
-                                                for row in selected) for n_min in (3, 4, 5)},
+                "relation_Nmin_counts": {
+                    str(n_min): sum(row.get("certificate_valid") and row.get("Nmin") == n_min
+                                    for row in selected) for n_min in TARGET_NMIN
+                },
+                "natural_Nmin_counts": {
+                    str(n_min): sum(row.get("certificate_valid") and row.get("Nmin") == n_min
+                                    for row in selected)
+                    for n_min in sorted({row.get("Nmin") for row in selected
+                                         if row.get("certificate_valid") and row.get("Nmin") is not None})
+                },
                 "N_margin_occupancy": n_margin,
                 "condition_layer_coverage": len({row["condition_id"] for row in selected}),
             }

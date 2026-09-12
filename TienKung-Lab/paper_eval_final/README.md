@@ -23,7 +23,7 @@ field; the loader recomputes it on every use.
 Experiment 1 is bound to the registered `g1_slope_nosys_d_matched` seed-42
 checkpoint. The pilot starts with 500 candidates and then schedules deterministic
 targeted continuation batches until it has 120 certificate-valid, unrounded
-binary64 margin observations for each of `Nmin=3,4,5`:
+binary64 margin observations for each of `Nmin=2,3,4`:
 
 ```bash
 conda run -n g1 python paper_eval_final/run.py --stage pilot --experiment 1 --baseline slope_nosys_d_matched
@@ -42,6 +42,15 @@ rate are prohibited from pilot/formal admission decisions.
 Boundary ties or evidence of clamp/precision-driven duplicate values produce
 `MARGIN_DEGENERATE`, retain raw inputs/intermediates in the diagnostic artifact,
 and leave formal execution disabled.
+
+The former `Nmin=3,4,5` calibration scope and all boundaries derived from it are
+superseded. Pilot coverage showed that certificate-valid `Nmin=5` support was
+too sparse, so the primary relation scope was frozen before formal evaluation
+as `Nmin in {2,3,4}` using coverage alone, never recovery outcomes. `Nmin=5`
+records remain in fixed-budget natural-distribution summaries but are excluded
+from the balanced nine-cell analysis. The boundary diagnostic also refuses to
+freeze when any target Nmin, including Nmin=2, has an insufficient raw-margin
+range or too few distinct binary64 values.
 
 Raw terminal records remain immutable. Final dual-role membership (a calibration
 row may also be a pilot-analysis row), `calibration_only`, shared q values, and

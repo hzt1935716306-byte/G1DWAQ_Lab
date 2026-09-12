@@ -13,7 +13,7 @@ import yaml
 from .common import ROOT, atomic_write, digest, load_yaml, protocol_bundle, write_csv, write_json
 
 
-TARGET_NMIN = (3, 4, 5)
+TARGET_NMIN = (2, 3, 4)
 MARGIN_GROUPS = ("LOW", "MEDIUM", "HIGH")
 BOUNDARY_PATH = ROOT / "configs/experiment1_margin_boundaries.yaml"
 
@@ -34,6 +34,8 @@ def load_boundaries(*, require_frozen: bool = False) -> dict[str, Any]:
     if claimed != calculated:
         raise ValueError("Experiment 1 frozen shared-margin boundary hash mismatch")
     cfg = experiment1_config()
+    if tuple(int(n) for n in value.get("target_Nmin", [])) != TARGET_NMIN:
+        raise ValueError("Experiment 1 frozen boundaries target a superseded Nmin scope")
     source = value.get("source_identity", {})
     current_protocol_hash = protocol_bundle()[2]["protocol_hash"]
     if value.get("source_stage") != "pilot" or source.get("stage") != "pilot":
@@ -45,7 +47,7 @@ def load_boundaries(*, require_frozen: bool = False) -> dict[str, Any]:
     expected = int(cfg["calibration_sampling"]["certificate_valid_per_Nmin"])
     selected = value.get("calibration_trial_ids", {})
     if any(len(selected.get(str(n), [])) != expected for n in TARGET_NMIN):
-        raise ValueError("Experiment 1 boundary artifact does not contain balanced 3x120 calibration IDs")
+        raise ValueError("Experiment 1 boundary artifact does not contain balanced Nmin=2/3/4 calibration IDs")
     q1, q2 = value.get("shared_q1"), value.get("shared_q2")
     if q1 is None or q2 is None or not (
         math.isfinite(float(q1)) and math.isfinite(float(q2)) and float(q1) < float(q2)
@@ -158,6 +160,41 @@ def _shared_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         reasons.append("Q1_NOT_BELOW_Q2")
     if large_duplicate_block and (saturation or clamp or truncation or precision_loss):
         reasons.append("DUPLICATES_WITH_CLAMP_TRUNCATION_OR_PRECISION_LOSS")
+    pooled_q05, pooled_q95 = float(np.quantile(margins, 0.05)), float(np.quantile(margins, 0.95))
+    pooled_robust_range = pooled_q95 - pooled_q05
+    cfg = experiment1_config().get("margin_variation_guard", {})
+    per_nmin_descriptive: dict[str, dict[str, Any]] = {}
+    insufficient_variation = []
+    for n in TARGET_NMIN:
+        values = np.asarray([_raw_margin(row) for row in rows if row["Nmin"] == n], dtype=np.float64)
+        q05, q95 = float(np.quantile(values, 0.05)), float(np.quantile(values, 0.95))
+        robust_range = q95 - q05
+        unique_count = int(np.unique(values).size)
+        checks = {
+            "unique_values": unique_count >= int(cfg.get("minimum_unique_values", 12)),
+            "absolute_range": float(np.ptp(values)) >= float(cfg.get("minimum_absolute_range", 1.0e-6)),
+            "robust_range": robust_range >= float(cfg.get("minimum_robust_range", 1.0e-4)),
+            "relative_robust_range": (
+                pooled_robust_range > 0.0
+                and robust_range / pooled_robust_range
+                >= float(cfg.get("minimum_robust_to_pooled_ratio", 0.01))
+            ),
+        }
+        sufficient = all(checks.values())
+        if not sufficient:
+            insufficient_variation.append(n)
+        per_nmin_descriptive[str(n)] = {
+            "count": int(values.size),
+            "minimum": float(np.min(values)), "maximum": float(np.max(values)),
+            "range": float(np.ptp(values)), "median": float(np.median(values)),
+            "q05": q05, "q95": q95, "robust_range_q05_q95": robust_range,
+            "robust_to_pooled_ratio": robust_range / pooled_robust_range if pooled_robust_range > 0 else None,
+            "different_margin_value_count": unique_count,
+            "variation_checks": checks,
+            "variation_sufficient": sufficient,
+        }
+    if insufficient_variation:
+        reasons.extend(f"N{n}_MARGIN_VARIATION_INSUFFICIENT" for n in insufficient_variation)
     return {
         "status": "MARGIN_DEGENERATE" if reasons else "VALID",
         "degeneracy_reasons": reasons,
@@ -173,16 +210,11 @@ def _shared_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "margin_clamp_detected": clamp,
         "margin_truncation_detected": truncation,
         "precision_loss_detected": precision_loss,
-        "per_Nmin_descriptive": {
-            str(n): {
-                "count": 120,
-                "minimum": float(np.min([_raw_margin(row) for row in rows if row["Nmin"] == n])),
-                "maximum": float(np.max([_raw_margin(row) for row in rows if row["Nmin"] == n])),
-                "median": float(np.median([_raw_margin(row) for row in rows if row["Nmin"] == n])),
-                "different_margin_value_count": len({_raw_margin(row) for row in rows if row["Nmin"] == n}),
-            }
-            for n in TARGET_NMIN
-        },
+        "pooled_q05": pooled_q05, "pooled_q95": pooled_q95,
+        "pooled_robust_range_q05_q95": pooled_robust_range,
+        "margin_variation_guard": cfg,
+        "insufficient_variation_Nmin": insufficient_variation,
+        "per_Nmin_descriptive": per_nmin_descriptive,
         "raw_margin_and_intermediates": [_calculation_trace(row) for row in rows],
     }
 
@@ -217,6 +249,8 @@ def fit_pilot_boundaries(records: Iterable[dict[str, Any]], *, source_identity: 
         "source_identity": source_identity,
         "calibration_selection_rule": "first eligible candidates by preassigned (sequence, trial_id); outcome-blind",
         "target_Nmin": list(TARGET_NMIN),
+        "supersedes_target_Nmin": [3, 4, 5],
+        "scope_change_basis": "certificate-valid sample coverage only; recovery outcomes were not inspected",
         "samples_per_Nmin": per_nmin,
         "calibration_trial_ids": selection["selected_trial_ids"],
         "selection_exclusions": selection["exclusions"],

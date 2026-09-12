@@ -46,7 +46,7 @@ def test_fixed_budget_and_stratified_relation_set_remain_distinct():
     trials = generate_trials("screening", 1)
     records = []
     for index, row in enumerate(trials):
-        records.append({**row, "certificate_valid": True, "Nmin": 3 + index % 3,
+        records.append({**row, "certificate_valid": True, "Nmin": 2 + index % 3,
                         "stage": "pilot", "margin_raw": index / 100.0,
                         "margin_storage_dtype": "float64", "margin_was_rounded": False,
                         "task_outcome": "SUCCESS" if index % 2 else "FAILURE"})

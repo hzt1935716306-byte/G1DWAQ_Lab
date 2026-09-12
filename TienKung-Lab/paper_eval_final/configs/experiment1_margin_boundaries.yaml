@@ -10,3 +10,6 @@ shared_q1: null
 shared_q2: null
 calibration_manifest_hash: null
 computed_at_utc: null
+supersedes_target_Nmin: [3, 4, 5]
+target_Nmin: [2, 3, 4]
+superseded_boundary_artifacts_invalid: true

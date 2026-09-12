@@ -9,6 +9,8 @@ experiment1_margin_boundaries:
   status: UNFROZEN
   boundary_id: null
   calibration_manifest_hash: null
+  target_Nmin: [2, 3, 4]
+  supersedes_target_Nmin: [3, 4, 5]
 formal_stratified_caps:
   max_candidates_total: null
   max_candidates_per_condition_layer: null

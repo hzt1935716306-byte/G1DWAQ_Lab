@@ -168,10 +168,10 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
                                 return {"status": boundary_result["status"], "path": str(path),
                                         "margin_boundaries": boundary_result}
                             boundaries = load_boundaries(require_frozen=True)
-                        if boundaries.get("status") == "FROZEN" and (
-                            boundaries.get("source_identity", {}).get("manifest_hash") != identity["manifest_hash"]
-                        ):
-                            raise ValueError("frozen shared boundaries belong to another pilot candidate campaign")
+                        # A frozen boundary may come from a separate independent pilot
+                        # calibration campaign (including an audited, outcome-blind
+                        # carry-over). load_boundaries() already verifies protocol,
+                        # target Nmin, checkpoint, hashes, and pilot provenance.
                         selection = (select_pilot_analysis_samples(
                             records, boundaries,
                             per_cell=int(config["pilot_analysis_sampling"]["certificate_valid_per_cell"]),

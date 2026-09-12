@@ -408,7 +408,7 @@ def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
     """
     del manifest_seed
     from .experiment1_sampling import (
-        experiment1_config, load_boundaries, select_calibration_samples,
+        TARGET_NMIN, experiment1_config, load_boundaries, select_calibration_samples,
         select_formal_samples, select_pilot_analysis_samples,
     )
 
@@ -433,7 +433,7 @@ def select_stratified_relation_set(records: list[dict[str, Any]], *, stage: str,
         "dataset_role": "BALANCED_MARGIN_CALIBRATION",
         "stage": "pilot", "boundary_status": boundaries.get("status"),
         "accepted_trial_ids": [
-            row["trial_id"] for n in (3, 4, 5) for row in calibration["selected"][n]
+            row["trial_id"] for n in TARGET_NMIN for row in calibration["selected"][n]
         ],
         "Nmin_counts": calibration["counts"], "Nmin_deficits": calibration["deficits"],
         "cells": {}, "complete": False,

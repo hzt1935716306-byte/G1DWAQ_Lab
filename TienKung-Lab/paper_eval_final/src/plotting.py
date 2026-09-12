@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from .common import ROOT
+from .experiment1_sampling import TARGET_NMIN
 
 
 GROUPS = ("LOW", "MEDIUM", "HIGH")
@@ -16,7 +17,7 @@ def _cell_map(payload: dict[str, Any]) -> dict[tuple[int, str], dict[str, Any]]:
     return {
         (int(row["cell"][0]), str(row["cell"][1])): row
         for row in payload["cells"]
-        if row.get("cell", [None, None])[0] in (3, 4, 5)
+        if row.get("cell", [None, None])[0] in TARGET_NMIN
         and row.get("cell", [None, None])[1] in GROUPS
     }
 
@@ -34,7 +35,7 @@ def write_experiment1_plots(stage: str, aggregate: dict[str, Any]) -> list[Path]
         subtitle = f"共享边界 q1={relation['shared_q1']:.6g}, q2={relation['shared_q2']:.6g}"
 
         fig, axis = plt.subplots(figsize=(7.2, 4.8))
-        for n_min in (3, 4, 5):
+        for n_min in TARGET_NMIN:
             rates = [cells.get((n_min, group), {}).get("recovery_rate", np.nan) for group in GROUPS]
             axis.plot(GROUPS, rates, marker="o", label=f"Nmin={n_min}")
         axis.set_ylim(0.0, 1.0)
@@ -51,7 +52,7 @@ def write_experiment1_plots(stage: str, aggregate: dict[str, Any]) -> list[Path]
         outputs.append(target)
 
         fig, axis = plt.subplots(figsize=(7.2, 4.8))
-        for n_min in (3, 4, 5):
+        for n_min in TARGET_NMIN:
             medians = [cells.get((n_min, group), {}).get("Trec", {}).get("median", np.nan)
                        for group in GROUPS]
             axis.plot(GROUPS, medians, marker="o", label=f"Nmin={n_min}")

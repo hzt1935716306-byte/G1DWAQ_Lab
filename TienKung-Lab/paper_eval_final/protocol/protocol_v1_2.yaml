@@ -80,11 +80,16 @@ metrics:
 experiment1_margin_stratification:
   definition_zh: >-
     使用由平衡pilot校准数据确定的共享三分位边界划分margin。校准数据包含
-    N_min=3、4、5各120条证书有效试验。合并360个margin后计算共享的33.3%和
+    N_min=2、3、4各120条证书有效试验。合并360个margin后计算共享的33.3%和
     66.7%分位点q_1、q_2。三个N_min均使用相同数值边界，从而保证Low、Medium
     和High在不同N_min下具有一致含义。边界在正式实验前冻结，正式实验不得重新计算。
   source_stage: pilot
-  accepted_Nmin: [3, 4, 5]
+  accepted_Nmin: [2, 3, 4]
+  scope_freeze_reason: >-
+    Pilot结果显示N_min=5的证书有效样本支持不足，因此在正式实验开始前，将主要关系
+    分析范围冻结为N_min∈{2,3,4}。该选择仅依据样本覆盖情况，与恢复结果无关。
+    N_min=5样本保留在固定预算自然分布统计中，但不进入九单元均衡关系分析。
+  Nmin2_margin_variation_required: true
   pilot_certificate_valid_per_Nmin: 120
   pilot_initial_candidates: 500
   calibration_total: 360
