@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from .common import ROOT, read_json, write_json
 from .statistics import summarize, summarize_cells
 from .storage import compatibility_gate, validate_record
+from .trial_generator import select_stratified_relation_set
 
 
 def discover_shards(stage: str, experiment: int) -> list[Path]:
@@ -63,6 +64,16 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
                 "N_margin_occupancy": n_margin,
                 "condition_layer_coverage": len({row["condition_id"] for row in selected}),
             }
+            if stage in ("pilot", "formal"):
+                relation_set = select_stratified_relation_set(
+                    selected,
+                    stage=stage,
+                    manifest_seed=int(selected[0]["eval_seed"]) - int(selected[0]["sequence"]) - 1_000_000,
+                )
+                accepted = set(relation_set["accepted_trial_ids"])
+                accepted_records = [row for row in selected if row["trial_id"] in accepted]
+                relation_set["summary"] = summarize(accepted_records, len(accepted_records))
+                payload["stratified_relation_set"] = relation_set
         by_model[model_id] = payload
     payload = {"compatibility_gate": gate, "shards": [str(path.relative_to(ROOT)) for path in shards],
                "models": by_model, "record_count": len(records)}

@@ -88,7 +88,7 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
     env = runtime = None
     try:
         env, runner, policy, effective = make_environment(
-            model, protocol, num_envs=num_envs, device=device, headless=True,
+            model, protocol, stage=stage, num_envs=num_envs, device=device, headless=True,
         )
         dataset_role = "TECHNICAL_SMOKE_NONCONFIRMATORY" if smoke else "FIXED_BUDGET"
         identity = _identity(model, manifest, experiment, effective, dataset_role=dataset_role)
@@ -190,7 +190,9 @@ def benchmark_once(*, model_id: str, num_envs: int, steps: int, warmup_steps: in
     _APPLICATIONS.append(application)
     env = None
     try:
-        env, _, policy, effective = make_environment(model, protocol, num_envs=num_envs, device=device, headless=True)
+        env, _, policy, effective = make_environment(
+            model, protocol, stage="screening", num_envs=num_envs, device=device, headless=True,
+        )
         source = manifest["trials"]
         plans = [copy.deepcopy(source[index % len(source)]) for index in range(num_envs)]
         observation, extras = env.begin_batch(plans)

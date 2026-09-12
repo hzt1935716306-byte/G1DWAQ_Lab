@@ -69,7 +69,14 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def make_environment(identity: ModelIdentity, protocol: dict[str, Any], *, num_envs: int,
+def evaluation_environment_seed(protocol: dict[str, Any], stage: str) -> int:
+    stages = protocol.get("stages", {})
+    if stage not in stages:
+        raise ValueError(f"unknown evaluation stage: {stage}")
+    return int(stages[stage]["seed_namespace"])
+
+
+def make_environment(identity: ModelIdentity, protocol: dict[str, Any], *, stage: str, num_envs: int,
                      device: str, headless: bool = True) -> tuple[Any, Any, Any, dict[str, Any]]:
     import torch
     import legged_lab.envs  # noqa: F401 - performs task registration after AppLauncher
@@ -96,7 +103,7 @@ def make_environment(identity: ModelIdentity, protocol: dict[str, Any], *, num_e
     env_cfg.device = device
     agent_cfg.device = device
     env_cfg.scene.num_envs = int(num_envs)
-    env_cfg.scene.seed = int(protocol["stages"]["screening"]["seed_namespace"])
+    env_cfg.scene.seed = evaluation_environment_seed(protocol, stage)
     env_cfg.scene.max_init_terrain_level = 0
     env_cfg.scene.max_episode_length_s = 60.0
     env_cfg.scene.terrain_type = "generator"

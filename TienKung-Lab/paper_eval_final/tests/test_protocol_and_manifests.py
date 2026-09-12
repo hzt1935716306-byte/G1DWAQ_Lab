@@ -1,7 +1,7 @@
 from collections import Counter
 
 from paper_eval_final.src.common import protocol_bundle
-from paper_eval_final.src.environment_adapter import _plain
+from paper_eval_final.src.environment_adapter import _plain, evaluation_environment_seed
 from paper_eval_final.src.trial_generator import generate_trials, manifest_payload, validate_manifest
 
 
@@ -63,3 +63,10 @@ def test_effective_config_snapshot_encodes_nonfinite_config_constants_as_strings
     assert _plain({"upper": float("inf"), "lower": float("-inf")}) == {
         "upper": "+Infinity", "lower": "-Infinity",
     }
+
+
+def test_environment_seed_uses_disjoint_stage_namespace():
+    protocol, _, _ = protocol_bundle()
+    assert evaluation_environment_seed(protocol, "screening") == 1201000
+    assert evaluation_environment_seed(protocol, "pilot") == 1202000
+    assert evaluation_environment_seed(protocol, "formal") == 1203000

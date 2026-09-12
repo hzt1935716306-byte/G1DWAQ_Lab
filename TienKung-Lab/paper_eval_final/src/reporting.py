@@ -19,6 +19,15 @@ def write_experiment_report(stage: str, experiment: int, aggregate: dict[str, An
             f"- Trec: `{summary['Trec']}`",
             f"- Spearman(Nmin, nTD0): `{summary['spearman_Nmin_nTD0']}`", "",
         ])
+        relation = payload.get("stratified_relation_set")
+        if relation is not None:
+            lines.extend([
+                f"- Stratified relation set complete: `{relation['complete']}`",
+                f"- Stratified accepted trials: {len(relation['accepted_trial_ids'])}",
+                f"- Stratified cells: `{relation['cells']}`",
+                f"- Stratified Spearman(Nmin, nTD0): `{relation['summary']['spearman_Nmin_nTD0']}`",
+                "",
+            ])
     path = ROOT / "reports" / stage / f"experiment_{experiment}.md"
     atomic_write(path, "\n".join(lines) + "\n")
     return path
