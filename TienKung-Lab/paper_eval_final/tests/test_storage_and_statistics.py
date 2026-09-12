@@ -12,18 +12,25 @@ def _identity(stage="pilot", system="paper_eval_final"):
     return {
         "evaluation_system": system, "protocol_version": "1.2", "stage": stage,
         "experiment_id": 2, "manifest_hash": "a", "metrics_config_hash": "b",
-        "physics_profile_hash": "c", "evaluation_code_commit": "d",
+        "physics_profile_hash": "c", "evaluation_code_commit": "documentation-revision",
+        "evaluation_code_hash": "d",
         "asset_hash": "e", "simulator_version": "f",
     }
 
 
 @pytest.mark.parametrize("field", ["protocol_version", "manifest_hash", "metrics_config_hash", "physics_profile_hash",
-                                   "evaluation_code_commit", "asset_hash", "simulator_version"])
+                                   "evaluation_code_hash", "asset_hash", "simulator_version"])
 def test_mismatch_refuses_merge(field):
     first, second = _identity(), _identity()
     second[field] += "-different"
     with pytest.raises(ValueError, match="REFUSE TO MERGE"):
         compatibility_gate([first, second])
+
+
+def test_documentation_only_commit_difference_may_merge():
+    first, second = _identity(), _identity()
+    second["evaluation_code_commit"] = "different-documentation-revision"
+    assert compatibility_gate([first, second])["evaluation_code_hash"] == "d"
 
 
 def test_pilot_formal_and_legacy_refuse_merge():

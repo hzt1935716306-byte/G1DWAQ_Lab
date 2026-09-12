@@ -1,10 +1,22 @@
 document_type: execution_addendum
 protocol_version: "1.3"
-status: frozen_operational_mapping
+status: portable_checkpoint_identity
 does_not_change_protocol_hash: true
-frozen_evaluation_tag: paper-eval-v1.3-frozen
-frozen_evaluation_commit: 4434d384cea959025a31c4fad1fd056b3fc017f5
+baseline_evaluation_tag: paper-eval-v1.3-frozen
+baseline_evaluation_commit: 4434d384cea959025a31c4fad1fd056b3fc017f5
 protocol_hash: b71a1ddf929395629d34d4afc454f12a665f47beb3a92b6fca068a41cf9d3064
+evaluation_compatibility: executable_code_hash_not_repository_head
+flexible_checkpoint_evaluation_code_hash: bf8599df7510c496ca6d45687a321c0e54236ece76c35da30e4eb5d770e34304
+
+checkpoint_contract:
+  globally_frozen_checkpoint: false
+  user_may_select_checkpoint_per_task: true
+  registered_checkpoints_are_defaults_only: true
+  user_selected_checkpoint_requires_train_seed: true
+  checkpoint_sha256_computed_by_runner: true
+  estimator_may_be_selected_per_task: true
+  different_checkpoint_hashes_are_separate_shards: true
+  different_checkpoint_hashes_are_not_implicitly_pooled: true
 
 seed_contract:
   formula: eval_seed = stage_seed_namespace + experiment_id * 1000000 + global_sequence
@@ -27,7 +39,7 @@ task_dispatch:
   protocol_prescribes_task_menu: false
   server_identity_required: false
   user_may_select:
-    - any_registered_frozen_model
+    - any_supported_model_with_a_user_selected_checkpoint
     - any_protocol_stage
     - any_protocol_experiment_or_combination
   server_responsibilities:
@@ -51,17 +63,19 @@ ownership:
     - experiment_id
     - model_id
     - train_seed
+    - checkpoint_sha256
+    - estimator_sha256
     - manifest_hash
   single_writer_required: true
   assignments: {}
   user_assignment_constraints:
-    - Any server may evaluate any registered frozen model selected by the user.
+    - Any server may evaluate any supported model and checkpoint selected by the user.
     - The same model may run on different servers when they own different stage or experiment shards.
     - Different servers may evaluate the same or different models with the same paired manifest and eval seeds.
     - The same model-experiment shard must not be written by more than one server.
-  pending_models:
-    M3: checkpoint_missing
-    M4: checkpoint_missing
+  models_without_default_checkpoint:
+    M3: pass_checkpoint_and_train_seed_at_dispatch
+    M4: pass_checkpoint_and_train_seed_at_dispatch
 
 current_resume_point:
   eligible_server: any_one_of_the_three_after_complete_verified_transfer
@@ -75,13 +89,15 @@ current_resume_point:
   analysis_accepted: 882
   analysis_target: 1440
   next_batch_not_generated: true
+  required_evaluation_tag: paper-eval-v1.3-frozen
+  required_evaluation_code_hash: 1f35c261c44e280292a94947805c54bd300f036eee1fbcab043f9d6389a0cc45
 
 merge_contract:
-  central_layout: results/<stage>/<protocol_namespace>/experiment_<id>/<model_id>/train_seed_<seed>
+  central_layout: results/<stage>/<protocol_namespace>/experiment_<id>/<model_id>/train_seed_<seed>/checkpoint_<sha_prefix>[_estimator_<sha_prefix>]
   completed_shards_only: true
   copy_whole_shard: true
   overwrite_prohibited: true
-  duplicate_key: [model_id, train_seed, trial_id]
+  duplicate_key: [model_id, checkpoint_sha256, estimator_sha256, train_seed, trial_id]
   compatibility_gate:
     - protocol_version
     - stage
@@ -89,10 +105,10 @@ merge_contract:
     - manifest_hash
     - metrics_config_hash
     - physics_profile_hash
-    - evaluation_code_commit
+    - evaluation_code_hash
     - asset_hash
     - simulator_version
-  checkpoint_hash_must_match_registry: true
+  checkpoint_hash_computed_from_selected_file: true
   trial_and_eval_seed_uniqueness_required: true
   outcome_based_conflict_resolution_prohibited: true
 

@@ -28,31 +28,74 @@ def registry() -> dict[str, Any]:
     return load_yaml(ROOT / "configs/models.yaml")
 
 
-def resolve_model(model_id: str, train_seed: int | None = None) -> ModelIdentity:
+def _artifact_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return (path if path.is_absolute() else LAB / path).resolve()
+
+
+def resolve_model(model_id: str, train_seed: int | None = None, *,
+                  checkpoint_path: str | Path | None = None,
+                  training_commit: str | None = None,
+                  estimator_path: str | Path | None = None) -> ModelIdentity:
+    """Resolve a model while allowing a user-selected checkpoint per run.
+
+    Registry checkpoints are convenient defaults, not a global formal lock.  A
+    caller-supplied checkpoint is identified by its actual bytes and kept in a
+    separate result shard.  ``train_seed`` remains mandatory for such a
+    checkpoint because it cannot be inferred reliably from a PyTorch payload.
+    """
     models = registry()["models"]
     if model_id not in models:
         raise ValueError(f"Unknown model ID: {model_id}")
     model = models[model_id]
     checkpoints = model.get("checkpoints", [])
-    if not checkpoints:
-        raise ValueError(f"{model_id} has no registered checkpoint ({model['formal_status']})")
-    selected = [item for item in checkpoints if train_seed is None or item["train_seed"] == train_seed]
-    if len(selected) != 1:
-        raise ValueError(f"{model_id}: expected exactly one checkpoint for requested train seed")
-    item = selected[0]
-    checkpoint = (LAB / item["checkpoint_path"]).resolve()
-    if not checkpoint.is_file() or sha256_file(checkpoint) != item["checkpoint_sha256"]:
-        raise ValueError(f"{model_id}: checkpoint missing or SHA-256 mismatch")
-    estimator = (LAB / model["estimator_path"]).resolve() if model.get("estimator_path") else None
-    if estimator is not None and (not estimator.is_file() or sha256_file(estimator) != model["estimator_sha256"]):
-        raise ValueError(f"{model_id}: estimator missing or SHA-256 mismatch")
+    if checkpoint_path is not None:
+        if train_seed is None:
+            raise ValueError(f"{model_id}: --train-seed is required with a user-selected checkpoint")
+        checkpoint = _artifact_path(checkpoint_path)
+        if not checkpoint.is_file():
+            raise ValueError(f"{model_id}: user-selected checkpoint is missing: {checkpoint}")
+        checkpoint_sha256 = sha256_file(checkpoint)
+        matching = [item for item in checkpoints if int(item["train_seed"]) == int(train_seed)
+                    and item.get("checkpoint_sha256") == checkpoint_sha256]
+        recorded_training_commit = (training_commit or
+                                    (matching[0].get("training_commit") if matching else None) or
+                                    "USER_SUPPLIED_UNRECORDED")
+        formal_status = "READY_USER_SELECTED_CHECKPOINT"
+    else:
+        if not checkpoints:
+            raise ValueError(
+                f"{model_id} has no default checkpoint; pass --checkpoint and --train-seed"
+            )
+        selected = [item for item in checkpoints if train_seed is None or item["train_seed"] == train_seed]
+        if len(selected) != 1:
+            raise ValueError(f"{model_id}: select one registered checkpoint with --train-seed")
+        item = selected[0]
+        checkpoint = _artifact_path(item["checkpoint_path"])
+        checkpoint_sha256 = str(item["checkpoint_sha256"])
+        if not checkpoint.is_file() or sha256_file(checkpoint) != checkpoint_sha256:
+            raise ValueError(f"{model_id}: checkpoint missing or SHA-256 mismatch")
+        train_seed = int(item["train_seed"])
+        recorded_training_commit = str(item.get("training_commit", "UNRECORDED"))
+        formal_status = str(model.get("formal_status", "READY_REGISTERED_CHECKPOINT"))
+
+    chosen_estimator = estimator_path if estimator_path is not None else model.get("estimator_path")
+    estimator = _artifact_path(chosen_estimator) if chosen_estimator else None
+    estimator_sha256 = None
+    if estimator is not None:
+        if not estimator.is_file():
+            raise ValueError(f"{model_id}: estimator is missing: {estimator}")
+        estimator_sha256 = sha256_file(estimator)
+        expected_estimator_sha = model.get("estimator_sha256") if estimator_path is None else None
+        if expected_estimator_sha and estimator_sha256 != expected_estimator_sha:
+            raise ValueError(f"{model_id}: estimator SHA-256 mismatch")
     return ModelIdentity(
         model_id=model_id, method=model["method"], task_name=model["task_name"],
         actor_certificate_context=tuple(model["actor_certificate_context"]),
-        train_seed=int(item["train_seed"]), checkpoint_path=checkpoint,
-        checkpoint_sha256=item["checkpoint_sha256"], training_commit=item["training_commit"],
-        estimator_path=estimator, estimator_sha256=model.get("estimator_sha256"),
-        formal_status=model["formal_status"],
+        train_seed=int(train_seed), checkpoint_path=checkpoint,
+        checkpoint_sha256=checkpoint_sha256, training_commit=recorded_training_commit,
+        estimator_path=estimator, estimator_sha256=estimator_sha256,
+        formal_status=formal_status,
     )
 
 

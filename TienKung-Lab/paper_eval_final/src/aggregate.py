@@ -31,23 +31,35 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
         for path in sorted((shard / "records").glob("*.json")):
             row = read_json(path)
             validate_record(row)
-            key = (row["model_id"], row["train_seed"], row["trial_id"])
+            key = (row["model_id"], row["checkpoint_sha256"], row.get("estimator_sha256"),
+                   row["train_seed"], row["trial_id"])
             if key in seen:
                 raise ValueError(f"duplicate completed trial: {key}")
             seen.add(key)
             records.append(row)
     by_model: dict[str, Any] = {}
-    for model_id in sorted({row["model_id"] for row in records}):
-        selected = [row for row in records if row["model_id"] == model_id]
+    variants = sorted({(row["model_id"], row["checkpoint_sha256"], row.get("estimator_sha256") or "")
+                       for row in records})
+    variant_counts = {
+        model_id: sum(candidate_model == model_id for candidate_model, _, _ in variants)
+        for model_id, _, _ in variants
+    }
+    for model_id, checkpoint_sha256, estimator_sha256 in variants:
+        selected = [row for row in records if row["model_id"] == model_id
+                    and row["checkpoint_sha256"] == checkpoint_sha256
+                    and (row.get("estimator_sha256") or "") == estimator_sha256]
+        output_key = (model_id if variant_counts[model_id] == 1
+                      else f"{model_id}@{checkpoint_sha256[:12]}"
+                           + (f"+estimator@{estimator_sha256[:12]}" if estimator_sha256 else ""))
         analysis_records = selected
         payload = {
+            "model_id": model_id,
             "summary": summarize(selected, len(selected)),
             "cells": summarize_cells(selected),
             "train_seeds": sorted({row["train_seed"] for row in selected}),
-            "checkpoint_sha256": sorted({row["checkpoint_sha256"] for row in selected}),
-            "formal_status": ("READY_SINGLE_FROZEN_CHECKPOINT"
-                              if len({row["checkpoint_sha256"] for row in selected}) == 1
-                              else "CHECKPOINT_COUNT_MISMATCH"),
+            "checkpoint_sha256": checkpoint_sha256,
+            "estimator_sha256": estimator_sha256 or None,
+            "checkpoint_identity_status": "IDENTIFIED_BY_SHA256",
         }
         if experiment == 1:
             if stage in ("pilot", "formal"):
@@ -104,7 +116,7 @@ def aggregate_experiment(stage: str, experiment: int) -> dict[str, Any]:
                 "N_margin_occupancy": n_margin,
                 "condition_layer_coverage": len({row["condition_id"] for row in selected}),
             }
-        by_model[model_id] = payload
+        by_model[output_key] = payload
     payload = {"compatibility_gate": gate, "shards": [str(path.relative_to(ROOT)) for path in shards],
                "models": by_model, "record_count": len(records)}
     output = ROOT / "reports" / stage / f"experiment_{experiment}_aggregate.json"

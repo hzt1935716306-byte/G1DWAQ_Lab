@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from paper_eval_final.src.common import ROOT, protocol_bundle
+from paper_eval_final.src.common import ROOT, code_hash, protocol_bundle
 from paper_eval_final.src.trial_generator import generate_trials
 
 
@@ -44,7 +44,7 @@ def test_user_may_dispatch_any_protocol_task_in_natural_language():
     assert dispatch["protocol_prescribes_task_menu"] is False
     assert dispatch["server_identity_required"] is False
     assert dispatch["user_may_select"] == [
-        "any_registered_frozen_model",
+        "any_supported_model_with_a_user_selected_checkpoint",
         "any_protocol_stage",
         "any_protocol_experiment_or_combination",
     ]
@@ -58,3 +58,14 @@ def test_machine_identity_never_changes_eval_seed():
     assert contract["gpu_id_participates"] is False
     assert contract["server_specific_offset_prohibited"] is True
     assert contract["paired_across_models"] is True
+
+
+def test_checkpoint_is_a_run_identity_not_a_global_freeze():
+    addendum = _addendum()
+    identity = addendum["checkpoint_contract"]
+    assert identity["globally_frozen_checkpoint"] is False
+    assert identity["user_may_select_checkpoint_per_task"] is True
+    assert "checkpoint_sha256" in addendum["ownership"]["shard_key"]
+    assert "evaluation_code_hash" in addendum["merge_contract"]["compatibility_gate"]
+    assert "evaluation_code_commit" not in addendum["merge_contract"]["compatibility_gate"]
+    assert addendum["flexible_checkpoint_evaluation_code_hash"] == code_hash()

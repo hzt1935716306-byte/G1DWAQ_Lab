@@ -13,7 +13,9 @@ def write_experiment_report(stage: str, experiment: int, aggregate: dict[str, An
     for model_id, payload in aggregate["models"].items():
         summary = payload["summary"]
         lines.extend([
-            f"## {model_id}", "", f"冻结 checkpoint 状态：`{payload['formal_status']}`", "",
+            f"## {model_id}", "",
+            f"checkpoint 身份状态：`{payload['checkpoint_identity_status']}`", "",
+            f"checkpoint SHA-256：`{payload['checkpoint_sha256']}`", "",
             f"- 分母统计：`{summary['denominators']}`",
             f"- 生存率：`{summary['survival_rate']}`",
             f"- 持续恢复率：`{summary['recovery_rate']}`",
@@ -56,9 +58,10 @@ def write_screening_report(aggregate: dict[str, Any]) -> Path:
         occupancy = detail["N_margin_occupancy"]
         occupied = sum(value["n"] > 0 for value in occupancy.values())
         d = summary["denominators"]
+        base_model_id = payload.get("model_id", model_id)
         lines.extend([
-            f"## {model_id} ({', '.join(model_to_baselines.get(model_id, []))})", "",
-            f"- checkpoint SHA-256：`{', '.join(payload['checkpoint_sha256'])}`",
+            f"## {model_id} ({', '.join(model_to_baselines.get(base_model_id, []))})", "",
+            f"- checkpoint SHA-256：`{payload['checkpoint_sha256']}`",
             f"- 有效 trial：{d['valid']}",
             f"- 物理覆盖：{d['valid']}/{d['executed']}",
             f"- 扰动前失败：{d['pre_push_physical_failure']}",

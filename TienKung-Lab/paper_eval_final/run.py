@@ -28,6 +28,9 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--baseline")
     value.add_argument("--model", choices=("M1", "M2", "M3", "M4", "M5"))
     value.add_argument("--train-seed", type=int, help="run one registered training seed (default: all registered seeds)")
+    value.add_argument("--checkpoint", help="user-selected policy checkpoint; identified by computed SHA-256")
+    value.add_argument("--training-commit", help="optional provenance for a user-selected checkpoint")
+    value.add_argument("--estimator", help="optional user-selected velocity-estimator checkpoint")
     value.add_argument("--aggregate", action="store_true")
     value.add_argument("--prepare", action="store_true")
     value.add_argument("--smoke", action="store_true")
@@ -100,6 +103,11 @@ def experiment1_baseline_guard(args: argparse.Namespace, chosen: list[int]) -> N
             f"Experiment 1 {args.stage} is bound to --baseline {required}; "
             "screening-only checkpoints cannot enter the pilot/formal boundary dataset"
         )
+    if args.checkpoint or args.estimator:
+        raise ValueError(
+            "Experiment 1 pilot/formal uses its checkpoint-specific frozen boundaries; "
+            "user-selected checkpoints are supported by Experiments 2/3"
+        )
 
 
 def registered_seeds(args: argparse.Namespace, experiment: int) -> list[int]:
@@ -120,15 +128,21 @@ def registered_seeds(args: argparse.Namespace, experiment: int) -> list[int]:
         if not args.model:
             raise ValueError("Experiments 2/3 require --model")
         model_id = args.model
+    if getattr(args, "checkpoint", None):
+        if experiment == 1:
+            raise ValueError("--checkpoint is not supported by the frozen Experiment 1 path")
+        if args.train_seed is None:
+            raise ValueError("--train-seed is required with --checkpoint")
+        return [int(args.train_seed)]
     checkpoints = data["models"][model_id].get("checkpoints", [])
     all_seeds = sorted(int(item["train_seed"]) for item in checkpoints)
-    if args.stage == "formal" and len(all_seeds) != 1:
-        raise ValueError(f"{model_id}: protocol v1.3 requires exactly one frozen checkpoint")
     seeds = list(all_seeds)
     if args.train_seed is not None:
         seeds = [seed for seed in seeds if seed == args.train_seed]
     if not seeds:
-        raise ValueError(f"{model_id}: requested training seed/checkpoint is not registered")
+        raise ValueError(
+            f"{model_id}: no matching default checkpoint; pass --checkpoint and --train-seed"
+        )
     return seeds
 
 
@@ -142,6 +156,12 @@ def worker_command(args: argparse.Namespace, experiment: int, train_seed: int) -
         command += ["--baseline", args.baseline]
     if args.smoke:
         command.append("--smoke")
+    if args.checkpoint:
+        command += ["--checkpoint", args.checkpoint]
+    if args.training_commit:
+        command += ["--training-commit", args.training_commit]
+    if args.estimator:
+        command += ["--estimator", args.estimator]
     if args.coverage_probe:
         command += ["--coverage-probe", "--probe-candidates", str(args.probe_candidates)]
     return command
@@ -156,6 +176,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                    "--model", args.model, "--device", args.device,
                    "--benchmark-steps", str(args.benchmark_steps),
                    "--benchmark-warmup-steps", str(args.benchmark_warmup_steps)]
+        if args.train_seed is not None:
+            command += ["--train-seed", str(args.train_seed)]
+        if args.checkpoint:
+            command += ["--checkpoint", args.checkpoint]
+        if args.training_commit:
+            command += ["--training-commit", args.training_commit]
+        if args.estimator:
+            command += ["--estimator", args.estimator]
         completed = subprocess.run(command, check=True, text=True, capture_output=True)
         markers = [line for line in completed.stdout.splitlines() if line.startswith("BENCHMARK_RESULT=")]
         if not markers:
@@ -189,8 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args._benchmark_one is not None:
         from paper_eval_final.src.executor import benchmark_once
-        result = benchmark_once(model_id=args.model, num_envs=args._benchmark_one, steps=args.benchmark_steps,
-                                warmup_steps=args.benchmark_warmup_steps, device=args.device)
+        result = benchmark_once(
+            model_id=args.model, num_envs=args._benchmark_one, steps=args.benchmark_steps,
+            warmup_steps=args.benchmark_warmup_steps, device=args.device,
+            train_seed=args.train_seed, checkpoint_path=args.checkpoint,
+            training_commit=args.training_commit, estimator_path=args.estimator,
+        )
         print("BENCHMARK_RESULT=" + json.dumps(result, sort_keys=True))
         return 0
     chosen = experiments(args)
@@ -225,7 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         result = execute_one(stage=args.stage, experiment=chosen[0], model_id=args.model,
                              baseline_id=args.baseline, num_envs=selected_num_envs(args),
                              device=args.device, smoke=args.smoke, train_seed=args.train_seed,
-                             coverage_probe=args.coverage_probe, probe_candidates=args.probe_candidates)
+                             coverage_probe=args.coverage_probe, probe_candidates=args.probe_candidates,
+                             checkpoint_path=args.checkpoint, training_commit=args.training_commit,
+                             estimator_path=args.estimator)
         print("RUN_RESULT=" + json.dumps(result, sort_keys=True))
         return 0
     # Each experiment is a separate process. Completion closes Isaac before the next launch.

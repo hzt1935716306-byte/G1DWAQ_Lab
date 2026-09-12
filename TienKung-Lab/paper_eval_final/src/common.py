@@ -127,8 +127,26 @@ def git_dirty_paths() -> list[str]:
 
 
 def code_hash() -> str:
-    paths = [ROOT / "run.py", *sorted((ROOT / "src").glob("*.py"))]
-    return digest({path.relative_to(ROOT).as_posix(): sha256_file(path) for path in paths})
+    """Hash executable evaluation inputs while excluding docs/checkpoint defaults.
+
+    This deliberately covers the native environment, policy runner, and
+    certificate parameter files in addition to the evaluation wrapper.  The
+    model registry is excluded because its checkpoint entries are optional
+    defaults; selected checkpoint/estimator bytes are identified separately.
+    """
+    paths = {
+        ROOT / "run.py",
+        *ROOT.glob("src/*.py"),
+        *(path for path in ROOT.glob("configs/*.yaml") if path.name != "models.yaml"),
+        *LAB.glob("legged_lab/**/*.py"),
+        *LAB.glob("legged_lab/**/*.yaml"),
+        *LAB.glob("rsl_rl/rsl_rl/**/*.py"),
+        *LAB.glob("tools/recovery/generated/*.yaml"),
+    }
+    return digest({
+        path.relative_to(LAB).as_posix(): sha256_file(path)
+        for path in sorted(paths) if path.is_file()
+    })
 
 
 def within(path: str | Path, parent: str | Path) -> bool:

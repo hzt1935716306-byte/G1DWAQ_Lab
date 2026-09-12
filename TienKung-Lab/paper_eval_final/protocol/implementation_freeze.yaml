@@ -67,8 +67,10 @@ parallel_environments:
 notes:
 - Parallel environment count selected on RTX 4090 by the frozen six-size throughput
   benchmark; see PERFORMANCE_BENCHMARK.md.
-- Protocol v1.3 uses one pre-trained frozen checkpoint per method and paired
-  independent eval seeds; no training-seed repetition is claimed.
+- A checkpoint is selected per execution task and identified by its computed
+  SHA-256; registry entries are defaults, not a one-checkpoint global lock.
+- Different checkpoint hashes remain separate analysis variants unless an
+  explicit statistical plan later authorizes pooling them.
 - Shared-boundary N4-HIGH probing is historical and excluded; Experiment 1 now uses
   frozen within-Nmin conditional tertiles.
 - The v1.2 Experiment 1 pilot is retained as technical validation because checkpoint,

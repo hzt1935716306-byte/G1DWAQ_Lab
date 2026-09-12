@@ -13,14 +13,15 @@ from .common import (EVALUATION_SYSTEM, ROOT, atomic_write, digest, protocol_bun
 
 IDENTITY_GATE_FIELDS = (
     "protocol_version", "stage", "experiment_id", "manifest_hash",
-    "metrics_config_hash", "physics_profile_hash", "evaluation_code_commit",
+    "metrics_config_hash", "physics_profile_hash", "evaluation_code_hash",
     "asset_hash", "simulator_version",
 )
 
 TRIAL_COLUMNS = [
     "trial_id", "experiment_id", "stage", "sequence", "repeat_id", "condition_id",
     "candidate_phase", "sampling_target_hint", "method", "model_id", "train_seed", "eval_seed",
-    "checkpoint_sha256", "evaluation_code_commit", "protocol_hash", "manifest_hash",
+    "checkpoint_sha256", "estimator_sha256", "evaluation_code_commit", "evaluation_code_hash",
+    "protocol_hash", "manifest_hash",
     "slope_deg", "terrain_id", "friction", "command_vx", "command_vy", "command_yaw", "speed_group",
     "disturbance", "disturbance_start", "disturbance_end", "target_link", "force_vector", "torque_vector",
     "root_velocity_before", "root_velocity_after", "com_velocity_before", "com_velocity_after", "push_applied",
@@ -41,7 +42,8 @@ TRIAL_COLUMNS = [
 def validate_record(record: dict[str, Any]) -> None:
     required = {
         "evaluation_system", "trial_id", "experiment_id", "stage", "method", "train_seed", "eval_seed",
-        "checkpoint_sha256", "evaluation_code_commit", "protocol_version", "protocol_hash", "manifest_hash",
+        "checkpoint_sha256", "evaluation_code_commit", "evaluation_code_hash",
+        "protocol_version", "protocol_hash", "manifest_hash",
         "metrics_config_hash", "physics_profile_hash", "asset_hash", "simulator_version",
         "termination_kind", "task_outcome", "failure_reason", "push_applied", "scheduled", "executed",
         "valid", "eval_invalid", "cert_invalid",
@@ -91,8 +93,16 @@ class RunStore:
             folder.mkdir(parents=True, exist_ok=True)
         identity_path = self.path / "identity.json"
         if identity_path.exists():
-            if read_json(identity_path) != identity:
+            existing = read_json(identity_path)
+            keys = set(existing) | set(identity)
+            provenance_only = {"evaluation_code_commit", "training_commit"}
+            if any(existing.get(key) != identity.get(key)
+                   for key in keys if key not in provenance_only):
                 raise ValueError("existing shard identity differs; use a new shard")
+            # The commit is provenance only; a documentation-only commit may
+            # resume a shard when the evaluated code hash is unchanged.  Keep
+            # the immutable shard's originating identity for all records.
+            identity = existing
         else:
             write_json(identity_path, identity)
         self.identity = identity

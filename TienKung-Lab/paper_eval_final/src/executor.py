@@ -46,6 +46,7 @@ def _identity(model: ModelIdentity, manifest: dict[str, Any], experiment: int, e
         "task_name": model.task_name,
         "train_seed": model.train_seed,
         "checkpoint_sha256": model.checkpoint_sha256,
+        "estimator_sha256": model.estimator_sha256,
         "training_commit": model.training_commit,
         "evaluation_code_commit": git_head(),
         "evaluation_code_hash": code_hash(),
@@ -64,8 +65,18 @@ def _run_path(stage: str, experiment: int, model: ModelIdentity, *, smoke: bool,
     root = ROOT / "results" / category / result_namespace()
     if probe_namespace:
         root = root / probe_namespace
-    return (root / f"experiment_{experiment}"
-            / model.model_id / f"train_seed_{model.train_seed}")
+    seed_root = (root / f"experiment_{experiment}"
+                 / model.model_id / f"train_seed_{model.train_seed}")
+    # Preserve resumability of v1.3 shards created before checkpoint-scoped
+    # directories were introduced.  Every new shard is keyed by the actual
+    # checkpoint bytes, so equal model/seed labels can never collide.
+    legacy_markers = ("identity.json", "progress.json", "completion.json", "records")
+    if any((seed_root / marker).exists() for marker in legacy_markers):
+        return seed_root
+    suffix = f"checkpoint_{model.checkpoint_sha256[:16]}"
+    if model.estimator_sha256:
+        suffix += f"_estimator_{model.estimator_sha256[:16]}"
+    return seed_root / suffix
 
 
 def _campaign_schedule(path: Path, manifest: dict[str, Any], initial: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -95,7 +106,10 @@ def _write_campaign_schedule(path: Path, manifest: dict[str, Any], trials: list[
 
 def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_id: str | None,
                 num_envs: int, device: str, smoke: bool, train_seed: int | None = None,
-                coverage_probe: bool = False, probe_candidates: int | None = None) -> dict[str, Any]:
+                coverage_probe: bool = False, probe_candidates: int | None = None,
+                checkpoint_path: str | Path | None = None,
+                training_commit: str | None = None,
+                estimator_path: str | Path | None = None) -> dict[str, Any]:
     import torch
     from isaaclab.app import AppLauncher
 
@@ -117,7 +131,10 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
     else:
         if not model_id:
             raise ValueError("Experiments 2/3 require --model")
-        model = resolve_model(model_id, train_seed)
+        model = resolve_model(
+            model_id, train_seed, checkpoint_path=checkpoint_path,
+            training_commit=training_commit, estimator_path=estimator_path,
+        )
     if experiment == 1 and model.actor_certificate_context and not smoke:
         raise ValueError("Experiment 1 confirmatory baseline cannot receive Nmin/margin")
     adaptive_exp1 = experiment == 1 and stage in ("pilot", "formal") and not smoke and not coverage_probe
@@ -343,13 +360,19 @@ def execute_one(*, stage: str, experiment: int, model_id: str | None, baseline_i
         close_environment(env)
 
 
-def benchmark_once(*, model_id: str, num_envs: int, steps: int, warmup_steps: int, device: str) -> dict[str, Any]:
+def benchmark_once(*, model_id: str, num_envs: int, steps: int, warmup_steps: int, device: str,
+                   train_seed: int | None = None, checkpoint_path: str | Path | None = None,
+                   training_commit: str | None = None,
+                   estimator_path: str | Path | None = None) -> dict[str, Any]:
     import torch
     from isaaclab.app import AppLauncher
 
     protocol, _, _ = protocol_bundle()
     manifest = prepare_manifest("screening", 2)
-    model = resolve_model(model_id)
+    model = resolve_model(
+        model_id, train_seed, checkpoint_path=checkpoint_path,
+        training_commit=training_commit, estimator_path=estimator_path,
+    )
     application = AppLauncher(headless=True, device=device).app
     _APPLICATIONS.append(application)
     env = None
