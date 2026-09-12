@@ -79,7 +79,13 @@ def summarize(records: list[dict[str, Any]], scheduled: int) -> dict[str, Any]:
     touchdown_values = [row["nTD0"] for row in relation]
     if len(relation) >= 2 and len(set(n_values)) >= 2 and len(set(touchdown_values)) >= 2:
         coefficient, pvalue = spearmanr(n_values, touchdown_values)
-        result["spearman_Nmin_nTD0"] = {"n": len(relation), "rho": float(coefficient), "pvalue": float(pvalue)}
+        coefficient = float(coefficient)
+        pvalue = float(pvalue)
+        result["spearman_Nmin_nTD0"] = {
+            "n": len(relation),
+            "rho": coefficient if math.isfinite(coefficient) else None,
+            "pvalue": pvalue if math.isfinite(pvalue) else None,
+        }
     else:
         result["spearman_Nmin_nTD0"] = {"n": len(relation), "rho": None, "pvalue": None}
     return result

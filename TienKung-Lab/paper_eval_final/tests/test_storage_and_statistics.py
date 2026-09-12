@@ -65,3 +65,16 @@ def test_constant_cell_spearman_is_null_not_nan():
     } for value in (1, 2, 3)]
     relation = summarize(rows, len(rows))["spearman_Nmin_nTD0"]
     assert relation == {"n": 3, "rho": None, "pvalue": None}
+
+
+def test_two_point_spearman_undefined_pvalue_is_null_not_nan():
+    rows = [{
+        "valid": 1, "termination_kind": "HORIZON_REACHED", "certificate_valid": True,
+        "Nmin": n_min, "nTD0": ntd0, "CERT_AFTER_RECOVERY": False,
+        "eval_invalid": 0, "cert_invalid": 0, "failure_reason": None,
+        "push_applied": True, "recovered_sustained": True,
+        "survived_post_observation": True, "recovery_time": 1.0,
+        "Krec": 2, "RMSE_v": 0.1, "RMSE_vx": 0.1, "RMSE_vy": 0.0,
+    } for n_min, ntd0 in ((3, 4), (4, 5))]
+    relation = summarize(rows, len(rows))["spearman_Nmin_nTD0"]
+    assert relation == {"n": 2, "rho": pytest.approx(1.0), "pvalue": None}
